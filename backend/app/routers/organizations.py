@@ -56,20 +56,22 @@ async def get_org(
 async def update_org(
     org_id: uuid.UUID,
     data: OrganizationUpdateRequest,
+    request: Request,
     current_user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ) -> OrganizationResponse:
-    org = await OrganizationService(session).update(org_id, data)
+    org = await OrganizationService(session).update(org_id, data, current_user.id, client_ip(request))
     return OrganizationResponse.model_validate(org)
 
 
 @router.delete("/{org_id}")
 async def delete_org(
     org_id: uuid.UUID,
+    request: Request,
     current_user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ) -> dict:
-    await OrganizationService(session).delete(org_id)
+    await OrganizationService(session).delete(org_id, current_user.id, client_ip(request))
     return {"ok": True}
 
 
@@ -77,10 +79,13 @@ async def delete_org(
 async def set_org_servers(
     org_id: uuid.UUID,
     data: OrganizationServersUpdateRequest,
+    request: Request,
     current_user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ) -> dict:
-    await OrganizationService(session).set_servers(org_id, data.server_ids)
+    await OrganizationService(session).set_servers(
+        org_id, data.server_ids, current_user.id, client_ip(request)
+    )
     return {"ok": True}
 
 

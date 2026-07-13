@@ -132,7 +132,7 @@ async def delete_server(
     server_id: uuid.UUID, request: Request,
     current_user: User = Depends(require_admin), session: AsyncSession = Depends(get_db),
 ) -> Response:
-    await ServerService(session).delete(server_id)
+    await ServerService(session).delete(server_id, current_user.id, client_ip(request))
     servers = await ServerService(session).list_all()
     return templates.TemplateResponse(request, "servers/_table.html", {"servers": servers, "csrf_token": _csrf(request)})
 
@@ -158,7 +158,9 @@ async def set_org_servers(
     server_ids: list[uuid.UUID] = Form(default=[]),
     current_user: User = Depends(require_admin), session: AsyncSession = Depends(get_db),
 ) -> Response:
-    await OrganizationService(session).set_servers(org_id, server_ids)
+    await OrganizationService(session).set_servers(
+        org_id, server_ids, current_user.id, client_ip(request)
+    )
     return await _render_orgs_table(request, session)
 
 
@@ -167,7 +169,7 @@ async def delete_org(
     org_id: uuid.UUID, request: Request,
     current_user: User = Depends(require_admin), session: AsyncSession = Depends(get_db),
 ) -> Response:
-    await OrganizationService(session).delete(org_id)
+    await OrganizationService(session).delete(org_id, current_user.id, client_ip(request))
     return await _render_orgs_table(request, session)
 
 
@@ -208,7 +210,7 @@ async def reset_password(
     user_id: uuid.UUID, request: Request,
     current_user: User = Depends(require_admin), session: AsyncSession = Depends(get_db),
 ) -> Response:
-    await UserService(session).reset_password(user_id)
+    await UserService(session).reset_password(user_id, current_user.id, client_ip(request))
     return await _render_users_table(request, session)
 
 

@@ -3,6 +3,7 @@ import pytest
 from app.core.exceptions import ConflictError, ValidationError
 from app.models.organization import Organization
 from app.schemas.users import UserCreateRequest
+from app.services.audit import AuditService
 from app.services.users import UserService
 
 
@@ -82,6 +83,9 @@ async def test_reset_password_changes_hash(db_session):
         actor_ip=None,
     )
     old_hash = user.hashed_password
-    new_password = await service.reset_password(user.id)
+    new_password = await service.reset_password(user.id, actor_id=None, actor_ip="1.1.1.1")
     assert new_password != old_password
     assert user.hashed_password != old_hash
+
+    logs, _ = await AuditService(db_session).list_all(action="UPDATE")
+    assert any(str(log.target_id) == str(user.id) for log in logs)

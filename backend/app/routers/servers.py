@@ -52,10 +52,11 @@ async def get_server(
 async def update_server(
     server_id: uuid.UUID,
     data: ServerUpdateRequest,
+    request: Request,
     current_user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ) -> ServerDetailResponse:
-    server = await ServerService(session).update(server_id, data)
+    server = await ServerService(session).update(server_id, data, current_user.id, client_ip(request))
     return ServerDetailResponse.model_validate(server)
 
 
@@ -83,21 +84,23 @@ async def test_server(
 @router.delete("/{server_id}")
 async def delete_server(
     server_id: uuid.UUID,
+    request: Request,
     current_user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ) -> dict:
-    await ServerService(session).delete(server_id)
+    await ServerService(session).delete(server_id, current_user.id, client_ip(request))
     return {"ok": True}
 
 
 @router.post("/{server_id}/rotate-keys")
 async def rotate_keys(
     server_id: uuid.UUID,
+    request: Request,
     current_user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ) -> dict:
     try:
-        await ServerService(session).rotate_keys(server_id)
+        await ServerService(session).rotate_keys(server_id, current_user.id, client_ip(request))
     except NotSupportedError as exc:
         raise HTTPException(status_code=501, detail=str(exc)) from exc
     return {"ok": True}

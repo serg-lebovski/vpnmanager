@@ -107,7 +107,13 @@ class ServerService:
         if result.provider_type == "wg_easy" and wg_easy_password_hint:
             server.api_secret_encrypted = encrypt(wg_easy_password_hint)
 
-    async def update(self, server_id: uuid.UUID, data: ServerUpdateRequest) -> Server:
+    async def update(
+        self,
+        server_id: uuid.UUID,
+        data: ServerUpdateRequest,
+        actor_id: uuid.UUID | None = None,
+        actor_ip: str | None = None,
+    ) -> Server:
         server = await self.get_or_404(server_id)
         if data.name is not None:
             server.name = data.name
@@ -121,15 +127,25 @@ class ServerService:
             server.ssh_credential_encrypted = encrypt(data.ssh_private_key or data.ssh_password or "")
         if data.wg_easy_password:
             server.api_secret_encrypted = encrypt(data.wg_easy_password)
+        self.audit.log(
+            actor_user_id=actor_id, actor_ip=actor_ip, action="UPDATE",
+            target_type="SERVER", target_id=server.id,
+        )
         await self.session.commit()
         await self.session.refresh(server)
         return server
 
-    async def delete(self, server_id: uuid.UUID) -> None:
+    async def delete(
+        self, server_id: uuid.UUID, actor_id: uuid.UUID | None = None, actor_ip: str | None = None
+    ) -> None:
         server = await self.get_or_404(server_id)
         if await self.repo.is_linked_to_org(server_id):
             raise ConflictError("Cannot delete a server linked to an organization")
         await self.repo.delete(server)
+        self.audit.log(
+            actor_user_id=actor_id, actor_ip=actor_ip, action="DELETE",
+            target_type="SERVER", target_id=server_id,
+        )
         await self.session.commit()
 
     async def test(self, server_id: uuid.UUID) -> bool:
@@ -143,7 +159,9 @@ class ServerService:
         await self.session.commit()
         return healthy
 
-    async def rotate_keys(self, server_id: uuid.UUID) -> None:
+    async def rotate_keys(
+        self, server_id: uuid.UUID, actor_id: uuid.UUID | None = None, actor_ip: str | None = None
+    ) -> None:
         server = await self.get_or_404(server_id)
         provider = get_provider(server)
         try:
@@ -153,4 +171,8 @@ class ServerService:
         except ProviderError as exc:
             raise ConflictError(str(exc)) from exc
         server.server_public_key = getattr(provider, "server_public_key", server.server_public_key)
+        self.audit.log(
+            actor_user_id=actor_id, actor_ip=actor_ip, action="UPDATE",
+            target_type="SERVER", target_id=server.id, details={"rotate_keys": True},
+        )
         await self.session.commit()

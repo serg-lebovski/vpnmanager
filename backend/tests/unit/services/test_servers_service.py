@@ -7,6 +7,7 @@ from app.core.exceptions import ConflictError
 from app.providers.detector import DetectionResult
 from app.schemas.organizations import OrganizationCreateRequest
 from app.schemas.servers import ServerCreateRequest, ServerUpdateRequest
+from app.services.audit import AuditService
 from app.services.organizations import OrganizationService
 from app.services.servers import ServerService
 
@@ -70,9 +71,28 @@ async def test_update_server_fields(db_session):
         actor_id=None,
         actor_ip=None,
     )
-    updated = await service.update(server.id, ServerUpdateRequest(weight=5, is_active=False))
+    updated = await service.update(
+        server.id, ServerUpdateRequest(weight=5, is_active=False), actor_id=None, actor_ip="9.9.9.9"
+    )
     assert updated.weight == 5
     assert updated.is_active is False
+
+    logs, _ = await AuditService(db_session).list_all(action="UPDATE")
+    assert any(str(log.target_id) == str(server.id) for log in logs)
+
+
+@pytest.mark.asyncio
+async def test_delete_server_writes_audit_log(db_session):
+    service = ServerService(db_session)
+    server = await service.create(
+        ServerCreateRequest(name="srv1", endpoint="1.2.3.4", ssh_user="root", ssh_password="pw"),
+        actor_id=None,
+        actor_ip=None,
+    )
+    await service.delete(server.id, actor_id=None, actor_ip="9.9.9.9")
+
+    logs, _ = await AuditService(db_session).list_all(action="DELETE")
+    assert any(str(log.target_id) == str(server.id) for log in logs)
 
 
 @pytest.mark.asyncio

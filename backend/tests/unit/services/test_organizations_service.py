@@ -5,6 +5,7 @@ from app.core.exceptions import ConflictError
 from app.models.server import Server
 from app.models.user import User
 from app.schemas.organizations import OrganizationCreateRequest
+from app.services.audit import AuditService
 from app.services.organizations import OrganizationService
 
 
@@ -56,6 +57,16 @@ async def test_set_servers_replaces_links(db_session):
     await service.set_servers(org.id, [s1.id])
     servers = await service.repo.get_servers(org.id)
     assert {s.id for s in servers} == {s1.id}
+
+
+@pytest.mark.asyncio
+async def test_delete_org_writes_audit_log(db_session):
+    service = OrganizationService(db_session)
+    org = await service.create(OrganizationCreateRequest(name="Acme"), actor_id=None, actor_ip=None)
+    await service.delete(org.id, actor_id=None, actor_ip="1.1.1.1")
+
+    logs, _ = await AuditService(db_session).list_all(action="DELETE")
+    assert any(str(log.target_id) == str(org.id) for log in logs)
 
 
 @pytest.mark.asyncio

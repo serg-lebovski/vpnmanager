@@ -47,10 +47,11 @@ async def create_user(
 async def update_user(
     user_id: uuid.UUID,
     data: UserUpdateRequest,
+    request: Request,
     current_user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ) -> UserResponse:
-    user = await UserService(session).update(user_id, data)
+    user = await UserService(session).update(user_id, data, current_user.id, client_ip(request))
     return UserResponse.model_validate(user)
 
 
@@ -68,8 +69,9 @@ async def delete_user(
 @router.post("/{user_id}/reset-password")
 async def reset_password(
     user_id: uuid.UUID,
+    request: Request,
     current_user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ) -> ResetPasswordResponse:
-    password = await UserService(session).reset_password(user_id)
+    password = await UserService(session).reset_password(user_id, current_user.id, client_ip(request))
     return ResetPasswordResponse(new_password=password)

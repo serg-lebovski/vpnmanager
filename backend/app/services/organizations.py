@@ -45,26 +45,53 @@ class OrganizationService:
         await self.session.refresh(org)
         return org
 
-    async def update(self, org_id: uuid.UUID, data: OrganizationUpdateRequest) -> Organization:
+    async def update(
+        self,
+        org_id: uuid.UUID,
+        data: OrganizationUpdateRequest,
+        actor_id: uuid.UUID | None = None,
+        actor_ip: str | None = None,
+    ) -> Organization:
         org = await self.get_or_404(org_id)
         if data.name is not None:
             org.name = data.name
         if data.auto_cleanup_days is not None:
             org.auto_cleanup_days = data.auto_cleanup_days
+        self.audit.log(
+            actor_user_id=actor_id, actor_ip=actor_ip, action="UPDATE",
+            target_type="ORG", target_id=org.id,
+        )
         await self.session.commit()
         await self.session.refresh(org)
         return org
 
-    async def delete(self, org_id: uuid.UUID) -> None:
+    async def delete(
+        self, org_id: uuid.UUID, actor_id: uuid.UUID | None = None, actor_ip: str | None = None
+    ) -> None:
         org = await self.get_or_404(org_id)
         if await self.repo.count_users(org_id) > 0:
             raise ConflictError("Cannot delete organization with users")
         await self.repo.delete(org)
+        self.audit.log(
+            actor_user_id=actor_id, actor_ip=actor_ip, action="DELETE",
+            target_type="ORG", target_id=org_id,
+        )
         await self.session.commit()
 
-    async def set_servers(self, org_id: uuid.UUID, server_ids: list[uuid.UUID]) -> None:
+    async def set_servers(
+        self,
+        org_id: uuid.UUID,
+        server_ids: list[uuid.UUID],
+        actor_id: uuid.UUID | None = None,
+        actor_ip: str | None = None,
+    ) -> None:
         await self.get_or_404(org_id)
         await self.repo.replace_server_links(org_id, server_ids)
+        self.audit.log(
+            actor_user_id=actor_id, actor_ip=actor_ip, action="UPDATE",
+            target_type="ORG", target_id=org_id,
+            details={"server_ids": [str(s) for s in server_ids]},
+        )
         await self.session.commit()
 
     async def stats(self, org_id: uuid.UUID) -> dict:

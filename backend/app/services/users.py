@@ -56,7 +56,13 @@ class UserService:
         await self.session.refresh(user)
         return user, password
 
-    async def update(self, user_id: uuid.UUID, data: UserUpdateRequest) -> User:
+    async def update(
+        self,
+        user_id: uuid.UUID,
+        data: UserUpdateRequest,
+        actor_id: uuid.UUID | None = None,
+        actor_ip: str | None = None,
+    ) -> User:
         user = await self.get_or_404(user_id)
         if data.full_name is not None:
             user.full_name = data.full_name
@@ -64,6 +70,10 @@ class UserService:
             user.is_active = data.is_active
         if data.org_id is not None:
             user.org_id = data.org_id
+        self.audit.log(
+            actor_user_id=actor_id, actor_ip=actor_ip, action="UPDATE",
+            target_type="USER", target_id=user.id,
+        )
         await self.session.commit()
         await self.session.refresh(user)
         return user
@@ -81,9 +91,15 @@ class UserService:
         )
         await self.session.commit()
 
-    async def reset_password(self, user_id: uuid.UUID) -> str:
+    async def reset_password(
+        self, user_id: uuid.UUID, actor_id: uuid.UUID | None = None, actor_ip: str | None = None
+    ) -> str:
         user = await self.get_or_404(user_id)
         password = generate_password()
         user.hashed_password = hash_password(password)
+        self.audit.log(
+            actor_user_id=actor_id, actor_ip=actor_ip, action="UPDATE",
+            target_type="USER", target_id=user.id, details={"reset_password": True},
+        )
         await self.session.commit()
         return password

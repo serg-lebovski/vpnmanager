@@ -13,6 +13,7 @@ from app.core.rate_limit import RateLimitExceeded, check_rate_limit
 from app.repositories.configs import ConfigRepository
 from app.repositories.download_tokens import DownloadTokenRepository
 from app.routers.deps import client_ip, get_db
+from app.services.audit import AuditService
 
 router = APIRouter(prefix="/d", tags=["public-download"])
 
@@ -46,6 +47,10 @@ async def download_config(
 ) -> Response:
     download_token, config = await _resolve_valid_token(token, session, request)
     download_token.used_at = datetime.now(UTC)
+    AuditService(session).log(
+        actor_user_id=None, actor_ip=client_ip(request), action="DOWNLOAD",
+        target_type="CONFIG", target_id=config.id,
+    )
     await session.commit()
 
     config_text = decrypt(config.config_text_encrypted)
