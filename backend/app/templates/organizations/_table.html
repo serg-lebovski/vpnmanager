@@ -1,0 +1,28 @@
+<table class="table">
+    <thead><tr><th>Название</th><th>Авто-очистка</th><th>Серверы</th><th>Действия</th></tr></thead>
+    <tbody>
+    {% for o in orgs %}
+    <tr>
+        <td>{{ o.name }}</td>
+        <td>{{ o.auto_cleanup_days or "—" }}</td>
+        <td>
+            <form hx-put="/organizations/{{ o.id }}/servers" hx-target="#orgs-table" class="d-flex flex-wrap gap-2">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                {% for srv in all_servers %}
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" name="server_ids" value="{{ srv.id }}" id="srv-{{ o.id }}-{{ srv.id }}"
+                        {% if srv.id in o.server_ids %}checked{% endif %}>
+                    <label class="form-check-label small" for="srv-{{ o.id }}-{{ srv.id }}">{{ srv.name }}</label>
+                </div>
+                {% endfor %}
+                <button class="btn btn-sm btn-outline-secondary" type="submit">Сохранить</button>
+            </form>
+        </td>
+        <td>
+            <a class="btn btn-sm btn-outline-secondary" href="/organizations/{{ o.id }}/export">Экспорт ZIP</a>
+            <button class="btn btn-sm btn-outline-danger" hx-delete="/organizations/{{ o.id }}" hx-target="#orgs-table" hx-confirm="Удалить организацию {{ o.name }}?" hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'>Удалить</button>
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>

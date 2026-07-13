@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Пользователи{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h3>Пользователи</h3>
+    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addUserModal">Добавить пользователя</button>
+</div>
+
+<div id="users-table">{% include "users/_table.html" %}</div>
+
+<div class="modal fade" id="addUserModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form hx-post="/users/add" hx-target="#users-table">
+        <div class="modal-header"><h5 class="modal-title">Новый пользователь</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+        <div class="modal-body">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="mb-2"><label class="form-label">Логин</label><input class="form-control" name="username" required></div>
+            <div class="mb-2"><label class="form-label">ФИО</label><input class="form-control" name="full_name" required></div>
+            <div class="mb-2"><label class="form-label">Роль</label>
+                <select class="form-select" name="role">
+                    <option value="USER">USER</option>
+                    <option value="ADMIN">ADMIN</option>
+                </select>
+            </div>
+            <div class="mb-2"><label class="form-label">Организация (для USER)</label>
+                <select class="form-select" name="org_id">
+                    <option value="">—</option>
+                    {% for o in orgs %}<option value="{{ o.id }}">{{ o.name }}</option>{% endfor %}
+                </select>
+            </div>
+        </div>
+        <div class="modal-footer"><button type="submit" class="btn btn-primary">Создать</button></div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

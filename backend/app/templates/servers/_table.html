@@ -1,0 +1,20 @@
+<table class="table">
+    <thead><tr><th>Имя</th><th>Endpoint</th><th>Провайдер</th><th>Статус</th><th>Ошибка детекта</th><th>Вес</th><th>Действия</th></tr></thead>
+    <tbody>
+    {% for s in servers %}
+    <tr>
+        <td>{{ s.name }}</td>
+        <td>{{ s.endpoint }}</td>
+        <td><span class="badge badge-provider-{{ s.provider_type }}">{{ s.provider_type or "—" }}</span></td>
+        <td class="status-{{ s.status }}">{{ s.status }}</td>
+        <td class="text-muted small">{{ s.detection_error or "" }}</td>
+        <td>{{ s.weight }}</td>
+        <td>
+            <button class="btn btn-sm btn-outline-secondary" hx-post="/servers/{{ s.id }}/detect" hx-target="#servers-table" hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'>Пере-определить</button>
+            <button class="btn btn-sm btn-outline-secondary" hx-post="/servers/{{ s.id }}/test" hx-target="#servers-table" hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'>Проверить</button>
+            <button class="btn btn-sm btn-outline-danger" hx-delete="/servers/{{ s.id }}" hx-target="#servers-table" hx-confirm="Удалить сервер {{ s.name }}?" hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'>Удалить</button>
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>

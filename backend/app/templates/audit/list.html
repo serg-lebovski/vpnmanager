@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Аудит{% endblock %}
+{% block content %}
+<h3 class="mb-4">Журнал аудита</h3>
+<table class="table table-sm">
+    <thead><tr><th>Время</th><th>Actor</th><th>IP</th><th>Действие</th><th>Тип</th><th>Target</th><th>Детали</th></tr></thead>
+    <tbody>
+    {% for log in logs %}
+    <tr>
+        <td class="small">{{ log.created_at }}</td>
+        <td class="small">{{ log.actor_user_id or "—" }}</td>
+        <td class="small">{{ log.actor_ip or "—" }}</td>
+        <td>{{ log.action }}</td>
+        <td>{{ log.target_type or "—" }}</td>
+        <td class="small">{{ log.target_id or "—" }}</td>
+        <td class="small">{{ log.details }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+<p class="text-muted">Всего: {{ total }}, страница {{ page }}</p>
+{% endblock %}

@@ -1,0 +1,8 @@
+.badge-provider-amnezia_wg { background-color: #6f42c1; }
+.badge-provider-wg_easy { background-color: #0d6efd; }
+.badge-provider-wireguard { background-color: #198754; }
+.status-ONLINE { color: #198754; }
+.status-OFFLINE { color: #ffc107; }
+.status-UNREACHABLE { color: #dc3545; }
+.status-UNSUPPORTED { color: #6c757d; }
+.status-PENDING { color: #6c757d; }

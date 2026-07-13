@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Серверы{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h3>Серверы</h3>
+    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addServerModal">Добавить сервер</button>
+</div>
+
+<div id="servers-table">
+    {% include "servers/_table.html" %}
+</div>
+
+<div class="modal fade" id="addServerModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form hx-post="/servers/add" hx-target="#servers-table" hx-swap="innerHTML" hx-on::after-request="if(event.detail.successful) bootstrap.Modal.getInstance(document.getElementById('addServerModal')).hide()">
+        <div class="modal-header"><h5 class="modal-title">Новый сервер</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+        <div class="modal-body">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="mb-2"><label class="form-label">Имя</label><input class="form-control" name="name" required></div>
+            <div class="mb-2"><label class="form-label">Endpoint (IP/домен)</label><input class="form-control" name="endpoint" required></div>
+            <div class="mb-2"><label class="form-label">SSH порт</label><input class="form-control" name="ssh_port" value="22"></div>
+            <div class="mb-2"><label class="form-label">SSH пользователь</label><input class="form-control" name="ssh_user" value="root" required></div>
+            <div class="mb-2"><label class="form-label">SSH приватный ключ (PEM)</label><textarea class="form-control" name="ssh_private_key" rows="4" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></div>
+            <div class="mb-2"><label class="form-label">...или SSH пароль</label><input class="form-control" type="password" name="ssh_password"></div>
+            <div class="mb-2"><label class="form-label">Пароль wg-easy (если известен)</label><input class="form-control" type="password" name="wg_easy_password"></div>
+        </div>
+        <div class="modal-footer"><button type="submit" class="btn btn-primary">Добавить и определить тип</button></div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

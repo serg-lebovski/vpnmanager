@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Дашборд{% endblock %}
+{% block content %}
+<h3 class="mb-4">Дашборд</h3>
+<div class="row g-3 mb-4">
+    <div class="col-md-3"><div class="card text-center p-3"><div class="fs-3">{{ data.servers_online }}/{{ data.servers_total }}</div><div class="text-muted">Серверов online</div></div></div>
+    <div class="col-md-3"><div class="card text-center p-3"><div class="fs-3">{{ data.users_total }}</div><div class="text-muted">Пользователей</div></div></div>
+    <div class="col-md-3"><div class="card text-center p-3"><div class="fs-3">{{ data.configs_total }}</div><div class="text-muted">Конфигов</div></div></div>
+    <div class="col-md-3"><div class="card text-center p-3"><div class="fs-3">{{ data.configs_last_24h }}</div><div class="text-muted">Конфигов за 24ч</div></div></div>
+</div>
+
+<h5>Серверы</h5>
+<table class="table table-sm">
+    <thead><tr><th>Имя</th><th>Endpoint</th><th>Провайдер</th><th>Статус</th><th>Активных конфигов</th><th>Вес</th><th>Последняя проверка</th></tr></thead>
+    <tbody>
+    {% for s in data.servers %}
+        <tr>
+            <td>{{ s.name }}</td>
+            <td>{{ s.endpoint }}</td>
+            <td><span class="badge badge-provider-{{ s.provider_type }}">{{ s.provider_type or "—" }}</span></td>
+            <td class="status-{{ s.status }}">{{ s.status }}</td>
+            <td>{{ s.active_configs }}</td>
+            <td>{{ s.weight }}</td>
+            <td>{{ s.last_checked_at or "—" }}</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+<div class="row">
+    <div class="col-md-6">
+        <h5>Проблемы: серверы</h5>
+        {% if data.problems.servers %}
+        <ul class="list-group">
+            {% for p in data.problems.servers %}
+            <li class="list-group-item">{{ p.name }} — <span class="status-{{ p.status }}">{{ p.status }}</span>: {{ p.detection_error }}</li>
+            {% endfor %}
+        </ul>
+        {% else %}<p class="text-muted">Нет проблем</p>{% endif %}
+    </div>
+    <div class="col-md-6">
+        <h5>Требуют пересоздания</h5>
+        {% if data.problems.configs_needing_recreate %}
+        <ul class="list-group">
+            {% for c in data.problems.configs_needing_recreate %}
+            <li class="list-group-item">{{ c.label }}</li>
+            {% endfor %}
+        </ul>
+        {% else %}<p class="text-muted">Нет</p>{% endif %}
+    </div>
+</div>
+{% endblock %}

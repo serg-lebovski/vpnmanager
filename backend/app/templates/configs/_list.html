@@ -1,0 +1,24 @@
+<div class="row g-3">
+{% for c in configs %}
+    <div class="col-md-4">
+        <div class="card p-3">
+            <div class="d-flex justify-content-between">
+                <strong>{{ c.label }}</strong>
+                <span class="badge bg-secondary">{{ c.device_type }}</span>
+            </div>
+            <div class="text-muted small">IP: {{ c.vpn_ip }}</div>
+            {% if c.needs_recreate %}
+            <div class="alert alert-warning small mt-2 mb-2">Сервер недоступен. <button class="btn btn-sm btn-warning" hx-post="/my-configs/{{ c.id }}/recreate" hx-target="#configs-list" hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'>Пересоздать</button></div>
+            {% else %}
+            <div class="d-flex gap-2 mt-2">
+                <a class="btn btn-sm btn-outline-primary" href="/my-configs/{{ c.id }}/download">Скачать</a>
+                <a class="btn btn-sm btn-outline-secondary" href="/api/configs/{{ c.id }}/qr" target="_blank">QR</a>
+                <button class="btn btn-sm btn-outline-danger" hx-delete="/my-configs/{{ c.id }}" hx-target="#configs-list" hx-confirm="Удалить конфиг {{ c.label }}?" hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'>Удалить</button>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+{% else %}
+    <p class="text-muted">У вас пока нет конфигов.</p>
+{% endfor %}
+</div>

@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Вход — Amnezia VPN Manager{% endblock %}
+{% block content %}
+<div class="row justify-content-center mt-5">
+    <div class="col-md-4">
+        <h3 class="mb-4 text-center">Вход в панель</h3>
+        {% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}
+        <form method="post" action="/login">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="mb-3">
+                <label class="form-label">Логин</label>
+                <input class="form-control" name="username" required autofocus>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Пароль</label>
+                <input class="form-control" type="password" name="password" required>
+            </div>
+            <button class="btn btn-primary w-100" type="submit">Войти</button>
+        </form>
+    </div>
+</div>
+{% endblock %}
