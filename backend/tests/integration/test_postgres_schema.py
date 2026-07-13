@@ -4,6 +4,8 @@
 без docker-in-docker или в этой сессии разработки без установленного Docker).
 """
 
+import asyncio
+import os
 import shutil
 import subprocess
 import sys
@@ -23,11 +25,12 @@ async def test_alembic_upgrade_head_creates_all_tables():
     with PostgresContainer("postgres:15-alpine") as postgres:
         db_url = postgres.get_connection_url().replace("psycopg2", "asyncpg")
 
-        result = subprocess.run(
+        result = await asyncio.to_thread(
+            subprocess.run,
             [sys.executable, "-m", "alembic", "upgrade", "head"],
             cwd=BACKEND_DIR,
             env={"DATABASE_URL": db_url, "ENCRYPTION_KEY": "x" * 32, "SESSION_SECRET": "x",
-                 "PATH": __import__("os").environ.get("PATH", "")},
+                 "PATH": os.environ.get("PATH", "")},
             capture_output=True,
             text=True,
         )

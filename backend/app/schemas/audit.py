@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class AuditLogResponse(BaseModel):
@@ -15,6 +15,12 @@ class AuditLogResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @field_validator("actor_ip", mode="before")
+    @classmethod
+    def _stringify_ip(cls, value: object) -> str | None:
+        # asyncpg возвращает ipaddress.IPv4Address/IPv6Address для колонки INET.
+        return None if value is None else str(value)
 
 
 class AuditLogPage(BaseModel):
