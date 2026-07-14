@@ -31,7 +31,7 @@ class AuthService:
                 target_id=user.id if user else None,
                 details={"username": username},
             )
-            raise AuthError("Invalid username or password", code="INVALID_CREDENTIALS")
+            raise AuthError("Неверный логин или пароль", code="INVALID_CREDENTIALS")
 
         user.last_login_at = datetime.now(UTC)
         self.audit.log(

@@ -36,12 +36,12 @@ class ConfigService:
     async def get_or_404(self, config_id: uuid.UUID) -> Config:
         config = await self.repo.get_by_id(config_id)
         if not config:
-            raise NotFoundError("Config not found")
+            raise NotFoundError("Конфиг не найден")
         return config
 
     def assert_visible(self, config: Config, current_user: User) -> None:
         if current_user.role == UserRole.USER.value and config.user_id != current_user.id:
-            raise NotFoundError("Config not found")
+            raise NotFoundError("Конфиг не найден")
 
     async def list_all(
         self, current_user: User, user_id: uuid.UUID | None, org_id: uuid.UUID | None,
@@ -71,11 +71,11 @@ class ConfigService:
             target_user_id = data.user_id or current_user.id
             found_user = await self.users.get_by_id(target_user_id)
             if not found_user:
-                raise NotFoundError("Target user not found")
+                raise NotFoundError("Пользователь не найден")
             target_user = found_user
 
         if not target_user.org_id:
-            raise ConflictError("User has no organization assigned")
+            raise ConflictError("У пользователя не назначена организация")
 
         candidate_servers = await self.orgs.get_servers(target_user.org_id)
         chosen_server = await self.balancer.pick_server(candidate_servers)
@@ -87,7 +87,7 @@ class ConfigService:
         try:
             result = await provider.create_peer(spec, used_ips=used_ips)
         except ProviderError as exc:
-            raise ConflictError(f"Failed to create peer on VPN server: {exc}") from exc
+            raise ConflictError(f"Не удалось создать пира на VPN-сервере: {exc}") from exc
 
         config = Config(
             user_id=target_user.id,
@@ -160,11 +160,11 @@ class ConfigService:
         old_config = await self.get_or_404(config_id)
         self.assert_visible(old_config, current_user)
         if not old_config.needs_recreate:
-            raise ConflictError("Config does not need recreation")
+            raise ConflictError("Конфиг не требует пересоздания")
 
         user = await self.users.get_by_id(old_config.user_id)
         if not user or not user.org_id:
-            raise ConflictError("User has no organization assigned")
+            raise ConflictError("У пользователя не назначена организация")
 
         candidate_servers = [
             s for s in await self.orgs.get_servers(user.org_id) if s.id != old_config.server_id

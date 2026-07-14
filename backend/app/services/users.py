@@ -20,7 +20,7 @@ class UserService:
     async def get_or_404(self, user_id: uuid.UUID) -> User:
         user = await self.repo.get_by_id(user_id)
         if not user:
-            raise NotFoundError("User not found")
+            raise NotFoundError("Пользователь не найден")
         return user
 
     async def list_all(
@@ -32,11 +32,11 @@ class UserService:
         self, data: UserCreateRequest, actor_id: uuid.UUID | None, actor_ip: str | None
     ) -> tuple[User, str]:
         if await self.repo.get_by_username(data.username):
-            raise ConflictError("Username already exists")
+            raise ConflictError("Такой логин уже занят")
         if data.role == UserRole.USER.value and data.org_id is None:
-            raise ValidationError("USER must belong to an organization")
+            raise ValidationError("Пользователь с ролью USER должен быть привязан к организации")
         if data.role in (UserRole.ADMIN.value, UserRole.ROOT.value) and data.org_id is not None:
-            raise ValidationError("ADMIN/ROOT must not belong to an organization")
+            raise ValidationError("ADMIN/ROOT не должны быть привязаны к организации")
 
         password = data.password or generate_password()
         user = User(
@@ -83,7 +83,7 @@ class UserService:
     ) -> None:
         user = await self.get_or_404(user_id)
         if user.role == UserRole.ROOT.value and await self.repo.count_by_role("ROOT") <= 1:
-            raise ConflictError("Cannot delete the last ROOT user")
+            raise ConflictError("Нельзя удалить последнего пользователя с ролью ROOT")
         await self.repo.delete(user)
         self.audit.log(
             actor_user_id=actor_id, actor_ip=actor_ip, action="DELETE",

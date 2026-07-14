@@ -24,7 +24,7 @@ class ServerService:
     async def get_or_404(self, server_id: uuid.UUID) -> Server:
         server = await self.repo.get_by_id(server_id)
         if not server:
-            raise NotFoundError("Server not found")
+            raise NotFoundError("Сервер не найден")
         return server
 
     async def list_all(self) -> list[Server]:
@@ -140,7 +140,10 @@ class ServerService:
     ) -> None:
         server = await self.get_or_404(server_id)
         if await self.repo.is_linked_to_org(server_id):
-            raise ConflictError("Cannot delete a server linked to an organization")
+            raise ConflictError(
+                "Нельзя удалить сервер, привязанный к организации — сначала отвяжите его "
+                "на странице «Организации»"
+            )
         await self.repo.delete(server)
         self.audit.log(
             actor_user_id=actor_id, actor_ip=actor_ip, action="DELETE",

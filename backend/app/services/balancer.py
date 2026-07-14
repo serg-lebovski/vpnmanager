@@ -29,7 +29,10 @@ def select_best_server(eligible: list[tuple[Server, int]]) -> Server:
     """Чистая функция выбора: score = active/weight, минимальный score,
     при равенстве — меньший active, затем случайный (раздел 8.2)."""
     if not eligible:
-        raise NoAvailableServerError("No server available for this organization")
+        raise NoAvailableServerError(
+            "Нет доступного сервера для этой организации — привяжите к ней рабочий "
+            "(ONLINE) сервер на странице «Организации»"
+        )
 
     min_score = min(active / server.weight for server, active in eligible)
     best = [

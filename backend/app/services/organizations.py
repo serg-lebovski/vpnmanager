@@ -23,7 +23,7 @@ class OrganizationService:
     async def get_or_404(self, org_id: uuid.UUID) -> Organization:
         org = await self.repo.get_by_id(org_id)
         if not org:
-            raise NotFoundError("Organization not found")
+            raise NotFoundError("Организация не найдена")
         return org
 
     async def list_all(self) -> list[Organization]:
@@ -33,7 +33,7 @@ class OrganizationService:
         self, data: OrganizationCreateRequest, actor_id: uuid.UUID | None, actor_ip: str | None
     ) -> Organization:
         if await self.repo.get_by_name(data.name):
-            raise ConflictError("Organization name already exists")
+            raise ConflictError("Организация с таким названием уже существует")
         org = Organization(name=data.name, auto_cleanup_days=data.auto_cleanup_days)
         self.repo.add(org)
         await self.session.flush()
@@ -70,7 +70,7 @@ class OrganizationService:
     ) -> None:
         org = await self.get_or_404(org_id)
         if await self.repo.count_users(org_id) > 0:
-            raise ConflictError("Cannot delete organization with users")
+            raise ConflictError("Нельзя удалить организацию, в которой есть пользователи")
         await self.repo.delete(org)
         self.audit.log(
             actor_user_id=actor_id, actor_ip=actor_ip, action="DELETE",

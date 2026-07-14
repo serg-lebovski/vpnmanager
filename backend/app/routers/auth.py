@@ -31,7 +31,7 @@ async def login(
     try:
         await check_rate_limit(f"ratelimit:login:{ip}", settings.login_rate_limit)
     except RateLimitExceeded as exc:
-        raise RateLimitedError("Too many login attempts, try again later") from exc
+        raise RateLimitedError("Слишком много попыток входа, повторите позже") from exc
 
     user = await AuthService(session).authenticate(data.username, data.password, ip)
 
