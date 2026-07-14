@@ -2,7 +2,7 @@ import base64
 
 import pytest
 
-from app.providers.base import ProviderUnreachable
+from app.providers.base import ProviderAuthError, ProviderUnreachable
 from app.providers.detector import UNSUPPORTED_MESSAGE, ServerDetector
 from app.providers.ssh_utils import CommandResult, SSHCredentials
 
@@ -41,20 +41,32 @@ def fail(stderr: str = "") -> CommandResult:
 class FakeSSHRunner:
     """Отвечает на команды по точному совпадению argv; неизвестные команды -> провал."""
 
-    def __init__(self, responses: dict[tuple, CommandResult], unreachable: bool = False) -> None:
+    def __init__(
+        self,
+        responses: dict[tuple, CommandResult],
+        unreachable: bool = False,
+        raise_error: Exception | None = None,
+    ) -> None:
         self._responses = responses
         self._unreachable = unreachable
+        self._raise_error = raise_error
 
     async def run_simple(self, argv: list[str], timeout: float = 20.0) -> CommandResult:
         if self._unreachable:
             raise ProviderUnreachable("ssh unreachable")
+        if self._raise_error:
+            raise self._raise_error
         key = tuple(argv)
         return self._responses.get(key, fail("command not mocked"))
 
 
-def make_detector(responses: dict[tuple, CommandResult], unreachable: bool = False) -> ServerDetector:
+def make_detector(
+    responses: dict[tuple, CommandResult],
+    unreachable: bool = False,
+    raise_error: Exception | None = None,
+) -> ServerDetector:
     creds = SSHCredentials(host="1.2.3.4", port=22, username="root", password="pw")
-    runner = FakeSSHRunner(responses, unreachable=unreachable)
+    runner = FakeSSHRunner(responses, unreachable=unreachable, raise_error=raise_error)
     return ServerDetector(creds, ssh_client=runner)
 
 
@@ -64,6 +76,16 @@ async def test_ssh_unreachable():
     result = await detector.detect()
     assert result.status == "UNREACHABLE"
     assert result.detection_error
+
+
+@pytest.mark.asyncio
+async def test_ssh_auth_failure_does_not_raise():
+    """Регрессия: неверный пароль/ключ приводил к необработанному ProviderAuthError
+    и 500 при добавлении сервера, вместо аккуратного статуса UNREACHABLE."""
+    detector = make_detector({}, raise_error=ProviderAuthError("SSH auth failed for 1.2.3.4"))
+    result = await detector.detect()
+    assert result.status == "UNREACHABLE"
+    assert "auth failed" in result.detection_error
 
 
 @pytest.mark.asyncio

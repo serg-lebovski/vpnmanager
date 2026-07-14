@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Protocol
 
-from app.providers.base import ProviderUnreachable
+from app.providers.base import ProviderError
 from app.providers.ssh_utils import CommandResult, SSHClient, SSHCredentials
 
 PRIORITY = ("wg_easy", "amnezia_wg", "wireguard")
@@ -68,7 +68,10 @@ class ServerDetector:
     async def detect(self) -> DetectionResult:
         try:
             await self._ssh.run_simple(["true"], timeout=20.0)
-        except ProviderUnreachable as exc:
+        except ProviderError as exc:
+            # Недоступен хост, неверный пароль/ключ и т.п. — по разделу 5.2 ТЗ
+            # любой провал SSH-подключения даёт UNREACHABLE с текстом ошибки,
+            # а не падение запроса (ProviderAuthError — тоже ProviderError).
             return DetectionResult(status="UNREACHABLE", detection_error=str(exc))
 
         found: dict[str, DetectionResult] = {}
