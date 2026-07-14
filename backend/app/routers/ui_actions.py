@@ -82,6 +82,29 @@ def _csrf(request: Request) -> str:
     return request.cookies.get(CSRF_COOKIE_NAME, "")
 
 
+def _render_with_alert(
+    request: Request,
+    content_template: str,
+    content_context: dict,
+    error: str | None = None,
+    message: str | None = None,
+) -> HTMLResponse:
+    """HTMX-фрагмент = алерт (out-of-band, #action-alert) + обновлённый контент.
+
+    Ошибки бизнес-логики (AppError) не должны молча теряться: если вернуть их как
+    HTTP 4xx, HTMX по умолчанию не свапнет ответ и кнопка будет выглядеть как
+    "ничего не делает". Поэтому такие ошибки перехватываются в роутере и рендерятся
+    как видимый алерт в теле 200-го ответа, рядом с (неизменившимся) списком."""
+    content_html = templates.env.get_template(content_template).render(
+        {"request": request, **content_context}
+    )
+    alert_html = templates.env.get_template("shared/_alert.html").render(
+        {"request": request, "error": error, "message": message}
+    )
+    headers = {"X-Action-Error": "1"} if error else {}
+    return HTMLResponse(alert_html + content_html, headers=headers)
+
+
 @router.post("/servers/add")
 async def add_server(
     request: Request,
@@ -95,15 +118,19 @@ async def add_server(
     current_user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ) -> Response:
-    data = ServerCreateRequest(
-        name=name, endpoint=endpoint, ssh_port=ssh_port, ssh_user=ssh_user,
-        ssh_private_key=ssh_private_key or None, ssh_password=ssh_password or None,
-        wg_easy_password=wg_easy_password or None,
-    )
-    await ServerService(session).create(data, current_user.id, client_ip(request))
+    error = None
+    try:
+        data = ServerCreateRequest(
+            name=name, endpoint=endpoint, ssh_port=ssh_port, ssh_user=ssh_user,
+            ssh_private_key=ssh_private_key or None, ssh_password=ssh_password or None,
+            wg_easy_password=wg_easy_password or None,
+        )
+        await ServerService(session).create(data, current_user.id, client_ip(request))
+    except AppError as exc:
+        error = str(exc)
     servers = await ServerService(session).list_all()
-    return templates.TemplateResponse(
-        request, "servers/_table.html", {"servers": servers, "csrf_token": _csrf(request)}
+    return _render_with_alert(
+        request, "servers/_table.html", {"servers": servers, "csrf_token": _csrf(request)}, error=error
     )
 
 
@@ -112,9 +139,15 @@ async def detect_server(
     server_id: uuid.UUID, request: Request,
     current_user: User = Depends(require_admin), session: AsyncSession = Depends(get_db),
 ) -> Response:
-    await ServerService(session).redetect(server_id, current_user.id, client_ip(request))
+    error = None
+    try:
+        await ServerService(session).redetect(server_id, current_user.id, client_ip(request))
+    except AppError as exc:
+        error = str(exc)
     servers = await ServerService(session).list_all()
-    return templates.TemplateResponse(request, "servers/_table.html", {"servers": servers, "csrf_token": _csrf(request)})
+    return _render_with_alert(
+        request, "servers/_table.html", {"servers": servers, "csrf_token": _csrf(request)}, error=error
+    )
 
 
 @router.post("/servers/{server_id}/test")
@@ -122,9 +155,15 @@ async def test_server(
     server_id: uuid.UUID, request: Request,
     current_user: User = Depends(require_admin), session: AsyncSession = Depends(get_db),
 ) -> Response:
-    await ServerService(session).test(server_id)
+    error = None
+    try:
+        await ServerService(session).test(server_id)
+    except AppError as exc:
+        error = str(exc)
     servers = await ServerService(session).list_all()
-    return templates.TemplateResponse(request, "servers/_table.html", {"servers": servers, "csrf_token": _csrf(request)})
+    return _render_with_alert(
+        request, "servers/_table.html", {"servers": servers, "csrf_token": _csrf(request)}, error=error
+    )
 
 
 @router.delete("/servers/{server_id}")
@@ -132,9 +171,15 @@ async def delete_server(
     server_id: uuid.UUID, request: Request,
     current_user: User = Depends(require_admin), session: AsyncSession = Depends(get_db),
 ) -> Response:
-    await ServerService(session).delete(server_id, current_user.id, client_ip(request))
+    error = None
+    try:
+        await ServerService(session).delete(server_id, current_user.id, client_ip(request))
+    except AppError as exc:
+        error = str(exc)
     servers = await ServerService(session).list_all()
-    return templates.TemplateResponse(request, "servers/_table.html", {"servers": servers, "csrf_token": _csrf(request)})
+    return _render_with_alert(
+        request, "servers/_table.html", {"servers": servers, "csrf_token": _csrf(request)}, error=error
+    )
 
 
 @router.post("/organizations/add")
@@ -145,11 +190,15 @@ async def add_org(
     current_user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ) -> Response:
-    data = OrganizationCreateRequest(
-        name=name, auto_cleanup_days=int(auto_cleanup_days) if auto_cleanup_days else None
-    )
-    await OrganizationService(session).create(data, current_user.id, client_ip(request))
-    return await _render_orgs_table(request, session)
+    error = None
+    try:
+        data = OrganizationCreateRequest(
+            name=name, auto_cleanup_days=int(auto_cleanup_days) if auto_cleanup_days else None
+        )
+        await OrganizationService(session).create(data, current_user.id, client_ip(request))
+    except AppError as exc:
+        error = str(exc)
+    return await _render_orgs_table(request, session, error=error)
 
 
 @router.put("/organizations/{org_id}/servers")
@@ -158,10 +207,14 @@ async def set_org_servers(
     server_ids: list[uuid.UUID] = Form(default=[]),
     current_user: User = Depends(require_admin), session: AsyncSession = Depends(get_db),
 ) -> Response:
-    await OrganizationService(session).set_servers(
-        org_id, server_ids, current_user.id, client_ip(request)
-    )
-    return await _render_orgs_table(request, session)
+    error = None
+    try:
+        await OrganizationService(session).set_servers(
+            org_id, server_ids, current_user.id, client_ip(request)
+        )
+    except AppError as exc:
+        error = str(exc)
+    return await _render_orgs_table(request, session, error=error)
 
 
 @router.delete("/organizations/{org_id}")
@@ -169,11 +222,17 @@ async def delete_org(
     org_id: uuid.UUID, request: Request,
     current_user: User = Depends(require_admin), session: AsyncSession = Depends(get_db),
 ) -> Response:
-    await OrganizationService(session).delete(org_id, current_user.id, client_ip(request))
-    return await _render_orgs_table(request, session)
+    error = None
+    try:
+        await OrganizationService(session).delete(org_id, current_user.id, client_ip(request))
+    except AppError as exc:
+        error = str(exc)
+    return await _render_orgs_table(request, session, error=error)
 
 
-async def _render_orgs_table(request: Request, session: AsyncSession) -> Response:
+async def _render_orgs_table(
+    request: Request, session: AsyncSession, error: str | None = None
+) -> Response:
     orgs = await OrganizationService(session).list_all()
     all_servers = await ServerService(session).list_all()
     org_repo = OrganizationRepository(session)
@@ -181,9 +240,10 @@ async def _render_orgs_table(request: Request, session: AsyncSession) -> Respons
     for org in orgs:
         server_ids = set(await org_repo.list_server_ids(org.id))
         orgs_view.append({"id": org.id, "name": org.name, "auto_cleanup_days": org.auto_cleanup_days, "server_ids": server_ids})
-    return templates.TemplateResponse(
+    return _render_with_alert(
         request, "organizations/_table.html",
         {"orgs": orgs_view, "all_servers": all_servers, "csrf_token": _csrf(request)},
+        error=error,
     )
 
 
@@ -197,12 +257,17 @@ async def add_user(
     current_user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ) -> Response:
-    data = UserCreateRequest(
-        username=username, full_name=full_name, role=role,
-        org_id=uuid.UUID(org_id) if org_id else None,
-    )
-    user, password = await UserService(session).create(data, current_user.id, client_ip(request))
-    return await _render_users_table(request, session, username=user.username, password=password)
+    error, message = None, None
+    try:
+        data = UserCreateRequest(
+            username=username, full_name=full_name, role=role,
+            org_id=uuid.UUID(org_id) if org_id else None,
+        )
+        user, password = await UserService(session).create(data, current_user.id, client_ip(request))
+        message = _access_message(request, user.username, password)
+    except AppError as exc:
+        error = str(exc)
+    return await _render_users_table(request, session, error=error, message=message)
 
 
 @router.post("/users/{user_id}/reset-password")
@@ -210,10 +275,15 @@ async def reset_password(
     user_id: uuid.UUID, request: Request,
     current_user: User = Depends(require_admin), session: AsyncSession = Depends(get_db),
 ) -> Response:
-    service = UserService(session)
-    user = await service.get_or_404(user_id)
-    password = await service.reset_password(user_id, current_user.id, client_ip(request))
-    return await _render_users_table(request, session, username=user.username, password=password)
+    error, message = None, None
+    try:
+        service = UserService(session)
+        user = await service.get_or_404(user_id)
+        password = await service.reset_password(user_id, current_user.id, client_ip(request))
+        message = _access_message(request, user.username, password)
+    except AppError as exc:
+        error = str(exc)
+    return await _render_users_table(request, session, error=error, message=message)
 
 
 @router.delete("/users/{user_id}")
@@ -221,15 +291,28 @@ async def delete_user(
     user_id: uuid.UUID, request: Request,
     current_user: User = Depends(require_admin), session: AsyncSession = Depends(get_db),
 ) -> Response:
-    await UserService(session).delete(user_id, current_user.id, client_ip(request))
-    return await _render_users_table(request, session)
+    error = None
+    try:
+        await UserService(session).delete(user_id, current_user.id, client_ip(request))
+    except AppError as exc:
+        error = str(exc)
+    return await _render_users_table(request, session, error=error)
+
+
+def _access_message(request: Request, username: str, password: str) -> str:
+    login_url = f"{request.url.scheme}://{request.url.netloc}/login"
+    return (
+        f"Доступ для <strong>{username}</strong> — передайте пользователю "
+        f"(повторно не показывается):<br>URL: <code>{login_url}</code>, "
+        f"логин: <code>{username}</code>, пароль: <code>{password}</code>"
+    )
 
 
 async def _render_users_table(
     request: Request,
     session: AsyncSession,
-    username: str | None = None,
-    password: str | None = None,
+    error: str | None = None,
+    message: str | None = None,
 ) -> Response:
     rows = await UserService(session).list_all()
     org_repo = OrganizationRepository(session)
@@ -239,15 +322,11 @@ async def _render_users_table(
     for user, count in rows:
         user.configs_count = count  # type: ignore[attr-defined]
         users_view.append((user, org_by_id.get(user.org_id) if user.org_id else None))
-
-    table_html = templates.env.get_template("users/_table.html").render(
-        {"request": request, "users": users_view, "csrf_token": _csrf(request)}
+    return _render_with_alert(
+        request, "users/_table.html",
+        {"users": users_view, "csrf_token": _csrf(request)},
+        error=error, message=message,
     )
-    login_url = f"{request.url.scheme}://{request.url.netloc}/login"
-    alert_html = templates.env.get_template("users/_password_alert.html").render(
-        {"request": request, "username": username, "password": password, "login_url": login_url}
-    )
-    return HTMLResponse(alert_html + table_html)
 
 
 @router.post("/my-configs/add")
@@ -258,9 +337,13 @@ async def add_my_config(
     current_user: User = Depends(require_any),
     session: AsyncSession = Depends(get_db),
 ) -> Response:
-    data = ConfigCreateRequest(device_type=device_type, label=label)
-    await ConfigService(session).create(data, current_user, client_ip(request))
-    return await _render_configs_list(request, current_user, session)
+    error = None
+    try:
+        data = ConfigCreateRequest(device_type=device_type, label=label)
+        await ConfigService(session).create(data, current_user, client_ip(request))
+    except AppError as exc:
+        error = str(exc)
+    return await _render_configs_list(request, current_user, session, error=error)
 
 
 @router.delete("/my-configs/{config_id}")
@@ -268,8 +351,12 @@ async def delete_my_config(
     config_id: uuid.UUID, request: Request,
     current_user: User = Depends(require_any), session: AsyncSession = Depends(get_db),
 ) -> Response:
-    await ConfigService(session).delete(config_id, current_user, client_ip(request))
-    return await _render_configs_list(request, current_user, session)
+    error = None
+    try:
+        await ConfigService(session).delete(config_id, current_user, client_ip(request))
+    except AppError as exc:
+        error = str(exc)
+    return await _render_configs_list(request, current_user, session, error=error)
 
 
 @router.post("/my-configs/{config_id}/recreate")
@@ -277,8 +364,12 @@ async def recreate_my_config(
     config_id: uuid.UUID, request: Request,
     current_user: User = Depends(require_any), session: AsyncSession = Depends(get_db),
 ) -> Response:
-    await ConfigService(session).recreate(config_id, current_user, client_ip(request))
-    return await _render_configs_list(request, current_user, session)
+    error = None
+    try:
+        await ConfigService(session).recreate(config_id, current_user, client_ip(request))
+    except AppError as exc:
+        error = str(exc)
+    return await _render_configs_list(request, current_user, session, error=error)
 
 
 @router.get("/my-configs/{config_id}/download")
@@ -290,8 +381,10 @@ async def download_my_config(
     return RedirectResponse(f"/d/{token.token}", status_code=303)
 
 
-async def _render_configs_list(request: Request, current_user: User, session: AsyncSession) -> Response:
+async def _render_configs_list(
+    request: Request, current_user: User, session: AsyncSession, error: str | None = None
+) -> Response:
     configs = await ConfigService(session).list_all(current_user, None, None, None)
-    return templates.TemplateResponse(
-        request, "configs/_list.html", {"configs": configs, "csrf_token": _csrf(request)}
+    return _render_with_alert(
+        request, "configs/_list.html", {"configs": configs, "csrf_token": _csrf(request)}, error=error
     )

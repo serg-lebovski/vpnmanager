@@ -6,6 +6,7 @@
     <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addServerModal">Добавить сервер</button>
 </div>
 
+<div id="action-alert"></div>
 <div id="servers-table">
     {% include "servers/_table.html" %}
 </div>
@@ -13,7 +14,7 @@
 <div class="modal fade" id="addServerModal" tabindex="-1">
   <div class="modal-dialog">
     <div class="modal-content">
-      <form hx-post="/servers/add" hx-target="#servers-table" hx-swap="innerHTML" hx-on::after-request="if(event.detail.successful) bootstrap.Modal.getInstance(document.getElementById('addServerModal')).hide()">
+      <form hx-post="/servers/add" hx-target="#servers-table" hx-swap="innerHTML" hx-on::after-request="if(event.detail.successful && !event.detail.xhr.getResponseHeader('X-Action-Error')) bootstrap.Modal.getInstance(document.getElementById('addServerModal')).hide()">
         <div class="modal-header"><h5 class="modal-title">Новый сервер</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
         <div class="modal-body">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
