@@ -1,9 +1,16 @@
 import os
+import tempfile
 
 os.environ.setdefault("ENCRYPTION_KEY", "IYFh6Tor_uUzWURqR5s2NoJ04bmgXxMFN7sMBAmnwsE=")
 os.environ.setdefault("SESSION_SECRET", "test-session-secret")
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost:5432/test")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
+# Дефолт settings.ssh_known_hosts_path = "/app/.ssh/known_hosts" — на Windows-машине
+# разработчика pathlib трактует это как C:\app\... и реально создаёт директорию.
+# Тесты, которым не важен конкретный путь, используют tmp вместо продового /app.
+os.environ.setdefault(
+    "SSH_KNOWN_HOSTS_PATH", os.path.join(tempfile.gettempdir(), "vpnmanager-test-known-hosts")
+)
 
 import pytest_asyncio  # noqa: E402
 from sqlalchemy.ext.asyncio import (  # noqa: E402

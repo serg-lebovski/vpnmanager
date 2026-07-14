@@ -1,7 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, Form, Request, Response
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -201,8 +201,8 @@ async def add_user(
         username=username, full_name=full_name, role=role,
         org_id=uuid.UUID(org_id) if org_id else None,
     )
-    await UserService(session).create(data, current_user.id, client_ip(request))
-    return await _render_users_table(request, session)
+    user, password = await UserService(session).create(data, current_user.id, client_ip(request))
+    return await _render_users_table(request, session, username=user.username, password=password)
 
 
 @router.post("/users/{user_id}/reset-password")
@@ -210,8 +210,10 @@ async def reset_password(
     user_id: uuid.UUID, request: Request,
     current_user: User = Depends(require_admin), session: AsyncSession = Depends(get_db),
 ) -> Response:
-    await UserService(session).reset_password(user_id, current_user.id, client_ip(request))
-    return await _render_users_table(request, session)
+    service = UserService(session)
+    user = await service.get_or_404(user_id)
+    password = await service.reset_password(user_id, current_user.id, client_ip(request))
+    return await _render_users_table(request, session, username=user.username, password=password)
 
 
 @router.delete("/users/{user_id}")
@@ -223,7 +225,12 @@ async def delete_user(
     return await _render_users_table(request, session)
 
 
-async def _render_users_table(request: Request, session: AsyncSession) -> Response:
+async def _render_users_table(
+    request: Request,
+    session: AsyncSession,
+    username: str | None = None,
+    password: str | None = None,
+) -> Response:
     rows = await UserService(session).list_all()
     org_repo = OrganizationRepository(session)
     orgs = await org_repo.list_all()
@@ -232,9 +239,15 @@ async def _render_users_table(request: Request, session: AsyncSession) -> Respon
     for user, count in rows:
         user.configs_count = count  # type: ignore[attr-defined]
         users_view.append((user, org_by_id.get(user.org_id) if user.org_id else None))
-    return templates.TemplateResponse(
-        request, "users/_table.html", {"users": users_view, "csrf_token": _csrf(request)}
+
+    table_html = templates.env.get_template("users/_table.html").render(
+        {"request": request, "users": users_view, "csrf_token": _csrf(request)}
     )
+    login_url = f"{request.url.scheme}://{request.url.netloc}/login"
+    alert_html = templates.env.get_template("users/_password_alert.html").render(
+        {"request": request, "username": username, "password": password, "login_url": login_url}
+    )
+    return HTMLResponse(alert_html + table_html)
 
 
 @router.post("/my-configs/add")
