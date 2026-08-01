@@ -3,7 +3,9 @@ import {
   Box,
   Button,
   Chip,
+  CircularProgress,
   Divider,
+  LinearProgress,
   MenuItem,
   Paper,
   Stack,
@@ -38,7 +40,18 @@ const statusColor: Record<string, 'default' | 'success' | 'error' | 'warning'> =
 
 export function ServersPage() {
   const queryClient = useQueryClient();
-  const { data: servers, isLoading } = useQuery({ queryKey: ['servers'], queryFn: fetchServers });
+  const { data: servers, isLoading } = useQuery({
+    queryKey: ['servers'],
+    queryFn: fetchServers,
+    // Пока хотя бы один протокол в процессе установки, поллим статус почаще, чтобы
+    // видеть прогресс без ручного обновления страницы — сама установка идёт по SSH
+    // синхронно на бэкенде и может занимать минуты (apt-get и т.п.).
+    refetchInterval: (query) => {
+      const data = query.state.data as ServerEntity[] | undefined;
+      const hasInstalling = data?.some((server) => server.protocols.some((sp) => sp.status === 'installing'));
+      return hasInstalling ? 3000 : false;
+    },
+  });
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['servers'] });
 
@@ -151,6 +164,7 @@ export function ServersPage() {
           onInstall={(protocol, listenPort, networkCidr) =>
             installMutation.mutate({ serverId: server.id, protocol, listenPort, networkCidr })
           }
+          isInstalling={installMutation.isPending && installMutation.variables?.serverId === server.id}
           onScan={(serverProtocolId) => scanMutation.mutate(serverProtocolId)}
           onDetected={invalidate}
         />
@@ -164,6 +178,7 @@ function ServerCard({
   onDelete,
   onTest,
   onInstall,
+  isInstalling,
   onScan,
   onDetected,
 }: {
@@ -171,6 +186,7 @@ function ServerCard({
   onDelete: () => void;
   onTest: () => void;
   onInstall: (protocol: VpnProtocol, listenPort: number, networkCidr: string) => void;
+  isInstalling: boolean;
   onScan: (serverProtocolId: string) => void;
   onDetected: () => void;
 }) {
@@ -235,23 +251,26 @@ function ServerCard({
       </Typography>
       <Stack spacing={1}>
         {server.protocols.map((sp) => (
-          <Stack key={sp.id} direction="row" spacing={2} alignItems="center">
-            <Chip label={sp.protocol} size="small" />
-            <Chip label={sp.status} size="small" color={statusColor[sp.status]} />
-            <Typography variant="body2">
-              порт {sp.listenPort}, сеть {sp.networkCidr}
-            </Typography>
-            {sp.lastError && (
-              <Typography variant="body2" color="error">
-                {sp.lastError}
+          <Box key={sp.id}>
+            <Stack direction="row" spacing={2} alignItems="center">
+              <Chip label={sp.protocol} size="small" />
+              <Chip label={sp.status} size="small" color={statusColor[sp.status]} />
+              <Typography variant="body2">
+                порт {sp.listenPort}, сеть {sp.networkCidr}
               </Typography>
-            )}
-            {sp.status === 'active' && (
-              <Button size="small" onClick={() => onScan(sp.id)}>
-                Сканировать/импортировать peers
-              </Button>
-            )}
-          </Stack>
+              {sp.lastError && (
+                <Typography variant="body2" color="error">
+                  {sp.lastError}
+                </Typography>
+              )}
+              {sp.status === 'active' && (
+                <Button size="small" onClick={() => onScan(sp.id)}>
+                  Сканировать/импортировать peers
+                </Button>
+              )}
+            </Stack>
+            {sp.status === 'installing' && <LinearProgress sx={{ mt: 1 }} />}
+          </Box>
         ))}
         {server.protocols.length === 0 && <Typography variant="body2">Протоколы ещё не устанавливались</Typography>}
       </Stack>
@@ -279,10 +298,21 @@ function ServerCard({
           sx={{ width: 120 }}
         />
         <TextField label="Сеть (CIDR)" value={networkCidr} onChange={(e) => setNetworkCidr(e.target.value)} sx={{ width: 160 }} />
-        <Button variant="outlined" onClick={() => onInstall(protocol, listenPort, networkCidr)}>
-          Установить
+        <Button
+          variant="outlined"
+          disabled={isInstalling}
+          startIcon={isInstalling ? <CircularProgress size={16} /> : undefined}
+          onClick={() => onInstall(protocol, listenPort, networkCidr)}
+        >
+          {isInstalling ? 'Установка...' : 'Установить'}
         </Button>
       </Stack>
+      {isInstalling && (
+        <Typography variant="body2" color="text.secondary" mt={1}>
+          Идёт установка по SSH — может занять несколько минут (особенно AmneziaWG, ставится из PPA). Статус
+          протокола обновляется автоматически.
+        </Typography>
+      )}
     </Paper>
   );
 }

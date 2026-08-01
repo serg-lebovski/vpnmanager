@@ -20,17 +20,40 @@ export interface ExecResult {
 export class SshService {
   private readonly logger = new Logger(SshService.name);
 
+  // На части хостинг-провайдеров SSH-демон под нагрузкой (сканирующие боты, ограничение
+  // MaxStartups) изредка обрывает соединение ещё до завершения авторизации даже при
+  // верных учётных данных — повторная попытка почти всегда проходит. Поэтому подключение
+  // ретраится отдельно от самой полезной нагрузки fn (её не имеет смысла повторять при
+  // ошибке — она может быть не идемпотентна).
+  private async connectWithRetry(params: SshConnectionParams, attempts = 3): Promise<NodeSSH> {
+    let lastError: Error | undefined;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      const ssh = new NodeSSH();
+      try {
+        await ssh.connect({
+          host: params.host,
+          port: params.port,
+          username: params.username,
+          password: params.authType === SshAuthType.PASSWORD ? params.secret : undefined,
+          privateKey: params.authType === SshAuthType.PRIVATE_KEY ? params.secret : undefined,
+          readyTimeout: 15000,
+        });
+        return ssh;
+      } catch (error) {
+        lastError = error as Error;
+        ssh.dispose();
+        if (attempt < attempts) {
+          this.logger.warn(`SSH-подключение к ${params.host} не удалось (попытка ${attempt}/${attempts}): ${lastError.message}`);
+          await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
+        }
+      }
+    }
+    throw lastError;
+  }
+
   async withConnection<T>(params: SshConnectionParams, fn: (ssh: NodeSSH) => Promise<T>): Promise<T> {
-    const ssh = new NodeSSH();
+    const ssh = await this.connectWithRetry(params);
     try {
-      await ssh.connect({
-        host: params.host,
-        port: params.port,
-        username: params.username,
-        password: params.authType === SshAuthType.PASSWORD ? params.secret : undefined,
-        privateKey: params.authType === SshAuthType.PRIVATE_KEY ? params.secret : undefined,
-        readyTimeout: 15000,
-      });
       return await fn(ssh);
     } finally {
       ssh.dispose();
