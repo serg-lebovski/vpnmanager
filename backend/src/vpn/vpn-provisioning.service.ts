@@ -8,7 +8,7 @@ import { Server } from '../servers/server.entity';
 import { SshConnectionParams, SshService } from '../ssh/ssh.service';
 import { AmneziaWgDriver } from './amnezia-wg.driver';
 import { assertSupportedCidr } from './network.util';
-import { PeerSpec, ScannedPeer, UpstreamPeerConfig, VpnDriver } from './vpn-driver.interface';
+import { BRIDGE_ROUTE_TABLE, PeerSpec, ScannedPeer, UpstreamPeerConfig, VpnDriver } from './vpn-driver.interface';
 import { WireGuardDriver } from './wireguard.driver';
 
 @Injectable()
@@ -181,10 +181,12 @@ export class VpnProvisioningService {
     await this.sshService.withConnection(connection, (ssh) => driver.disconnectAsClient(ssh, interfaceName));
   }
 
-  // Режим моста: NAT+forwarding на self-сервере — трафик из сети клиентов моста уходит
-  // через upstream-интерфейс вместо обычного egress хоста. Настраивается один раз при
-  // первом подключении upstream (правила ссылаются только на имена интерфейсов, которые
-  // не меняются при последующих переключениях upstream).
+  // Режим моста: NAT+forwarding+policy routing на self-сервере — трафик ИЗ СЕТИ
+  // КЛИЕНТОВ МОСТА (и только он) уходит через upstream-интерфейс вместо обычного
+  // egress хоста; остальной трафик self-сервера (включая его собственную связность —
+  // SSH и т.п.) продолжает идти через основной маршрут без изменений. Настраивается
+  // один раз при первом подключении upstream (правила ссылаются только на имена
+  // интерфейсов, которые не меняются при последующих переключениях upstream).
   async setupBridgeNat(
     selfServer: Server,
     clientNetworkCidr: string,
@@ -203,6 +205,15 @@ export class VpnProvisioningService {
       );
       await this.sshService.execOrThrow(ssh, `iptables -A FORWARD -i ${clientInterfaceName} -o ${upstreamInterfaceName} -j ACCEPT`);
       await this.sshService.execOrThrow(ssh, `iptables -A FORWARD -i ${upstreamInterfaceName} -o ${clientInterfaceName} -j ACCEPT`);
+      // Только пакеты с источником из сети клиентов моста ищут маршрут в отдельной
+      // таблице BRIDGE_ROUTE_TABLE (там upstream — шлюз по умолчанию, см.
+      // connectAsClient); всё остальное на хосте по-прежнему резолвится через main.
+      // Приоритет 100 — заведомо раньше правила main (32766), чтобы это правило
+      // реально сработало раньше отката к обычной таблице.
+      await this.sshService.execOrThrow(
+        ssh,
+        `ip rule add from ${clientNetworkCidr} table ${BRIDGE_ROUTE_TABLE} priority 100`,
+      );
     });
   }
 }

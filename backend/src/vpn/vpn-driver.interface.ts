@@ -3,6 +3,13 @@ import { VpnProtocol } from '../common/enums';
 import { Server } from '../servers/server.entity';
 import { ServerProtocol } from '../servers/server-protocol.entity';
 
+// Отдельная таблица маршрутизации Linux для upstream-подключения моста (см.
+// connectAsClient/setupBridgeNat) — через неё маршрутизируется ТОЛЬКО трафик из сети
+// клиентов моста (по правилу `ip rule from <clientCidr>`), а не весь хост целиком.
+// Число произвольное, лишь бы не пересекалось с зарезервированными main(254)/
+// default(253)/local(255).
+export const BRIDGE_ROUTE_TABLE = 52000;
+
 export interface VpnDriverContext {
   ssh: NodeSSH;
   server: Server;

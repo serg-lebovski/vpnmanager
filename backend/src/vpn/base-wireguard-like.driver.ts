@@ -3,6 +3,7 @@ import { NodeSSH } from 'node-ssh';
 import { SshService } from '../ssh/ssh.service';
 import { gatewayAddress } from './network.util';
 import {
+  BRIDGE_ROUTE_TABLE,
   DetectedInstallation,
   InstallOptions,
   InstallResult,
@@ -189,7 +190,12 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
   // хосте, куда подключён `ssh` (self-сервер моста). Всегда host-based — self-сервер не
   // бывает Docker-контейнером с нашей стороны SSH-подключения.
   async connectAsClient(ssh: NodeSSH, interfaceName: string, config: UpstreamPeerConfig): Promise<void> {
-    const lines: string[] = ['[Interface]', `PrivateKey = ${config.privateKey}`, `Address = ${config.address}`];
+    // Table = off — иначе wg-quick сам подменит маршрут по умолчанию ДЛЯ ВСЕГО ХОСТА
+    // (его штатное поведение при AllowedIPs=0.0.0.0/0), а не только для трафика
+    // клиентов моста. Вместо этого маршрут через upstream добавляется вручную в
+    // отдельную таблицу (см. ниже) — в основной таблице собственная связность
+    // self-сервера остаётся нетронутой.
+    const lines: string[] = ['[Interface]', `PrivateKey = ${config.privateKey}`, `Address = ${config.address}`, 'Table = off'];
     if (config.dns) {
       lines.push(`DNS = ${config.dns}`);
     }
@@ -210,6 +216,13 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
     const encoded = Buffer.from(configText, 'utf8').toString('base64');
     await this.sshService.execOrThrow(ssh, `echo ${encoded} | base64 -d > ${remotePath} && chmod 600 ${remotePath}`);
     await this.sshService.execOrThrow(ssh, `${this.quickBinary} up ${remotePath}`);
+    // `Table = off` означает, что wg-quick не добавил маршрут по умолчанию сам —
+    // делаем это явно, но только в выделенной таблице (реально её использует только
+    // трафик из сети клиентов моста — см. `ip rule` в setupBridgeNat). `replace`, а не
+    // `add`: при каждом переключении upstream интерфейс пересоздаётся (`wg-quick down`
+    // удаляет netdev и вместе с ним — привязанные к нему маршруты), поэтому маршрут
+    // нужно переустанавливать заново при каждом connectAsClient.
+    await this.sshService.execOrThrow(ssh, `ip route replace default dev ${interfaceName} table ${BRIDGE_ROUTE_TABLE}`);
   }
 
   async disconnectAsClient(ssh: NodeSSH, interfaceName: string): Promise<void> {
