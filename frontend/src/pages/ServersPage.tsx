@@ -83,6 +83,10 @@ export function ServersPage() {
       installProtocol(vars.serverId, vars),
     onSuccess: invalidate,
   });
+  const installError =
+    installMutation.isError && installMutation.variables
+      ? { serverId: installMutation.variables.serverId, message: getErrorMessage(installMutation.error, 'Не удалось установить протокол') }
+      : null;
   const scanMutation = useMutation({ mutationFn: scanAndImportPeers, onSuccess: invalidate });
 
   function handleCreateSubmit(event: FormEvent) {
@@ -165,6 +169,7 @@ export function ServersPage() {
             installMutation.mutate({ serverId: server.id, protocol, listenPort, networkCidr })
           }
           isInstalling={installMutation.isPending && installMutation.variables?.serverId === server.id}
+          installError={installError?.serverId === server.id ? installError.message : null}
           onScan={(serverProtocolId) => scanMutation.mutate(serverProtocolId)}
           onDetected={invalidate}
         />
@@ -179,6 +184,7 @@ function ServerCard({
   onTest,
   onInstall,
   isInstalling,
+  installError,
   onScan,
   onDetected,
 }: {
@@ -187,6 +193,7 @@ function ServerCard({
   onTest: () => void;
   onInstall: (protocol: VpnProtocol, listenPort: number, networkCidr: string) => void;
   isInstalling: boolean;
+  installError: string | null;
   onScan: (serverProtocolId: string) => void;
   onDetected: () => void;
 }) {
@@ -313,6 +320,11 @@ function ServerCard({
           Идёт установка по SSH — может занять несколько минут (особенно AmneziaWG, ставится из PPA). Статус
           протокола обновляется автоматически.
         </Typography>
+      )}
+      {installError && !isInstalling && (
+        <Alert severity="error" sx={{ mt: 2 }}>
+          {installError}
+        </Alert>
       )}
     </Paper>
   );

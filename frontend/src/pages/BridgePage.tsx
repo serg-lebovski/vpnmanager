@@ -16,7 +16,7 @@ import { FormEvent, useState } from 'react';
 import { CreateBridgeInput, createBridge, fetchBridges, rebalanceBridge, setBridgeMode, setBridgeUpstream } from '../api/bridges';
 import { getErrorMessage } from '../api/errors';
 import { fetchServers } from '../api/servers';
-import { BridgeEntity, ServerEntity } from '../api/types';
+import { BridgeEntity, ServerEntity, VpnProtocol } from '../api/types';
 
 const statusColor: Record<string, 'default' | 'success' | 'error' | 'warning'> = {
   not_configured: 'default',
@@ -35,6 +35,7 @@ export function BridgePage() {
   const [form, setForm] = useState<CreateBridgeInput>({
     name: 'Мост',
     selfServerId: '',
+    protocol: 'wireguard',
     listenPort: 51821,
     networkCidr: '10.9.0.0/24',
   });
@@ -87,6 +88,17 @@ export function BridgePage() {
                     {s.name} ({s.host})
                   </MenuItem>
                 ))}
+              </TextField>
+              <TextField
+                select
+                label="Протокол для клиентов моста"
+                value={form.protocol}
+                onChange={(e) => setForm({ ...form, protocol: e.target.value as VpnProtocol })}
+                sx={{ minWidth: 200 }}
+                helperText="Если обычный WireGuard блокируется у ваших клиентов — выберите AmneziaWG"
+              >
+                <MenuItem value="wireguard">WireGuard</MenuItem>
+                <MenuItem value="amneziawg">AmneziaWG</MenuItem>
               </TextField>
               <TextField
                 label="Порт"

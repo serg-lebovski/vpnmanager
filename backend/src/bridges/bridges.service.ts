@@ -46,18 +46,18 @@ export class BridgesService {
     selfServer.isSelf = true;
     await this.serversRepository.save(selfServer);
 
-    // Локальный WireGuard-интерфейс для клиентов моста — переиспользуем обычную установку
-    // протокола, как для любого другого сервера.
+    // Клиентский интерфейс моста — переиспользуем обычную установку протокола, как для
+    // любого другого сервера. Протокол выбирается явно (dto.protocol): там, где обычный
+    // WireGuard блокируется/детектится DPI, клиентский хоп тоже должен быть AmneziaWG,
+    // а не только upstream.
     const clientServerProtocol = await this.vpnProvisioningService.installProtocol(
       selfServer.id,
-      // Мост всегда общается с клиентами обычным WireGuard — обфускация нужна только на
-      // втором (upstream) хопе, который клиент не видит.
-      VpnProtocol.WIREGUARD,
+      dto.protocol,
       dto.listenPort,
       dto.networkCidr,
     );
     if (clientServerProtocol.status === ServerProtocolStatus.ERROR) {
-      throw new BadRequestException(`Не удалось поднять локальный WireGuard для моста: ${clientServerProtocol.lastError}`);
+      throw new BadRequestException(`Не удалось поднять локальный интерфейс для моста: ${clientServerProtocol.lastError}`);
     }
 
     const bridge = this.bridgesRepository.create({

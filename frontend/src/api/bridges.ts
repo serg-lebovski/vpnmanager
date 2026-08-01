@@ -1,5 +1,5 @@
 import { apiClient } from './client';
-import { BridgeEntity, BridgeUpstreamMode } from './types';
+import { BridgeEntity, BridgeUpstreamMode, VpnProtocol } from './types';
 
 export async function fetchBridges(): Promise<BridgeEntity[]> {
   const { data } = await apiClient.get<BridgeEntity[]>('/bridges');
@@ -9,6 +9,7 @@ export async function fetchBridges(): Promise<BridgeEntity[]> {
 export interface CreateBridgeInput {
   name: string;
   selfServerId: string;
+  protocol: VpnProtocol;
   listenPort: number;
   networkCidr: string;
 }
