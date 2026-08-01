@@ -1,0 +1,266 @@
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { DataSource, IsNull, Not, Repository } from 'typeorm';
+import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
+import { decryptSecret, encryptSecret } from '../common/encryption.util';
+import { PeerSource, PeerStatus, Role } from '../common/enums';
+import { LoadBalancerService } from '../load-balancer/load-balancer.service';
+import { ServerProtocol } from '../servers/server-protocol.entity';
+import { Server } from '../servers/server.entity';
+import { PeerSpec } from '../vpn/vpn-driver.interface';
+import { VpnProvisioningService } from '../vpn/vpn-provisioning.service';
+import { buildClientConfig } from './config-generator.util';
+import { CreatePeerDto } from './dto/create-peer.dto';
+import { Peer } from './peer.entity';
+import { generatePresharedKey, generateWgKeyPair } from './wg-keypair.util';
+import { hostAddress } from '../vpn/network.util';
+
+@Injectable()
+export class PeersService {
+  constructor(
+    @InjectRepository(Peer) private readonly peersRepository: Repository<Peer>,
+    @InjectRepository(ServerProtocol) private readonly serverProtocolsRepository: Repository<ServerProtocol>,
+    @InjectRepository(Server) private readonly serversRepository: Repository<Server>,
+    @InjectDataSource() private readonly dataSource: DataSource,
+    private readonly loadBalancerService: LoadBalancerService,
+    private readonly vpnProvisioningService: VpnProvisioningService,
+  ) {}
+
+  async findAllForRequester(requester: AuthenticatedUser, organizationId?: string): Promise<Peer[]> {
+    // Системные upstream-peers моста (BRIDGE_UPSTREAM) не показываются в обычных списках —
+    // ими управляет только BridgesService.
+    if (requester.role === Role.SUPER_ADMIN) {
+      return this.peersRepository.find({
+        where: { source: Not(PeerSource.BRIDGE_UPSTREAM), ...(organizationId ? { organizationId } : {}) },
+        order: { createdAt: 'DESC' },
+      });
+    }
+    return this.peersRepository.find({
+      where: { organizationId: requester.organizationId ?? IsNull(), source: Not(PeerSource.BRIDGE_UPSTREAM) },
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  async create(requester: AuthenticatedUser, dto: CreatePeerDto): Promise<Peer> {
+    const organizationId = this.resolveOrganizationId(requester, dto.organizationId);
+
+    const serverProtocol = dto.serverId
+      ? await this.findActiveServerProtocolByServer(dto.serverId, dto.protocol)
+      : await this.loadBalancerService.pickServerProtocol(dto.protocol);
+
+    return this.createInternal(serverProtocol, {
+      organizationId,
+      name: dto.name,
+      source: PeerSource.CREATED,
+      createdByUserId: requester.userId,
+    });
+  }
+
+  // Системный upstream-peer моста на backend-сервере — не привязан к организации, не
+  // виден в обычных списках peers (см. findAllForRequester). Используется BridgesService.
+  async createSystemPeer(serverProtocolId: string, name: string): Promise<Peer> {
+    const serverProtocol = await this.serverProtocolsRepository.findOneOrFail({ where: { id: serverProtocolId } });
+    return this.createInternal(serverProtocol, {
+      organizationId: null,
+      name,
+      source: PeerSource.BRIDGE_UPSTREAM,
+      createdByUserId: null,
+    });
+  }
+
+  private async createInternal(
+    serverProtocol: ServerProtocol,
+    params: { organizationId: string | null; name: string; source: PeerSource; createdByUserId: string | null },
+  ): Promise<Peer> {
+    const { publicKey, privateKey } = generateWgKeyPair();
+    const presharedKey = generatePresharedKey();
+
+    const allowedIp = await this.allocateIp(serverProtocol.id);
+
+    const peer = this.peersRepository.create({
+      organizationId: params.organizationId,
+      serverProtocolId: serverProtocol.id,
+      name: params.name,
+      publicKey,
+      privateKeyEnc: encryptSecret(privateKey),
+      presharedKeyEnc: encryptSecret(presharedKey),
+      allowedIp,
+      source: params.source,
+      status: PeerStatus.ACTIVE,
+      createdByUserId: params.createdByUserId,
+    });
+    const saved = await this.peersRepository.save(peer);
+
+    // Если реальная отправка на сервер не удалась — не оставляем в БД "фантомный" peer,
+    // который выглядит активным, но по факту на сервере не настроен.
+    try {
+      await this.syncServerPeers(serverProtocol.id);
+    } catch (error) {
+      await this.peersRepository.remove(saved);
+      throw error;
+    }
+
+    return saved;
+  }
+
+  async revoke(requester: AuthenticatedUser, id: string): Promise<void> {
+    const peer = await this.findOneScoped(requester, id);
+    await this.revokeInternal(peer);
+  }
+
+  // Отзыв системного upstream-peer моста — без требования "текущего пользователя" и без
+  // org-скоупинга (peer системный). Используется BridgesService при смене upstream.
+  async revokeSystemPeer(id: string): Promise<void> {
+    const peer = await this.peersRepository.findOneOrFail({ where: { id } });
+    await this.revokeInternal(peer);
+  }
+
+  private async revokeInternal(peer: Peer): Promise<void> {
+    const previousStatus = peer.status;
+    peer.status = PeerStatus.REVOKED;
+    await this.peersRepository.save(peer);
+    try {
+      await this.syncServerPeers(peer.serverProtocolId);
+    } catch (error) {
+      peer.status = previousStatus;
+      await this.peersRepository.save(peer);
+      throw error;
+    }
+  }
+
+  async getDownloadableConfig(requester: AuthenticatedUser, id: string): Promise<{ filename: string; content: string }> {
+    const peer = await this.findOneScoped(requester, id);
+    if (!peer.privateKeyEnc) {
+      throw new BadRequestException(
+        'Для этого peer приватный ключ недоступен (импортирован из уже существующей настройки VPN). Отзовите его и создайте новый через сервис.',
+      );
+    }
+    const serverProtocol = await this.serverProtocolsRepository.findOneOrFail({ where: { id: peer.serverProtocolId } });
+    const server = await this.serversRepository.findOneOrFail({ where: { id: serverProtocol.serverId } });
+    const privateKey = decryptSecret(peer.privateKeyEnc);
+    const presharedKey = peer.presharedKeyEnc ? decryptSecret(peer.presharedKeyEnc) : null;
+    const content = buildClientConfig(peer, privateKey, server, serverProtocol, presharedKey);
+    return { filename: `${peer.name.replace(/[^a-zA-Z0-9-_]/g, '_')}.conf`, content };
+  }
+
+  async importScannedPeers(serverProtocolId: string): Promise<number> {
+    const scannedPeers = await this.vpnProvisioningService.scanExistingPeers(serverProtocolId);
+    const existingPublicKeys = new Set(
+      (await this.peersRepository.find({ where: { serverProtocolId } })).map((peer) => peer.publicKey),
+    );
+
+    let importedCount = 0;
+    for (const scanned of scannedPeers) {
+      if (existingPublicKeys.has(scanned.publicKey)) {
+        continue;
+      }
+      const peer = this.peersRepository.create({
+        organizationId: null,
+        serverProtocolId,
+        name: scanned.name || `imported-${scanned.publicKey.slice(0, 8)}`,
+        publicKey: scanned.publicKey,
+        privateKeyEnc: null,
+        presharedKeyEnc: scanned.presharedKey ? encryptSecret(scanned.presharedKey) : null,
+        allowedIp: scanned.allowedIp.split('/')[0],
+        source: PeerSource.IMPORTED,
+        status: PeerStatus.ACTIVE,
+        createdByUserId: null,
+      });
+      await this.peersRepository.save(peer);
+      importedCount += 1;
+    }
+
+    if (importedCount > 0) {
+      await this.bumpNextHostOctetPastAllocated(serverProtocolId);
+    }
+
+    return importedCount;
+  }
+
+  // После импорта peers (созданных не через наш load-balancer/allocateIp) счётчик выдачи
+  // IP на ServerProtocol может отставать от реально занятых адресов — сдвигаем его вперёд,
+  // чтобы новый peer не получил уже занятый адрес.
+  private async bumpNextHostOctetPastAllocated(serverProtocolId: string): Promise<void> {
+    const peers = await this.peersRepository.find({ where: { serverProtocolId } });
+    const maxOctet = peers.reduce((max, peer) => {
+      const lastOctet = Number(peer.allowedIp.split('.').pop());
+      return Number.isFinite(lastOctet) ? Math.max(max, lastOctet) : max;
+    }, 1);
+
+    await this.dataSource.transaction(async (manager) => {
+      const serverProtocol = await manager.findOneOrFail(ServerProtocol, {
+        where: { id: serverProtocolId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (serverProtocol.nextHostOctet <= maxOctet) {
+        serverProtocol.nextHostOctet = maxOctet + 1;
+        await manager.save(serverProtocol);
+      }
+    });
+  }
+
+  private resolveOrganizationId(requester: AuthenticatedUser, requestedOrgId?: string): string {
+    if (requester.role === Role.SUPER_ADMIN) {
+      if (!requestedOrgId) {
+        throw new BadRequestException('Для суперадмина обязателен organizationId');
+      }
+      return requestedOrgId;
+    }
+    if (!requester.organizationId) {
+      throw new ForbiddenException('Пользователь не привязан к организации');
+    }
+    return requester.organizationId;
+  }
+
+  private async findActiveServerProtocolByServer(serverId: string, protocol: CreatePeerDto['protocol']): Promise<ServerProtocol> {
+    const serverProtocol = await this.serverProtocolsRepository.findOne({
+      where: { serverId, protocol },
+    });
+    if (!serverProtocol || serverProtocol.status !== 'active') {
+      throw new BadRequestException('На указанном сервере протокол не установлен или неактивен');
+    }
+    return serverProtocol;
+  }
+
+  private async findOneScoped(requester: AuthenticatedUser, id: string): Promise<Peer> {
+    const peer = await this.peersRepository.findOne({ where: { id } });
+    if (!peer) {
+      throw new NotFoundException('Peer не найден');
+    }
+    if (requester.role !== Role.SUPER_ADMIN && peer.organizationId !== requester.organizationId) {
+      throw new ForbiddenException('Недостаточно прав для доступа к этому peer');
+    }
+    return peer;
+  }
+
+  private async allocateIp(serverProtocolId: string): Promise<string> {
+    return this.dataSource.transaction(async (manager) => {
+      const serverProtocol = await manager.findOneOrFail(ServerProtocol, {
+        where: { id: serverProtocolId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (serverProtocol.nextHostOctet > 254) {
+        throw new BadRequestException('Адресное пространство сети на этом сервере исчерпано');
+      }
+      const octet = serverProtocol.nextHostOctet;
+      serverProtocol.nextHostOctet += 1;
+      await manager.save(serverProtocol);
+      return hostAddress(serverProtocol.networkCidr, octet);
+    });
+  }
+
+  private async syncServerPeers(serverProtocolId: string): Promise<void> {
+    const serverProtocol = await this.serverProtocolsRepository.findOneOrFail({ where: { id: serverProtocolId } });
+    const server = await this.serversRepository.findOneOrFail({ where: { id: serverProtocol.serverId } });
+    const activePeers = await this.peersRepository.find({
+      where: { serverProtocolId, status: PeerStatus.ACTIVE },
+    });
+    const specs: PeerSpec[] = activePeers.map((peer) => ({
+      publicKey: peer.publicKey,
+      presharedKey: peer.presharedKeyEnc ? decryptSecret(peer.presharedKeyEnc) : undefined,
+      allowedIp: peer.allowedIp,
+      name: peer.name,
+    }));
+    await this.vpnProvisioningService.applyPeers(serverProtocol, server, specs);
+  }
+}
