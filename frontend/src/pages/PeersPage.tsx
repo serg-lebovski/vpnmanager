@@ -125,13 +125,20 @@ export function PeersPage() {
                 select
                 label="Сервер (авто, если не выбран)"
                 value={form.serverId || ''}
-                onChange={(e) => setForm({ ...form, serverId: e.target.value || undefined })}
-                sx={{ minWidth: 220 }}
+                onChange={(e) => {
+                  const serverId = e.target.value || undefined;
+                  const selected = servers?.find((s) => s.id === serverId);
+                  // Клиентский интерфейс моста всегда WireGuard — если выбрали self-сервер,
+                  // подставляем протокол сами, иначе комбинация протокол+сервер не найдётся.
+                  setForm({ ...form, serverId, protocol: selected?.isSelf ? 'wireguard' : form.protocol });
+                }}
+                sx={{ minWidth: 240 }}
+                helperText="Сервер с пометкой «Мост» — это self-сервер, peer будет клиентом моста"
               >
                 <MenuItem value="">Автоматически (балансировка)</MenuItem>
                 {servers?.map((s) => (
                   <MenuItem key={s.id} value={s.id}>
-                    {s.name}
+                    {s.isSelf ? `Мост: ${s.name}` : s.name}
                   </MenuItem>
                 ))}
               </TextField>

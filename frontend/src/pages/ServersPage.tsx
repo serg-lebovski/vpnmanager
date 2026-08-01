@@ -211,6 +211,7 @@ function ServerCard({
         <Box>
           <Typography variant="h6">
             {server.name} <Chip size="small" label={server.status} color={statusColor[server.status]} sx={{ ml: 1 }} />
+            {server.isSelf && <Chip size="small" label="Мост (self)" color="info" sx={{ ml: 1 }} />}
           </Typography>
           <Typography variant="body2" color="text.secondary">
             {server.sshUsername}@{server.host}:{server.sshPort} · лимит {server.maxPeers} peers
