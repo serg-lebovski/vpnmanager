@@ -128,9 +128,11 @@ export function PeersPage() {
                 onChange={(e) => {
                   const serverId = e.target.value || undefined;
                   const selected = servers?.find((s) => s.id === serverId);
-                  // Клиентский интерфейс моста всегда WireGuard — если выбрали self-сервер,
-                  // подставляем протокол сами, иначе комбинация протокол+сервер не найдётся.
-                  setForm({ ...form, serverId, protocol: selected?.isSelf ? 'wireguard' : form.protocol });
+                  // У self-сервера обычно только один установленный протокол (тот, что
+                  // выбрали при создании моста — WireGuard или AmneziaWG). Подставляем его
+                  // автоматически, иначе комбинация протокол+сервер может не найтись.
+                  const activeProtocol = selected?.protocols.find((p) => p.status === 'active')?.protocol;
+                  setForm({ ...form, serverId, protocol: activeProtocol ?? form.protocol });
                 }}
                 sx={{ minWidth: 240 }}
                 helperText="Сервер с пометкой «Мост» — это self-сервер, peer будет клиентом моста"
