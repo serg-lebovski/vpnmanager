@@ -60,13 +60,30 @@ export class SshService {
     }
   }
 
-  async exec(ssh: NodeSSH, command: string): Promise<ExecResult> {
+  // Ubuntu периодически сама запускает apt-get (unattended-upgrades) в фоне — если наша
+  // команда апт совпала с ней по времени, получаем "Could not get lock ... apt/lists/lock"
+  // или "dpkg frontend lock". Это не реальная ошибка установки, а гонка за лок, который
+  // почти всегда освобождается за несколько секунд — поэтому ретраим именно такую команду,
+  // а не любую неудачную (обычная ошибка вроде "пакет не найден" ретраить не нужно).
+  private isAptLockError(stderr: string): boolean {
+    return /Could not get lock|dpkg frontend lock|Unable to acquire the dpkg/i.test(stderr);
+  }
+
+  async exec(ssh: NodeSSH, command: string, attempts = 5): Promise<ExecResult> {
     this.logger.debug(`exec: ${command}`);
-    const result = await ssh.execCommand(command, { execOptions: { pty: false } });
-    if (result.code !== 0) {
-      this.logger.warn(`Команда завершилась с кодом ${result.code}: ${command}\n${result.stderr}`);
+    let result: ExecResult;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      result = await ssh.execCommand(command, { execOptions: { pty: false } });
+      if (result.code === 0 || !this.isAptLockError(result.stderr) || attempt === attempts) {
+        break;
+      }
+      this.logger.warn(`apt заблокирован (попытка ${attempt}/${attempts}), повтор через 5с: ${command}`);
+      await new Promise((resolve) => setTimeout(resolve, 5000));
     }
-    return result;
+    if (result!.code !== 0) {
+      this.logger.warn(`Команда завершилась с кодом ${result!.code}: ${command}\n${result!.stderr}`);
+    }
+    return result!;
   }
 
   async execOrThrow(ssh: NodeSSH, command: string): Promise<string> {
