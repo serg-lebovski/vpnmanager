@@ -48,6 +48,7 @@ export class VpnProvisioningService {
     listenPort: number,
     networkCidr: string,
     mtu?: number,
+    interfaceName?: string,
   ): Promise<ServerProtocol> {
     assertSupportedCidr(networkCidr);
     const server = await this.serversRepository.findOne({ where: { id: serverId } });
@@ -55,7 +56,10 @@ export class VpnProvisioningService {
       throw new NotFoundException('Сервер не найден');
     }
 
-    const existing = await this.serverProtocolsRepository.findOne({ where: { serverId, protocol } });
+    // Порт, а не только протокол — на одном self-сервере может стоять несколько мостов с
+    // одним и тем же протоколом (разные порты/сети): без учёта порта второй мост считался
+    // бы "уже установлен" из-за первого.
+    const existing = await this.serverProtocolsRepository.findOne({ where: { serverId, protocol, listenPort } });
     if (existing && existing.status === ServerProtocolStatus.ACTIVE) {
       throw new BadRequestException('Этот протокол уже установлен на сервере');
     }
@@ -79,7 +83,7 @@ export class VpnProvisioningService {
 
     try {
       const result = await this.sshService.withConnection(connection, (ssh) =>
-        driver.install({ ssh, server, serverProtocol }, { listenPort, networkCidr, mtu }),
+        driver.install({ ssh, server, serverProtocol }, { listenPort, networkCidr, mtu, interfaceName }),
       );
       serverProtocol.interfaceName = result.interfaceName;
       serverProtocol.serverPublicKey = result.serverPublicKey;

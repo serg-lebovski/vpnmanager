@@ -108,12 +108,17 @@ export class BridgesService {
     let wireguardClientProtocolId: string | null = null;
     let amneziawgClientProtocolId: string | null = null;
     for (const clientProtocol of dto.clientProtocols) {
+      // Случайное имя интерфейса — не дефолтное wg0/awg0 драйвера: на одном self-сервере
+      // может быть несколько мостов с одним и тем же протоколом (разные порты/сети), и им
+      // нельзя делить один и тот же netdev/файл конфига/файл ключей.
+      const interfaceNamePrefix = clientProtocol.protocol === VpnProtocol.WIREGUARD ? 'wg-br' : 'awg-br';
       const installed = await this.vpnProvisioningService.installProtocol(
         selfServer.id,
         clientProtocol.protocol,
         clientProtocol.listenPort,
         clientProtocol.networkCidr,
         BRIDGE_CLIENT_MTU,
+        `${interfaceNamePrefix}-${randomBytes(3).toString('hex')}`,
       );
       if (installed.status === ServerProtocolStatus.ERROR) {
         throw new BadRequestException(`Не удалось поднять клиентский интерфейс (${clientProtocol.protocol}) для моста: ${installed.lastError}`);

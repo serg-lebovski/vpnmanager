@@ -61,6 +61,17 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
     return `${confDir}/${interfaceName}.conf`;
   }
 
+  // Имя файлов ключей сервера в confDir. По умолчанию ('server_private.key'/
+  // 'server_public.key') — так исторически называются файлы для ЕДИНСТВЕННОГО экземпляра
+  // протокола на сервере (подавляющее большинство случаев, включая уже работающие
+  // production-серверы — менять это имя для них нельзя, иначе applyPeers перестанет
+  // находить существующий приватный ключ). Только когда интерфейс НЕ дефолтный (т.е. это
+  // второй+ экземпляр протокола на одном self-сервере — несколько мостов) — используем имя
+  // интерфейса как префикс, чтобы разные экземпляры не делили один и тот же файл ключа.
+  private keyFilePrefix(interfaceName: string): string {
+    return interfaceName === this.defaultInterfaceName ? 'server' : interfaceName;
+  }
+
   // Определяет исходящий интерфейс для правила MASQUERADE. Для execContainer-протоколов
   // выполняется ВНУТРИ контейнера (у него своя сетевая namespace, интерфейсы хоста там не
   // существуют) — иначе получили бы имя интерфейса хоста и подставили его в конфиг,
@@ -79,15 +90,16 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
   async install(ctx: VpnDriverContext, options: InstallOptions): Promise<InstallResult> {
     await this.ensureClientToolsInstalled(ctx.ssh);
 
-    const interfaceName = this.defaultInterfaceName;
+    const interfaceName = options.interfaceName || this.defaultInterfaceName;
+    const keyPrefix = this.keyFilePrefix(interfaceName);
     await this.sshService.execOrThrow(ctx.ssh, `mkdir -p ${this.confDir} && chmod 700 ${this.confDir}`);
 
     await this.sshService.execOrThrow(
       ctx.ssh,
-      `cd ${this.confDir} && umask 077 && ${this.binary} genkey | tee server_private.key | ${this.binary} pubkey > server_public.key`,
+      `cd ${this.confDir} && umask 077 && ${this.binary} genkey | tee ${keyPrefix}_private.key | ${this.binary} pubkey > ${keyPrefix}_public.key`,
     );
-    const privateKey = await this.sshService.execOrThrow(ctx.ssh, `cat ${this.confDir}/server_private.key`);
-    const serverPublicKey = await this.sshService.execOrThrow(ctx.ssh, `cat ${this.confDir}/server_public.key`);
+    const privateKey = await this.sshService.execOrThrow(ctx.ssh, `cat ${this.confDir}/${keyPrefix}_private.key`);
+    const serverPublicKey = await this.sshService.execOrThrow(ctx.ssh, `cat ${this.confDir}/${keyPrefix}_public.key`);
 
     const obfuscationParams = this.buildObfuscationParams();
     const egressInterface = await this.detectEgressInterface(ctx.ssh, null);
@@ -129,9 +141,10 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
     const execContainer = ctx.serverProtocol.execContainer;
     const confDir = ctx.serverProtocol.remoteConfDir || this.confDir;
     const interfaceName = ctx.serverProtocol.interfaceName;
+    const keyPrefix = this.keyFilePrefix(interfaceName);
     const privateKey = await this.sshService.execOrThrow(
       ctx.ssh,
-      this.buildCommand(`cat ${confDir}/server_private.key`, execContainer),
+      this.buildCommand(`cat ${confDir}/${keyPrefix}_private.key`, execContainer),
     );
 
     // Для протоколов, найденных внутри стороннего Docker-контейнера, не берём на себя
@@ -291,6 +304,7 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
 
     const interfaceName = confPath.split('/').pop()!.replace(/\.conf$/, '');
     const remoteConfDir = confPath.slice(0, confPath.length - `/${interfaceName}.conf`.length) || this.confDir;
+    const keyPrefix = this.keyFilePrefix(interfaceName);
     const privateKey = privateKeyMatch[1];
     const serverPublicKey = await this.sshService.execOrThrow(
       ssh,
@@ -308,7 +322,7 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
       await this.sshService.execOrThrow(
         ssh,
         this.buildCommand(
-          `mkdir -p ${remoteConfDir} && chmod 700 ${remoteConfDir} && umask 077 && echo '${privateKey}' > ${remoteConfDir}/server_private.key && echo '${serverPublicKey}' > ${remoteConfDir}/server_public.key`,
+          `mkdir -p ${remoteConfDir} && chmod 700 ${remoteConfDir} && umask 077 && echo '${privateKey}' > ${remoteConfDir}/${keyPrefix}_private.key && echo '${serverPublicKey}' > ${remoteConfDir}/${keyPrefix}_public.key`,
           execContainer,
         ),
       );
