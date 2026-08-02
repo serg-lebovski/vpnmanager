@@ -13,5 +13,6 @@ import { BridgesService } from './bridges.service';
   imports: [TypeOrmModule.forFeature([Bridge, ServerProtocol, Server, Peer]), PeersModule, VpnModule],
   controllers: [BridgesController],
   providers: [BridgesService],
+  exports: [BridgesService],
 })
 export class BridgesModule {}

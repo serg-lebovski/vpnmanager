@@ -27,6 +27,12 @@ export class PeersController {
     return this.peersService.revoke(user, id);
   }
 
+  // Безвозвратное удаление — только для уже отозванных peers (см. PeersService.purge).
+  @Delete(':id/purge')
+  purge(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+    return this.peersService.purge(user, id);
+  }
+
   @Get(':id/config')
   async downloadConfig(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Res() res: Response) {
     const { filename, content } = await this.peersService.getDownloadableConfig(user, id);

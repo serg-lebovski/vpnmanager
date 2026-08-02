@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { BridgesModule } from '../bridges/bridges.module';
 import { PeersModule } from '../peers/peers.module';
 import { SshModule } from '../ssh/ssh.module';
 import { VpnModule } from '../vpn/vpn.module';
@@ -9,7 +10,7 @@ import { ServersController } from './servers.controller';
 import { ServersService } from './servers.service';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Server, ServerProtocol]), SshModule, VpnModule, PeersModule],
+  imports: [TypeOrmModule.forFeature([Server, ServerProtocol]), SshModule, VpnModule, PeersModule, BridgesModule],
   controllers: [ServersController],
   providers: [ServersService],
   exports: [ServersService],

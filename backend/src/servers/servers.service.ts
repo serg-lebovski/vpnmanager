@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { BridgesService } from '../bridges/bridges.service';
 import { decryptSecret, encryptSecret } from '../common/encryption.util';
 import { ServerStatus, VpnProtocol } from '../common/enums';
 import { PeersService } from '../peers/peers.service';
@@ -19,6 +20,7 @@ export class ServersService {
     private readonly sshService: SshService,
     private readonly vpnProvisioningService: VpnProvisioningService,
     private readonly peersService: PeersService,
+    private readonly bridgesService: BridgesService,
   ) {}
 
   findAll(): Promise<Server[]> {
@@ -49,6 +51,11 @@ export class ServersService {
 
   async remove(id: string): Promise<void> {
     const server = await this.findOneOrFail(id);
+    // Если сервер сейчас служит upstream для какого-то моста — переключаем мост на другой
+    // доступный сервер того же протокола, прежде чем удалять (иначе мост остался бы без
+    // upstream и без возможности исправить это иначе как вручную по SSH).
+    const protocolIds = server.protocols.map((p) => p.id);
+    await this.bridgesService.reassignUpstreamAwayFrom(protocolIds);
     await this.serversRepository.remove(server);
   }
 

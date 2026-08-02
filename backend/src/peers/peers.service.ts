@@ -112,6 +112,17 @@ export class PeersService {
     await this.revokeInternal(peer);
   }
 
+  // Безвозвратное удаление записи — разрешено только для уже отозванных peers (сначала
+  // отзыв, потом удаление; это гарантирует, что peer уже убран с сервера через
+  // syncServerPeers перед тем, как мы потеряем о нём всякую память).
+  async purge(requester: AuthenticatedUser, id: string): Promise<void> {
+    const peer = await this.findOneScoped(requester, id);
+    if (peer.status !== PeerStatus.REVOKED) {
+      throw new BadRequestException('Можно удалить только уже отозванный peer — сначала отзовите его');
+    }
+    await this.peersRepository.remove(peer);
+  }
+
   // Отзыв системного upstream-peer моста — без требования "текущего пользователя" и без
   // org-скоупинга (peer системный). Используется BridgesService при смене upstream.
   async revokeSystemPeer(id: string): Promise<void> {

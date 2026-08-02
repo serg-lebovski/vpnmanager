@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { AuthenticatedUser, CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/enums';
@@ -44,5 +44,11 @@ export class BridgesController {
   @Roles(Role.SUPER_ADMIN)
   rebalance(@Param('id') id: string) {
     return this.bridgesService.rebalanceNow(id);
+  }
+
+  @Delete(':id')
+  @Roles(Role.SUPER_ADMIN)
+  remove(@Param('id') id: string) {
+    return this.bridgesService.remove(id);
   }
 }

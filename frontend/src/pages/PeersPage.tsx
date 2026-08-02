@@ -21,7 +21,7 @@ import { FormEvent, useState } from 'react';
 import { fetchBridges } from '../api/bridges';
 import { getErrorMessage } from '../api/errors';
 import { fetchOrganizations } from '../api/organizations';
-import { CreatePeerInput, createPeer, downloadPeerConfig, fetchPeerQrCodeUrl, fetchPeers, revokePeer } from '../api/peers';
+import { CreatePeerInput, createPeer, downloadPeerConfig, fetchPeerQrCodeUrl, fetchPeers, purgePeer, revokePeer } from '../api/peers';
 import { fetchServers } from '../api/servers';
 import { PeerEntity, VpnProtocol } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
@@ -69,6 +69,11 @@ export function PeersPage() {
 
   const revokeMutation = useMutation({
     mutationFn: revokePeer,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['peers'] }),
+  });
+
+  const purgeMutation = useMutation({
+    mutationFn: purgePeer,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['peers'] }),
   });
 
@@ -232,6 +237,11 @@ export function PeersPage() {
                   {peer.status === 'active' && (
                     <Button size="small" color="error" onClick={() => revokeMutation.mutate(peer.id)}>
                       Отозвать
+                    </Button>
+                  )}
+                  {peer.status === 'revoked' && (
+                    <Button size="small" color="error" onClick={() => purgeMutation.mutate(peer.id)}>
+                      Удалить
                     </Button>
                   )}
                 </TableCell>

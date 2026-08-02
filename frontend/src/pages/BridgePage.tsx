@@ -15,7 +15,16 @@ import {
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, useState } from 'react';
-import { BridgeClientProtocolInput, CreateBridgeInput, createBridge, fetchBridges, rebalanceBridge, setBridgeMode, setBridgeUpstream } from '../api/bridges';
+import {
+  BridgeClientProtocolInput,
+  CreateBridgeInput,
+  createBridge,
+  deleteBridge,
+  fetchBridges,
+  rebalanceBridge,
+  setBridgeMode,
+  setBridgeUpstream,
+} from '../api/bridges';
 import { getErrorMessage } from '../api/errors';
 import { fetchOrganizations } from '../api/organizations';
 import { fetchServers } from '../api/servers';
@@ -41,6 +50,8 @@ export function BridgePage() {
   const { data: organizations } = useQuery({ queryKey: ['organizations'], queryFn: fetchOrganizations });
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['bridges'] });
+
+  const deleteMutation = useMutation({ mutationFn: deleteBridge, onSuccess: invalidate });
 
   const [name, setName] = useState('Мост');
   const [selfServerId, setSelfServerId] = useState('');
@@ -168,6 +179,7 @@ export function BridgePage() {
           servers={servers || []}
           organizationName={organizations?.find((o) => o.id === bridge.organizationId)?.name}
           onChanged={invalidate}
+          onDelete={() => deleteMutation.mutate(bridge.id)}
         />
       ))}
     </Stack>
@@ -221,11 +233,13 @@ function BridgeCard({
   servers,
   organizationName,
   onChanged,
+  onDelete,
 }: {
   bridge: BridgeEntity;
   servers: ServerEntity[];
   organizationName?: string;
   onChanged: () => void;
+  onDelete: () => void;
 }) {
   const [selectedUpstream, setSelectedUpstream] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -296,6 +310,9 @@ function BridgeCard({
           />
           <Button size="small" onClick={() => rebalanceMutation.mutate()} disabled={!bridge.upstreamServerProtocolId}>
             Пересчитать баланс
+          </Button>
+          <Button size="small" color="error" onClick={onDelete}>
+            Удалить
           </Button>
         </Stack>
       </Stack>

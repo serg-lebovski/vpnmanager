@@ -25,6 +25,11 @@ export async function revokePeer(id: string): Promise<void> {
   await apiClient.delete(`/peers/${id}`);
 }
 
+// Безвозвратное удаление — только для уже отозванных peers.
+export async function purgePeer(id: string): Promise<void> {
+  await apiClient.delete(`/peers/${id}/purge`);
+}
+
 export async function downloadPeerConfig(id: string, suggestedName: string): Promise<void> {
   const response = await apiClient.get(`/peers/${id}/config`, { responseType: 'blob' });
   const url = URL.createObjectURL(response.data);

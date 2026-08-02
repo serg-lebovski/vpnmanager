@@ -2,7 +2,7 @@ import { randomBytes } from 'crypto';
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { decryptSecret } from '../common/encryption.util';
 import { BridgeStatus, BridgeUpstreamMode, PeerStatus, Role, ServerProtocolStatus, VpnProtocol } from '../common/enums';
@@ -155,6 +155,60 @@ export class BridgesService {
       const maxTable = bridges.reduce((max, b) => Math.max(max, b.routeTable || 0), FIRST_ROUTE_TABLE - 1);
       return maxTable + 1;
     });
+  }
+
+  // Удаление затрагивает только БД (тот же принцип, что и у ServersService.remove) — сам
+  // wg-quick/awg-quick интерфейс на self-сервере, если был поднят, остаётся жить, пока его
+  // не снимут вручную по SSH. Сначала отзываем системный upstream-peer (реально уберёт
+  // peer с upstream-сервера через SSH), затем удаляем клиентские ServerProtocol — это
+  // каскадом (ON DELETE CASCADE) удалит и сам мост, и все peers, созданные для него.
+  async remove(id: string): Promise<void> {
+    const bridge = await this.findOneOrFail(id);
+    if (bridge.upstreamPeerId) {
+      await this.peersService.revokeSystemPeer(bridge.upstreamPeerId);
+    }
+    const clientProtocolIds = this.clientProtocolIds(bridge);
+    if (clientProtocolIds.length > 0) {
+      await this.serverProtocolsRepository.delete(clientProtocolIds);
+    } else {
+      await this.bridgesRepository.remove(bridge);
+    }
+  }
+
+  // Вызывается ServersService ПЕРЕД удалением сервера: если он сейчас служит upstream для
+  // какого-то моста, переключает мост на другой доступный сервер того же протокола —
+  // иначе после удаления (FK ON DELETE SET NULL) мост остался бы висеть без upstream и без
+  // возможности исправить это иначе как вручную. Best-effort: ошибка по одному мосту не
+  // должна блокировать удаление сервера и остальные мосты.
+  async reassignUpstreamAwayFrom(deadServerProtocolIds: string[]): Promise<void> {
+    if (deadServerProtocolIds.length === 0) {
+      return;
+    }
+    const affected = await this.bridgesRepository.find({
+      where: { upstreamServerProtocolId: In(deadServerProtocolIds) },
+    });
+    for (const bridge of affected) {
+      try {
+        const current = await this.serverProtocolsRepository.findOneOrFail({
+          where: { id: bridge.upstreamServerProtocolId! },
+        });
+        const clientProtocolIds = this.clientProtocolIds(bridge);
+        const candidates = await this.serverProtocolsRepository.find({
+          where: { protocol: current.protocol, status: ServerProtocolStatus.ACTIVE },
+        });
+        const alternative = candidates.find(
+          (sp) => !deadServerProtocolIds.includes(sp.id) && !clientProtocolIds.includes(sp.id),
+        );
+        if (alternative) {
+          this.logger.log(`Сервер удаляется — мост "${bridge.name}" переключается на другой upstream`);
+          await this.setUpstream(bridge.id, alternative.id);
+        } else {
+          this.logger.warn(`Сервер удаляется — для моста "${bridge.name}" не нашлось альтернативного upstream`);
+        }
+      } catch (error) {
+        this.logger.error(`Не удалось переключить upstream моста "${bridge.name}" при удалении сервера: ${(error as Error).message}`);
+      }
+    }
   }
 
   async setMode(bridgeId: string, mode: BridgeUpstreamMode): Promise<Bridge> {

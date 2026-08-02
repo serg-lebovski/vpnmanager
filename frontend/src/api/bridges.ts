@@ -38,3 +38,7 @@ export async function rebalanceBridge(bridgeId: string): Promise<BridgeEntity> {
   const { data } = await apiClient.post<BridgeEntity>(`/bridges/${bridgeId}/rebalance`);
   return data;
 }
+
+export async function deleteBridge(bridgeId: string): Promise<void> {
+  await apiClient.delete(`/bridges/${bridgeId}`);
+}
