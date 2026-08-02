@@ -26,12 +26,19 @@ export interface PeerSpec {
 export interface InstallOptions {
   listenPort: number;
   networkCidr: string;
+  // Явный MTU интерфейса — нужен клиентскому интерфейсу моста: трафик там проходит ЕЩЁ
+  // через один туннель (self-сервер → upstream), и стандартный MTU ~1420 на обоих хопах
+  // приводит к фрагментации/потерям на крупных пакетах (не на мелких — поэтому DNS вроде
+  // бы работает, а страницы грузятся плохо). undefined — обычное поведение по умолчанию
+  // (для одиночных, не-мостовых серверов запас не нужен).
+  mtu?: number;
 }
 
 export interface InstallResult {
   interfaceName: string;
   serverPublicKey: string;
   obfuscationParams?: Record<string, number | string>;
+  mtu?: number;
 }
 
 export interface ScannedPeer {

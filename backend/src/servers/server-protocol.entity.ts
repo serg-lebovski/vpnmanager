@@ -27,6 +27,13 @@ export class ServerProtocol {
   @Column({ name: 'network_cidr' })
   networkCidr: string;
 
+  // Явный MTU интерфейса, если он отличается от дефолтного (нужен клиентскому интерфейсу
+  // моста — трафик проходит ещё через один туннель до upstream, и обоим хопам с обычным
+  // MTU ~1420 не хватает запаса под двойную инкапсуляцию). null — используется поведение
+  // wg-quick/awg-quick по умолчанию.
+  @Column({ type: 'int', nullable: true })
+  mtu: number | null;
+
   @Column({ name: 'next_host_octet', default: 2 })
   nextHostOctet: number;
 

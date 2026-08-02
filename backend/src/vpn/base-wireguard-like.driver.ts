@@ -100,6 +100,7 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
       interfaceName,
       nat: { egressInterface },
       obfuscationParams,
+      mtu: options.mtu,
       peers: [],
     });
     await this.sshService.execOrThrow(
@@ -122,7 +123,7 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
     await this.sshService.execOrThrow(ctx.ssh, `systemctl enable ${this.quickBinary}@${interfaceName}`);
     await this.sshService.execOrThrow(ctx.ssh, `${this.quickBinary} up ${this.confPath(this.confDir, interfaceName)}`);
 
-    return { interfaceName, serverPublicKey, obfuscationParams };
+    return { interfaceName, serverPublicKey, obfuscationParams, mtu: options.mtu };
   }
 
   async applyPeers(ctx: VpnDriverContext, peers: PeerSpec[]): Promise<void> {
@@ -149,6 +150,7 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
       interfaceName,
       nat,
       obfuscationParams: ctx.serverProtocol.obfuscationParams || undefined,
+      mtu: ctx.serverProtocol.mtu || undefined,
       peers,
     });
     const remotePath = this.confPath(confDir, interfaceName);
@@ -357,6 +359,9 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
     // стороннего Docker-контейнера, который сам управляет NAT вне conf-файла).
     nat?: { egressInterface: string };
     obfuscationParams?: Record<string, number | string>;
+    // Явный MTU — нужен клиентскому интерфейсу моста (см. InstallOptions.mtu). undefined —
+    // обычное поведение wg-quick/awg-quick по умолчанию (авто ~1420).
+    mtu?: number;
     peers: PeerSpec[];
   }): string {
     const lines: string[] = [];
@@ -364,6 +369,9 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
     lines.push(`PrivateKey = ${params.privateKey}`);
     lines.push(`Address = ${params.interfaceAddress}`);
     lines.push(`ListenPort = ${params.listenPort}`);
+    if (params.mtu) {
+      lines.push(`MTU = ${params.mtu}`);
+    }
     if (params.obfuscationParams) {
       for (const [key, value] of Object.entries(params.obfuscationParams)) {
         lines.push(`${key} = ${value}`);

@@ -47,6 +47,7 @@ export class VpnProvisioningService {
     protocol: VpnProtocol,
     listenPort: number,
     networkCidr: string,
+    mtu?: number,
   ): Promise<ServerProtocol> {
     assertSupportedCidr(networkCidr);
     const server = await this.serversRepository.findOne({ where: { id: serverId } });
@@ -78,11 +79,12 @@ export class VpnProvisioningService {
 
     try {
       const result = await this.sshService.withConnection(connection, (ssh) =>
-        driver.install({ ssh, server, serverProtocol }, { listenPort, networkCidr }),
+        driver.install({ ssh, server, serverProtocol }, { listenPort, networkCidr, mtu }),
       );
       serverProtocol.interfaceName = result.interfaceName;
       serverProtocol.serverPublicKey = result.serverPublicKey;
       serverProtocol.obfuscationParams = result.obfuscationParams || null;
+      serverProtocol.mtu = result.mtu || null;
       serverProtocol.status = ServerProtocolStatus.ACTIVE;
     } catch (error) {
       serverProtocol.status = ServerProtocolStatus.ERROR;

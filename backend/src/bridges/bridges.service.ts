@@ -18,6 +18,10 @@ import { CreateBridgeDto } from './dto/create-bridge.dto';
 // серверами при каждой проверке.
 const REBALANCE_THRESHOLD = 0.2;
 
+// MTU клиентского интерфейса моста — см. комментарий в create(). Занижен относительно
+// обычного ~1420, чтобы оставить запас под вторую инкапсуляцию (self-сервер → upstream).
+const BRIDGE_CLIENT_MTU = 1280;
+
 @Injectable()
 export class BridgesService {
   private readonly logger = new Logger(BridgesService.name);
@@ -50,11 +54,20 @@ export class BridgesService {
     // любого другого сервера. Протокол выбирается явно (dto.protocol): там, где обычный
     // WireGuard блокируется/детектится DPI, клиентский хоп тоже должен быть AmneziaWG,
     // а не только upstream.
+    //
+    // MTU занижен намеренно (BRIDGE_CLIENT_MTU): трафик клиентов моста проходит ещё через
+    // ОДИН туннель (self-сервер → upstream), и обычный MTU ~1420 на обоих хопах даёт
+    // фрагментацию/потери на крупных пакетах — мелкие (DNS) при этом проходят нормально,
+    // что выглядит как "DNS работает через раз, а сайты — нет". Занижаем сразу при
+    // создании моста, а не только когда назначен upstream, — потому что клиентские
+    // конфиги peers уже будут скачаны с этим MTU и раздать новый после назначения upstream
+    // no сможем.
     const clientServerProtocol = await this.vpnProvisioningService.installProtocol(
       selfServer.id,
       dto.protocol,
       dto.listenPort,
       dto.networkCidr,
+      BRIDGE_CLIENT_MTU,
     );
     if (clientServerProtocol.status === ServerProtocolStatus.ERROR) {
       throw new BadRequestException(`Не удалось поднять локальный интерфейс для моста: ${clientServerProtocol.lastError}`);

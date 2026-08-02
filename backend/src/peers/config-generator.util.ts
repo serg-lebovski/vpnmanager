@@ -14,6 +14,9 @@ export function buildClientConfig(
   lines.push(`PrivateKey = ${privateKey}`);
   lines.push(`Address = ${peer.allowedIp}/32`);
   lines.push(`DNS = ${peer.dns}`);
+  if (serverProtocol.mtu) {
+    lines.push(`MTU = ${serverProtocol.mtu}`);
+  }
   if (serverProtocol.obfuscationParams) {
     for (const [key, value] of Object.entries(serverProtocol.obfuscationParams)) {
       lines.push(`${key} = ${value}`);
