@@ -3,7 +3,6 @@ import { NodeSSH } from 'node-ssh';
 import { SshService } from '../ssh/ssh.service';
 import { gatewayAddress } from './network.util';
 import {
-  BRIDGE_ROUTE_TABLE,
   DetectedInstallation,
   InstallOptions,
   InstallResult,
@@ -191,7 +190,7 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
   // Режим моста: поднимает интерфейс в роли КЛИЕНТА (один [Peer] — upstream-сервер) на
   // хосте, куда подключён `ssh` (self-сервер моста). Всегда host-based — self-сервер не
   // бывает Docker-контейнером с нашей стороны SSH-подключения.
-  async connectAsClient(ssh: NodeSSH, interfaceName: string, config: UpstreamPeerConfig): Promise<void> {
+  async connectAsClient(ssh: NodeSSH, interfaceName: string, config: UpstreamPeerConfig, routeTable: number): Promise<void> {
     // Table = off — иначе wg-quick сам подменит маршрут по умолчанию ДЛЯ ВСЕГО ХОСТА
     // (его штатное поведение при AllowedIPs=0.0.0.0/0), а не только для трафика
     // клиентов моста. Вместо этого маршрут через upstream добавляется вручную в
@@ -224,7 +223,7 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
     // `add`: при каждом переключении upstream интерфейс пересоздаётся (`wg-quick down`
     // удаляет netdev и вместе с ним — привязанные к нему маршруты), поэтому маршрут
     // нужно переустанавливать заново при каждом connectAsClient.
-    await this.sshService.execOrThrow(ssh, `ip route replace default dev ${interfaceName} table ${BRIDGE_ROUTE_TABLE}`);
+    await this.sshService.execOrThrow(ssh, `ip route replace default dev ${interfaceName} table ${routeTable}`);
   }
 
   async disconnectAsClient(ssh: NodeSSH, interfaceName: string): Promise<void> {

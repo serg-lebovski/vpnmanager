@@ -60,8 +60,11 @@ export interface ServerEntity {
 export interface BridgeEntity {
   id: string;
   name: string;
-  clientServerProtocolId: string;
-  clientServerProtocol?: ServerProtocolEntity & { server?: ServerEntity };
+  organizationId: string | null;
+  wireguardClientProtocolId: string | null;
+  wireguardClientProtocol?: (ServerProtocolEntity & { server?: ServerEntity }) | null;
+  amneziawgClientProtocolId: string | null;
+  amneziawgClientProtocol?: (ServerProtocolEntity & { server?: ServerEntity }) | null;
   upstreamMode: BridgeUpstreamMode;
   upstreamServerProtocolId: string | null;
   upstreamServerProtocol?: (ServerProtocolEntity & { server?: ServerEntity }) | null;

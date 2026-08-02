@@ -13,6 +13,12 @@ export class CreatePeerDto {
   @IsOptional()
   serverId?: string;
 
+  // Клиент конкретного моста — взаимоисключимо с serverId. org_admin/org_user могут
+  // указывать только мост своей организации (или общий), иначе 403.
+  @IsUUID()
+  @IsOptional()
+  bridgeId?: string;
+
   // Только для SUPER_ADMIN: создать peer сразу для конкретной организации.
   @IsUUID()
   @IsOptional()

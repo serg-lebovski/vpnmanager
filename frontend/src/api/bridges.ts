@@ -6,12 +6,17 @@ export async function fetchBridges(): Promise<BridgeEntity[]> {
   return data;
 }
 
-export interface CreateBridgeInput {
-  name: string;
-  selfServerId: string;
+export interface BridgeClientProtocolInput {
   protocol: VpnProtocol;
   listenPort: number;
   networkCidr: string;
+}
+
+export interface CreateBridgeInput {
+  name: string;
+  selfServerId: string;
+  organizationId?: string;
+  clientProtocols: BridgeClientProtocolInput[];
 }
 
 export async function createBridge(input: CreateBridgeInput): Promise<BridgeEntity> {

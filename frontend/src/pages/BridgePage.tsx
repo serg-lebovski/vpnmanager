@@ -2,8 +2,10 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
   Divider,
+  FormControlLabel,
   MenuItem,
   Paper,
   Stack,
@@ -13,8 +15,9 @@ import {
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, useState } from 'react';
-import { CreateBridgeInput, createBridge, fetchBridges, rebalanceBridge, setBridgeMode, setBridgeUpstream } from '../api/bridges';
+import { BridgeClientProtocolInput, CreateBridgeInput, createBridge, fetchBridges, rebalanceBridge, setBridgeMode, setBridgeUpstream } from '../api/bridges';
 import { getErrorMessage } from '../api/errors';
+import { fetchOrganizations } from '../api/organizations';
 import { fetchServers } from '../api/servers';
 import { BridgeEntity, ServerEntity, VpnProtocol } from '../api/types';
 
@@ -25,20 +28,25 @@ const statusColor: Record<string, 'default' | 'success' | 'error' | 'warning'> =
   error: 'error',
 };
 
+interface ProtocolRowState {
+  enabled: boolean;
+  listenPort: number;
+  networkCidr: string;
+}
+
 export function BridgePage() {
   const queryClient = useQueryClient();
   const { data: bridges, isLoading } = useQuery({ queryKey: ['bridges'], queryFn: fetchBridges });
   const { data: servers } = useQuery({ queryKey: ['servers'], queryFn: fetchServers });
+  const { data: organizations } = useQuery({ queryKey: ['organizations'], queryFn: fetchOrganizations });
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['bridges'] });
 
-  const [form, setForm] = useState<CreateBridgeInput>({
-    name: 'Мост',
-    selfServerId: '',
-    protocol: 'wireguard',
-    listenPort: 51821,
-    networkCidr: '10.9.0.0/24',
-  });
+  const [name, setName] = useState('Мост');
+  const [selfServerId, setSelfServerId] = useState('');
+  const [organizationId, setOrganizationId] = useState('');
+  const [wireguard, setWireguard] = useState<ProtocolRowState>({ enabled: true, listenPort: 51820, networkCidr: '10.9.0.0/24' });
+  const [amneziawg, setAmneziawg] = useState<ProtocolRowState>({ enabled: false, listenPort: 51821, networkCidr: '10.9.1.0/24' });
   const [createError, setCreateError] = useState<string | null>(null);
 
   const createMutation = useMutation({
@@ -52,83 +60,158 @@ export function BridgePage() {
 
   function handleCreateSubmit(event: FormEvent) {
     event.preventDefault();
-    createMutation.mutate(form);
+    const clientProtocols: BridgeClientProtocolInput[] = [];
+    if (wireguard.enabled) {
+      clientProtocols.push({ protocol: 'wireguard', listenPort: wireguard.listenPort, networkCidr: wireguard.networkCidr });
+    }
+    if (amneziawg.enabled) {
+      clientProtocols.push({ protocol: 'amneziawg', listenPort: amneziawg.listenPort, networkCidr: amneziawg.networkCidr });
+    }
+    if (clientProtocols.length === 0) {
+      setCreateError('Выберите хотя бы один протокол для клиентов моста');
+      return;
+    }
+    const input: CreateBridgeInput = { name, selfServerId, clientProtocols };
+    if (organizationId) {
+      input.organizationId = organizationId;
+    }
+    createMutation.mutate(input);
   }
 
   return (
     <Stack spacing={3}>
-      <Typography variant="h5">Мост</Typography>
+      <Typography variant="h5">Мосты</Typography>
       <Typography variant="body2" color="text.secondary">
-        Поднимает WireGuard прямо на сервере панели — клиенты моста подключаются к нему
-        обычным WireGuard-клиентом один раз, и их конфиг больше не меняется. Через какой
-        именно backend-сервер идёт трафик — переключается ниже, в любой момент, без
+        Поднимает WireGuard и/или AmneziaWG прямо на сервере панели — клиенты моста
+        подключаются к нему один раз, их конфиг больше не меняется. Через какой именно
+        backend-сервер идёт трафик — переключается ниже, в любой момент, без
         переподключения устройств (все клиенты моста используют общий upstream-туннель,
-        переключение затрагивает их всех сразу).
+        переключение затрагивает их всех сразу). На одном self-сервере можно создать
+        несколько мостов (разные порты) — например, отдельный на каждую организацию.
       </Typography>
 
-      {!isLoading && bridges?.length === 0 && (
-        <Paper sx={{ p: 2 }}>
-          <Typography variant="subtitle1" mb={2}>
-            Создать мост
+      <Paper sx={{ p: 2 }}>
+        <Typography variant="subtitle1" mb={2}>
+          Создать мост
+        </Typography>
+        <form onSubmit={handleCreateSubmit}>
+          <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="flex-start">
+            <TextField label="Название" value={name} onChange={(e) => setName(e.target.value)} required />
+            <TextField
+              select
+              label="Сервер панели (self)"
+              value={selfServerId}
+              onChange={(e) => setSelfServerId(e.target.value)}
+              sx={{ minWidth: 220 }}
+              helperText="Сервер, добавленный на вкладке «Серверы», указывающий на хост самой панели"
+              required
+            >
+              {servers?.map((s) => (
+                <MenuItem key={s.id} value={s.id}>
+                  {s.name} ({s.host})
+                </MenuItem>
+              ))}
+            </TextField>
+            <TextField
+              select
+              label="Организация"
+              value={organizationId}
+              onChange={(e) => setOrganizationId(e.target.value)}
+              sx={{ minWidth: 200 }}
+              helperText="Пусто — общий мост, виден только суперадмину"
+            >
+              <MenuItem value="">Общий (без организации)</MenuItem>
+              {organizations?.map((org) => (
+                <MenuItem key={org.id} value={org.id}>
+                  {org.name}
+                </MenuItem>
+              ))}
+            </TextField>
+          </Stack>
+
+          <Typography variant="body2" color="text.secondary" mt={2} mb={1}>
+            Протоколы для клиентов моста (можно оба сразу — peers по каждому пойдут через
+            один и тот же upstream):
           </Typography>
-          <form onSubmit={handleCreateSubmit}>
-            <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="flex-start">
-              <TextField label="Название" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
-              <TextField
-                select
-                label="Сервер панели (self)"
-                value={form.selfServerId}
-                onChange={(e) => setForm({ ...form, selfServerId: e.target.value })}
-                sx={{ minWidth: 220 }}
-                helperText="Сервер, добавленный на вкладке «Серверы», указывающий на хост самой панели"
-                required
-              >
-                {servers?.map((s) => (
-                  <MenuItem key={s.id} value={s.id}>
-                    {s.name} ({s.host})
-                  </MenuItem>
-                ))}
-              </TextField>
-              <TextField
-                select
-                label="Протокол для клиентов моста"
-                value={form.protocol}
-                onChange={(e) => setForm({ ...form, protocol: e.target.value as VpnProtocol })}
-                sx={{ minWidth: 200 }}
-                helperText="Если обычный WireGuard блокируется у ваших клиентов — выберите AmneziaWG"
-              >
-                <MenuItem value="wireguard">WireGuard</MenuItem>
-                <MenuItem value="amneziawg">AmneziaWG</MenuItem>
-              </TextField>
-              <TextField
-                label="Порт"
-                type="number"
-                value={form.listenPort}
-                onChange={(e) => setForm({ ...form, listenPort: Number(e.target.value) })}
-                sx={{ width: 120 }}
-              />
-              <TextField
-                label="Сеть клиентов (CIDR)"
-                value={form.networkCidr}
-                onChange={(e) => setForm({ ...form, networkCidr: e.target.value })}
-                sx={{ width: 180 }}
-              />
-              <Button type="submit" variant="contained" disabled={createMutation.isPending}>
-                Создать
-              </Button>
-            </Stack>
-          </form>
-          {createError && (
-            <Alert severity="error" sx={{ mt: 2 }}>
-              {createError}
-            </Alert>
-          )}
-        </Paper>
-      )}
+          <Stack spacing={1}>
+            <ProtocolRow
+              label="WireGuard"
+              state={wireguard}
+              onChange={setWireguard}
+              helperText="Работает везде, где WireGuard не блокируется DPI"
+            />
+            <ProtocolRow
+              label="AmneziaWG"
+              state={amneziawg}
+              onChange={setAmneziawg}
+              helperText="Обфусцированный — нужен там, где обычный WireGuard блокируется/детектится"
+            />
+          </Stack>
+
+          <Button type="submit" variant="contained" disabled={createMutation.isPending} sx={{ mt: 2 }}>
+            Создать
+          </Button>
+        </form>
+        {createError && (
+          <Alert severity="error" sx={{ mt: 2 }}>
+            {createError}
+          </Alert>
+        )}
+      </Paper>
+
+      {isLoading && <Typography>Загрузка...</Typography>}
 
       {bridges?.map((bridge) => (
-        <BridgeCard key={bridge.id} bridge={bridge} servers={servers || []} onChanged={invalidate} />
+        <BridgeCard
+          key={bridge.id}
+          bridge={bridge}
+          servers={servers || []}
+          organizationName={organizations?.find((o) => o.id === bridge.organizationId)?.name}
+          onChanged={invalidate}
+        />
       ))}
+    </Stack>
+  );
+}
+
+function ProtocolRow({
+  label,
+  state,
+  onChange,
+  helperText,
+}: {
+  label: string;
+  state: ProtocolRowState;
+  onChange: (state: ProtocolRowState) => void;
+  helperText: string;
+}) {
+  return (
+    <Stack direction="row" spacing={2} alignItems="center">
+      <FormControlLabel
+        sx={{ minWidth: 160 }}
+        control={<Checkbox checked={state.enabled} onChange={(e) => onChange({ ...state, enabled: e.target.checked })} />}
+        label={label}
+      />
+      <TextField
+        label="Порт"
+        type="number"
+        size="small"
+        disabled={!state.enabled}
+        value={state.listenPort}
+        onChange={(e) => onChange({ ...state, listenPort: Number(e.target.value) })}
+        sx={{ width: 120 }}
+      />
+      <TextField
+        label="Сеть клиентов (CIDR)"
+        size="small"
+        disabled={!state.enabled}
+        value={state.networkCidr}
+        onChange={(e) => onChange({ ...state, networkCidr: e.target.value })}
+        sx={{ width: 180 }}
+      />
+      <Typography variant="body2" color="text.secondary">
+        {helperText}
+      </Typography>
     </Stack>
   );
 }
@@ -136,10 +219,12 @@ export function BridgePage() {
 function BridgeCard({
   bridge,
   servers,
+  organizationName,
   onChanged,
 }: {
   bridge: BridgeEntity;
   servers: ServerEntity[];
+  organizationName?: string;
   onChanged: () => void;
 }) {
   const [selectedUpstream, setSelectedUpstream] = useState('');
@@ -167,9 +252,15 @@ function BridgeCard({
     onError: (err) => setError(getErrorMessage(err, 'Не удалось пересчитать баланс')),
   });
 
+  const clientProtocolIds = [bridge.wireguardClientProtocolId, bridge.amneziawgClientProtocolId].filter(Boolean);
   const candidates = servers
     .flatMap((server) => server.protocols.map((protocol) => ({ ...protocol, serverName: server.name, host: server.host })))
-    .filter((protocol) => protocol.status === 'active' && protocol.id !== bridge.clientServerProtocolId);
+    .filter((protocol) => protocol.status === 'active' && !clientProtocolIds.includes(protocol.id));
+
+  const clientInterfaces: Array<{ label: VpnProtocol; sp: BridgeEntity['wireguardClientProtocol'] }> = [
+    { label: 'wireguard', sp: bridge.wireguardClientProtocol },
+    { label: 'amneziawg', sp: bridge.amneziawgClientProtocol },
+  ].filter((row) => row.sp) as Array<{ label: VpnProtocol; sp: BridgeEntity['wireguardClientProtocol'] }>;
 
   return (
     <Paper sx={{ p: 2 }}>
@@ -177,11 +268,13 @@ function BridgeCard({
         <Box>
           <Typography variant="h6">
             {bridge.name} <Chip size="small" label={bridge.status} color={statusColor[bridge.status]} sx={{ ml: 1 }} />
+            <Chip size="small" label={organizationName ?? 'общий'} variant="outlined" sx={{ ml: 1 }} />
           </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Клиентский интерфейс: {bridge.clientServerProtocol?.server?.name} · порт{' '}
-            {bridge.clientServerProtocol?.listenPort} · сеть {bridge.clientServerProtocol?.networkCidr}
-          </Typography>
+          {clientInterfaces.map(({ label, sp }) => (
+            <Typography key={label} variant="body2" color="text.secondary">
+              Клиентский интерфейс ({label}): {sp?.server?.name} · порт {sp?.listenPort} · сеть {sp?.networkCidr}
+            </Typography>
+          ))}
           <Typography variant="body2" color="text.secondary">
             Upstream:{' '}
             {bridge.upstreamServerProtocol

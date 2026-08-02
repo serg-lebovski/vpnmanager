@@ -12,6 +12,7 @@ export interface CreatePeerInput {
   protocol: VpnProtocol;
   name: string;
   serverId?: string;
+  bridgeId?: string;
   organizationId?: string;
 }
 

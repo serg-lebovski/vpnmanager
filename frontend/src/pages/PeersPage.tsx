@@ -18,6 +18,7 @@ import {
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, useState } from 'react';
+import { fetchBridges } from '../api/bridges';
 import { getErrorMessage } from '../api/errors';
 import { fetchOrganizations } from '../api/organizations';
 import { CreatePeerInput, createPeer, downloadPeerConfig, fetchPeerQrCodeUrl, fetchPeers, revokePeer } from '../api/peers';
@@ -42,6 +43,9 @@ export function PeersPage() {
     enabled: isSuperAdmin,
   });
   const { data: servers } = useQuery({ queryKey: ['servers'], queryFn: fetchServers, enabled: isSuperAdmin });
+  // Мосты доступны всем ролям (бэкенд сам скоупит по организации) — org_admin/org_user
+  // должны иметь возможность создать peer для моста своей организации.
+  const { data: bridges } = useQuery({ queryKey: ['bridges'], queryFn: fetchBridges });
 
   const { data: peers, isLoading } = useQuery({
     queryKey: ['peers', organizationFilter],
@@ -120,6 +124,36 @@ export function PeersPage() {
               <MenuItem value="wireguard">WireGuard</MenuItem>
               <MenuItem value="amneziawg">AmneziaWG</MenuItem>
             </TextField>
+            {bridges && bridges.length > 0 && (
+              <TextField
+                select
+                label="Мост"
+                value={form.bridgeId || ''}
+                onChange={(e) => {
+                  const bridgeId = e.target.value || undefined;
+                  const selected = bridges?.find((b) => b.id === bridgeId);
+                  // Мост может выдавать peers по одному или обоим протоколам сразу —
+                  // подставляем тот, что реально доступен, чтобы не наткнуться на ошибку
+                  // "протокол не установлен".
+                  const availableProtocols: VpnProtocol[] = selected
+                    ? [selected.wireguardClientProtocolId && 'wireguard', selected.amneziawgClientProtocolId && 'amneziawg'].filter(
+                        Boolean,
+                      ) as VpnProtocol[]
+                    : [];
+                  const protocol = availableProtocols.includes(form.protocol) ? form.protocol : availableProtocols[0] ?? form.protocol;
+                  setForm({ ...form, bridgeId, serverId: bridgeId ? undefined : form.serverId, protocol });
+                }}
+                sx={{ minWidth: 200 }}
+                helperText="Peer станет клиентом этого моста"
+              >
+                <MenuItem value="">Без моста</MenuItem>
+                {bridges?.map((b) => (
+                  <MenuItem key={b.id} value={b.id}>
+                    {b.name}
+                  </MenuItem>
+                ))}
+              </TextField>
+            )}
             {isSuperAdmin && (
               <TextField
                 select
@@ -132,17 +166,19 @@ export function PeersPage() {
                   // выбрали при создании моста — WireGuard или AmneziaWG). Подставляем его
                   // автоматически, иначе комбинация протокол+сервер может не найтись.
                   const activeProtocol = selected?.protocols.find((p) => p.status === 'active')?.protocol;
-                  setForm({ ...form, serverId, protocol: activeProtocol ?? form.protocol });
+                  setForm({ ...form, serverId, bridgeId: serverId ? undefined : form.bridgeId, protocol: activeProtocol ?? form.protocol });
                 }}
                 sx={{ minWidth: 240 }}
-                helperText="Сервер с пометкой «Мост» — это self-сервер, peer будет клиентом моста"
+                helperText="Обычный сервер — не мост"
               >
                 <MenuItem value="">Автоматически (балансировка)</MenuItem>
-                {servers?.map((s) => (
-                  <MenuItem key={s.id} value={s.id}>
-                    {s.isSelf ? `Мост: ${s.name}` : s.name}
-                  </MenuItem>
-                ))}
+                {servers
+                  ?.filter((s) => !s.isSelf)
+                  .map((s) => (
+                    <MenuItem key={s.id} value={s.id}>
+                      {s.name}
+                    </MenuItem>
+                  ))}
               </TextField>
             )}
             <Button type="submit" variant="contained" disabled={createMutation.isPending}>

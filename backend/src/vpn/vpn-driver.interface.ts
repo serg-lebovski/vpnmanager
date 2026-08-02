@@ -3,13 +3,6 @@ import { VpnProtocol } from '../common/enums';
 import { Server } from '../servers/server.entity';
 import { ServerProtocol } from '../servers/server-protocol.entity';
 
-// Отдельная таблица маршрутизации Linux для upstream-подключения моста (см.
-// connectAsClient/setupBridgeNat) — через неё маршрутизируется ТОЛЬКО трафик из сети
-// клиентов моста (по правилу `ip rule from <clientCidr>`), а не весь хост целиком.
-// Число произвольное, лишь бы не пересекалось с зарезервированными main(254)/
-// default(253)/local(255).
-export const BRIDGE_ROUTE_TABLE = 52000;
-
 export interface VpnDriverContext {
   ssh: NodeSSH;
   server: Server;
@@ -90,7 +83,10 @@ export interface VpnDriver {
   detectExisting(ssh: NodeSSH): Promise<DetectedInstallation | null>;
   // Режим моста: поднимает интерфейс в РОЛИ КЛИЕНТА (один [Peer] — upstream-сервер,
   // AllowedIPs = 0.0.0.0/0) на хосте, где выполняется ssh (self-сервер моста).
-  connectAsClient(ssh: NodeSSH, interfaceName: string, config: UpstreamPeerConfig): Promise<void>;
+  // routeTable — отдельная таблица маршрутизации ЭТОГО моста (см. Bridge.routeTable):
+  // маршрут по умолчанию добавляется только туда, а не в основную таблицу хоста —
+  // на одном self-сервере может быть несколько мостов, каждый со своим upstream.
+  connectAsClient(ssh: NodeSSH, interfaceName: string, config: UpstreamPeerConfig, routeTable: number): Promise<void>;
   disconnectAsClient(ssh: NodeSSH, interfaceName: string): Promise<void>;
   // Ставит CLI-инструменты протокола (wg/awg + *-tools), не трогая никакой конфиг/интерфейс.
   // Нужно на self-сервере моста перед connectAsClient, если там ещё нет инструментов для

@@ -1,9 +1,11 @@
+import { randomBytes } from 'crypto';
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { DataSource, Repository } from 'typeorm';
+import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { decryptSecret } from '../common/encryption.util';
-import { BridgeStatus, BridgeUpstreamMode, PeerStatus, ServerProtocolStatus, VpnProtocol } from '../common/enums';
+import { BridgeStatus, BridgeUpstreamMode, PeerStatus, Role, ServerProtocolStatus, VpnProtocol } from '../common/enums';
 import { Peer } from '../peers/peer.entity';
 import { PeersService } from '../peers/peers.service';
 import { ServerProtocol } from '../servers/server-protocol.entity';
@@ -22,6 +24,20 @@ const REBALANCE_THRESHOLD = 0.2;
 // обычного ~1420, чтобы оставить запас под вторую инкапсуляцию (self-сервер → upstream).
 const BRIDGE_CLIENT_MTU = 1280;
 
+// Стартовый номер для routeTable первого моста — дальше выделяется как MAX+1 (см.
+// allocateRouteTable). Произвольное число, не пересекающееся с зарезервированными
+// main(254)/default(253)/local(255).
+const FIRST_ROUTE_TABLE = 52000;
+
+const BRIDGE_RELATIONS = [
+  'wireguardClientProtocol',
+  'wireguardClientProtocol.server',
+  'amneziawgClientProtocol',
+  'amneziawgClientProtocol.server',
+  'upstreamServerProtocol',
+  'upstreamServerProtocol.server',
+];
+
 @Injectable()
 export class BridgesService {
   private readonly logger = new Logger(BridgesService.name);
@@ -31,29 +47,56 @@ export class BridgesService {
     @InjectRepository(ServerProtocol) private readonly serverProtocolsRepository: Repository<ServerProtocol>,
     @InjectRepository(Server) private readonly serversRepository: Repository<Server>,
     @InjectRepository(Peer) private readonly peersRepository: Repository<Peer>,
+    @InjectDataSource() private readonly dataSource: DataSource,
     private readonly peersService: PeersService,
     private readonly vpnProvisioningService: VpnProvisioningService,
   ) {}
 
-  async findAll(): Promise<Bridge[]> {
-    return this.bridgesRepository.find({
-      relations: ['clientServerProtocol', 'clientServerProtocol.server', 'upstreamServerProtocol', 'upstreamServerProtocol.server'],
+  async findAll(requester: AuthenticatedUser): Promise<Bridge[]> {
+    const bridges = await this.bridgesRepository.find({
+      relations: BRIDGE_RELATIONS,
       order: { createdAt: 'DESC' },
     });
+    if (requester.role === Role.SUPER_ADMIN) {
+      return bridges;
+    }
+    // org_admin/org_user видят только мосты своей организации плюс общие (organizationId
+    // = null) — по тому же принципу, что видимость peers (см. findAllForRequester в
+    // peers.service.ts).
+    return bridges.filter((bridge) => bridge.organizationId === null || bridge.organizationId === requester.organizationId);
   }
 
   async create(dto: CreateBridgeDto): Promise<Bridge> {
+    const protocols = new Set(dto.clientProtocols.map((p) => p.protocol));
+    if (protocols.size !== dto.clientProtocols.length) {
+      throw new BadRequestException('Протокол клиентского интерфейса моста нельзя указывать дважды');
+    }
+
     const selfServer = await this.serversRepository.findOne({ where: { id: dto.selfServerId } });
     if (!selfServer) {
       throw new NotFoundException('Сервер не найден');
     }
+
+    // На одном self-сервере может быть несколько мостов — порт занят, если уже
+    // используется ЛЮБЫМ протоколом на этом сервере (проверяем заранее, чтобы дать
+    // понятную ошибку вместо сырого сбоя SSH при коллизии портов).
+    for (const clientProtocol of dto.clientProtocols) {
+      const portTaken = await this.serverProtocolsRepository.findOne({
+        where: { serverId: selfServer.id, listenPort: clientProtocol.listenPort },
+      });
+      if (portTaken) {
+        throw new BadRequestException(`Порт ${clientProtocol.listenPort} уже занят на этом сервере другим протоколом`);
+      }
+    }
+
     selfServer.isSelf = true;
     await this.serversRepository.save(selfServer);
 
-    // Клиентский интерфейс моста — переиспользуем обычную установку протокола, как для
-    // любого другого сервера. Протокол выбирается явно (dto.protocol): там, где обычный
-    // WireGuard блокируется/детектится DPI, клиентский хоп тоже должен быть AmneziaWG,
-    // а не только upstream.
+    // Клиентские интерфейсы моста — переиспользуем обычную установку протокола, как для
+    // любого другого сервера, по одному вызову на каждый выбранный протокол. Там, где
+    // обычный WireGuard блокируется/детектится DPI, клиентский хоп тоже должен быть
+    // AmneziaWG — не только upstream; а если у части клиентов WG работает нормально,
+    // можно выдавать peers сразу по обоим протоколам с одного и того же моста.
     //
     // MTU занижен намеренно (BRIDGE_CLIENT_MTU): трафик клиентов моста проходит ещё через
     // ОДИН туннель (self-сервер → upstream), и обычный MTU ~1420 на обоих хопах даёт
@@ -61,24 +104,52 @@ export class BridgesService {
     // что выглядит как "DNS работает через раз, а сайты — нет". Занижаем сразу при
     // создании моста, а не только когда назначен upstream, — потому что клиентские
     // конфиги peers уже будут скачаны с этим MTU и раздать новый после назначения upstream
-    // no сможем.
-    const clientServerProtocol = await this.vpnProvisioningService.installProtocol(
-      selfServer.id,
-      dto.protocol,
-      dto.listenPort,
-      dto.networkCidr,
-      BRIDGE_CLIENT_MTU,
-    );
-    if (clientServerProtocol.status === ServerProtocolStatus.ERROR) {
-      throw new BadRequestException(`Не удалось поднять локальный интерфейс для моста: ${clientServerProtocol.lastError}`);
+    // не сможем.
+    let wireguardClientProtocolId: string | null = null;
+    let amneziawgClientProtocolId: string | null = null;
+    for (const clientProtocol of dto.clientProtocols) {
+      const installed = await this.vpnProvisioningService.installProtocol(
+        selfServer.id,
+        clientProtocol.protocol,
+        clientProtocol.listenPort,
+        clientProtocol.networkCidr,
+        BRIDGE_CLIENT_MTU,
+      );
+      if (installed.status === ServerProtocolStatus.ERROR) {
+        throw new BadRequestException(`Не удалось поднять клиентский интерфейс (${clientProtocol.protocol}) для моста: ${installed.lastError}`);
+      }
+      if (clientProtocol.protocol === VpnProtocol.WIREGUARD) {
+        wireguardClientProtocolId = installed.id;
+      } else {
+        amneziawgClientProtocolId = installed.id;
+      }
     }
 
+    const routeTable = await this.allocateRouteTable();
     const bridge = this.bridgesRepository.create({
       name: dto.name,
-      clientServerProtocolId: clientServerProtocol.id,
+      organizationId: dto.organizationId ?? null,
+      wireguardClientProtocolId,
+      amneziawgClientProtocolId,
+      // Случайный суффикс — не константа: на одном self-сервере может быть несколько
+      // мостов, и у каждого должен быть свой upstream-интерфейс, иначе они начнут
+      // управлять одним и тем же netdev друг у друга при подключении upstream.
+      upstreamInterfaceName: `wg-up-${randomBytes(4).toString('hex')}`,
+      routeTable,
       status: BridgeStatus.NOT_CONFIGURED,
     });
     return this.bridgesRepository.save(bridge);
+  }
+
+  // MAX(routeTable) + 1 по всем мостам, под pessimistic-lock — тем же паттерном, что
+  // allocateIp/nextHostOctet в peers.service.ts. Низкочастотная админская операция,
+  // жёсткая транзакционность важнее производительности.
+  private async allocateRouteTable(): Promise<number> {
+    return this.dataSource.transaction(async (manager) => {
+      const bridges = await manager.find(Bridge, { lock: { mode: 'pessimistic_write' } });
+      const maxTable = bridges.reduce((max, b) => Math.max(max, b.routeTable || 0), FIRST_ROUTE_TABLE - 1);
+      return maxTable + 1;
+    });
   }
 
   async setMode(bridgeId: string, mode: BridgeUpstreamMode): Promise<Bridge> {
@@ -99,11 +170,12 @@ export class BridgesService {
     if (!target || target.status !== ServerProtocolStatus.ACTIVE) {
       throw new BadRequestException('Целевой протокол не найден или неактивен');
     }
-    if (target.id === bridge.clientServerProtocolId) {
+    const clientProtocolIds = this.clientProtocolIds(bridge);
+    if (clientProtocolIds.includes(target.id)) {
       throw new BadRequestException('Нельзя маршрутизировать мост через его же собственный клиентский интерфейс');
     }
 
-    const selfServer = await this.getSelfServer(bridge);
+    const selfServer = this.getSelfServer(bridge);
 
     bridge.status = BridgeStatus.CONFIGURING;
     bridge.lastError = null;
@@ -138,7 +210,13 @@ export class BridgesService {
         // под обычный WireGuard для клиентов моста, а upstream — AmneziaWG) — доустанавливаем
         // недостающие CLI-инструменты перед подключением.
         await this.vpnProvisioningService.ensureClientToolsInstalled(selfServer, target.protocol);
-        await this.vpnProvisioningService.connectBridgeUpstream(selfServer, target.protocol, bridge.upstreamInterfaceName, config);
+        await this.vpnProvisioningService.connectBridgeUpstream(
+          selfServer,
+          target.protocol,
+          bridge.upstreamInterfaceName,
+          config,
+          bridge.routeTable,
+        );
       } catch (error) {
         // self-сервер не удалось подключить к новому upstream — системный peer уже создан
         // и применён НА ЦЕЛЕВОМ сервере (это отдельный шаг с собственным успехом), но раз
@@ -214,9 +292,10 @@ export class BridgesService {
       relations: ['server'],
     });
 
+    const clientProtocolIds = this.clientProtocolIds(bridge);
     const loads = await Promise.all(
       candidates
-        .filter((serverProtocol) => serverProtocol.id !== bridge.clientServerProtocolId)
+        .filter((serverProtocol) => !clientProtocolIds.includes(serverProtocol.id))
         .map(async (serverProtocol) => ({
           serverProtocol,
           load: await this.computeLoad(serverProtocol),
@@ -242,29 +321,30 @@ export class BridgesService {
   }
 
   private async configureNat(selfServer: Server, bridge: Bridge): Promise<void> {
-    const clientServerProtocol = await this.serverProtocolsRepository.findOneOrFail({
-      where: { id: bridge.clientServerProtocolId },
-    });
-    await this.vpnProvisioningService.setupBridgeNat(
-      selfServer,
-      clientServerProtocol.networkCidr,
-      clientServerProtocol.interfaceName,
-      bridge.upstreamInterfaceName,
-    );
+    const clientInterfaces = [bridge.wireguardClientProtocol, bridge.amneziawgClientProtocol]
+      .filter((sp): sp is ServerProtocol => Boolean(sp))
+      .map((sp) => ({ networkCidr: sp.networkCidr, interfaceName: sp.interfaceName }));
+    await this.vpnProvisioningService.setupBridgeNat(selfServer, clientInterfaces, bridge.upstreamInterfaceName, bridge.routeTable);
   }
 
-  private async getSelfServer(bridge: Bridge): Promise<Server> {
-    const clientServerProtocol = await this.serverProtocolsRepository.findOneOrFail({
-      where: { id: bridge.clientServerProtocolId },
-      relations: ['server'],
-    });
-    return clientServerProtocol.server;
+  private clientProtocolIds(bridge: Bridge): string[] {
+    return [bridge.wireguardClientProtocolId, bridge.amneziawgClientProtocolId].filter((id): id is string => Boolean(id));
+  }
+
+  private getSelfServer(bridge: Bridge): Server {
+    // Оба клиентских интерфейса (если есть оба) всегда на одном и том же self-сервере —
+    // достаточно взять сервер у любого из установленных.
+    const server = bridge.wireguardClientProtocol?.server ?? bridge.amneziawgClientProtocol?.server;
+    if (!server) {
+      throw new NotFoundException('У моста нет ни одного установленного клиентского интерфейса');
+    }
+    return server;
   }
 
   private async findOneOrFail(id: string): Promise<Bridge> {
     const bridge = await this.bridgesRepository.findOne({
       where: { id },
-      relations: ['clientServerProtocol', 'clientServerProtocol.server', 'upstreamServerProtocol', 'upstreamServerProtocol.server'],
+      relations: BRIDGE_RELATIONS,
     });
     if (!bridge) {
       throw new NotFoundException('Мост не найден');

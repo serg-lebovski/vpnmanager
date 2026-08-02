@@ -1,6 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, IsNull, Not, Repository } from 'typeorm';
+import { Bridge } from '../bridges/bridge.entity';
 import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { decryptSecret, encryptSecret } from '../common/encryption.util';
 import { PeerSource, PeerStatus, Role } from '../common/enums';
@@ -21,6 +22,7 @@ export class PeersService {
     @InjectRepository(Peer) private readonly peersRepository: Repository<Peer>,
     @InjectRepository(ServerProtocol) private readonly serverProtocolsRepository: Repository<ServerProtocol>,
     @InjectRepository(Server) private readonly serversRepository: Repository<Server>,
+    @InjectRepository(Bridge) private readonly bridgesRepository: Repository<Bridge>,
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly loadBalancerService: LoadBalancerService,
     private readonly vpnProvisioningService: VpnProvisioningService,
@@ -44,9 +46,11 @@ export class PeersService {
   async create(requester: AuthenticatedUser, dto: CreatePeerDto): Promise<Peer> {
     const organizationId = this.resolveOrganizationId(requester, dto.organizationId);
 
-    const serverProtocol = dto.serverId
-      ? await this.findActiveServerProtocolByServer(dto.serverId, dto.protocol)
-      : await this.loadBalancerService.pickServerProtocol(dto.protocol);
+    const serverProtocol = dto.bridgeId
+      ? await this.findBridgeClientProtocol(requester, dto.bridgeId, dto.protocol)
+      : dto.serverId
+        ? await this.findActiveServerProtocolByServer(dto.serverId, dto.protocol)
+        : await this.loadBalancerService.pickServerProtocol(dto.protocol);
 
     return this.createInternal(serverProtocol, {
       organizationId,
@@ -218,6 +222,32 @@ export class PeersService {
     });
     if (!serverProtocol || serverProtocol.status !== 'active') {
       throw new BadRequestException('На указанном сервере протокол не установлен или неактивен');
+    }
+    return serverProtocol;
+  }
+
+  // Резолвит клиентский интерфейс конкретного моста под нужный протокол. org_admin/
+  // org_user могут указывать только мост своей организации либо общий (organizationId
+  // = null) — чужой мост им не виден и не назначаем, даже зная его id напрямую.
+  private async findBridgeClientProtocol(
+    requester: AuthenticatedUser,
+    bridgeId: string,
+    protocol: CreatePeerDto['protocol'],
+  ): Promise<ServerProtocol> {
+    const bridge = await this.bridgesRepository.findOne({ where: { id: bridgeId } });
+    if (!bridge) {
+      throw new BadRequestException('Мост не найден');
+    }
+    if (requester.role !== Role.SUPER_ADMIN && bridge.organizationId !== null && bridge.organizationId !== requester.organizationId) {
+      throw new ForbiddenException('Недостаточно прав для этого моста');
+    }
+    const serverProtocolId = protocol === 'wireguard' ? bridge.wireguardClientProtocolId : bridge.amneziawgClientProtocolId;
+    if (!serverProtocolId) {
+      throw new BadRequestException(`На этом мосту не установлен протокол ${protocol}`);
+    }
+    const serverProtocol = await this.serverProtocolsRepository.findOne({ where: { id: serverProtocolId } });
+    if (!serverProtocol || serverProtocol.status !== 'active') {
+      throw new BadRequestException('Клиентский интерфейс моста не установлен или неактивен');
     }
     return serverProtocol;
   }

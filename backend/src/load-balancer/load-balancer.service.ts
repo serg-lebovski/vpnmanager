@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { Bridge } from '../bridges/bridge.entity';
 import { PeerStatus, ServerProtocolStatus, VpnProtocol } from '../common/enums';
 import { Peer } from '../peers/peer.entity';
 import { ServerProtocol } from '../servers/server-protocol.entity';
@@ -10,13 +11,24 @@ export class LoadBalancerService {
   constructor(
     @InjectRepository(ServerProtocol) private readonly serverProtocolsRepository: Repository<ServerProtocol>,
     @InjectRepository(Peer) private readonly peersRepository: Repository<Peer>,
+    @InjectRepository(Bridge) private readonly bridgesRepository: Repository<Bridge>,
   ) {}
 
   async pickServerProtocol(protocol: VpnProtocol): Promise<ServerProtocol> {
-    const candidates = await this.serverProtocolsRepository.find({
+    const allCandidates = await this.serverProtocolsRepository.find({
       where: { protocol, status: ServerProtocolStatus.ACTIVE },
       relations: ['server'],
     });
+
+    // Клиентские интерфейсы мостов (на self-сервере, к которым подключаются клиенты
+    // конкретного моста) не должны попадать в общий пул автобалансировки — иначе peer,
+    // созданный без явного выбора сервера/моста, мог бы случайно оказаться клиентом
+    // чужого моста. Бридж-peers назначаются только явно (см. bridgeId в CreatePeerDto).
+    const bridges = await this.bridgesRepository.find();
+    const bridgeClientProtocolIds = new Set(
+      bridges.flatMap((bridge) => [bridge.wireguardClientProtocolId, bridge.amneziawgClientProtocolId]).filter(Boolean),
+    );
+    const candidates = allCandidates.filter((sp) => !bridgeClientProtocolIds.has(sp.id));
     if (candidates.length === 0) {
       throw new BadRequestException(`Нет активных серверов с установленным протоколом ${protocol}`);
     }
