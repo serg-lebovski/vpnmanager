@@ -72,8 +72,12 @@ export class Bridge {
   // Отдельная таблица маршрутизации Linux для этого моста (см. connectAsClient/
   // setupBridgeNat в vpn-provisioning.service.ts) — у каждого моста своя, иначе два
   // моста на одном self-сервере перезаписывали бы маршруты друг друга. Выделяется при
-  // создании как MAX(routeTable)+1 по всем мостам (см. bridges.service.ts).
-  @Column({ name: 'route_table', type: 'int' })
+  // создании как MAX(routeTable)+1 по всем мостам (см. bridges.service.ts) — приложение
+  // всегда проставляет реальное значение явно при create(); default здесь только чтобы
+  // synchronize:true не упал при добавлении NOT NULL колонки на непустую таблицу bridges
+  // (у уже существующих мостов после деплоя окажется 52000 — ровно то, что получил бы
+  // самый первый мост и через обычный allocateRouteTable()).
+  @Column({ name: 'route_table', type: 'int', default: 52000 })
   routeTable: number;
 
   @Column({ type: 'enum', enum: BridgeStatus, default: BridgeStatus.NOT_CONFIGURED })
