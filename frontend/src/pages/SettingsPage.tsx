@@ -1,8 +1,21 @@
-import { Alert, Button, Chip, Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle, Paper, Stack, Typography } from '@mui/material';
+import {
+  Alert,
+  Button,
+  Chip,
+  CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
+  Paper,
+  Stack,
+  Typography,
+} from '@mui/material';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { getErrorMessage } from '../api/errors';
-import { downloadDatabaseBackup, fetchVersion, triggerUpdate } from '../api/system';
+import { connectUpdateProgressSocket, downloadDatabaseBackup, fetchVersion, triggerUpdate, UpdateProgress } from '../api/system';
 
 export function SettingsPage() {
   const { data: version, isLoading, refetch, isFetching } = useQuery({ queryKey: ['system', 'version'], queryFn: fetchVersion });
@@ -11,6 +24,46 @@ export function SettingsPage() {
   const [updateMessage, setUpdateMessage] = useState<string | null>(null);
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [backupError, setBackupError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<UpdateProgress | null>(null);
+  const [waitingForBackend, setWaitingForBackend] = useState(false);
+
+  // Прогресс приходит по WebSocket независимо от того, кто именно нажал "Обновить" —
+  // так и должно быть, все суперадмины видят одно и то же состояние обновления.
+  // Последний шаг (пересоздание backend) неизбежно рвёт это же соединение — это НЕ
+  // ошибка: socket.io переподключается сам, а мы трактуем реконнект после активного
+  // обновления как его завершение.
+  useEffect(() => {
+    let isFirstConnect = true;
+    const socket = connectUpdateProgressSocket((p) => {
+      setProgress(p);
+      setWaitingForBackend(false);
+      if (p.done) {
+        refetch();
+        setTimeout(() => setProgress(null), 2500);
+      }
+    });
+    socket.on('connect', () => {
+      if (!isFirstConnect) {
+        setWaitingForBackend(false);
+        setProgress((prev) => (prev && !prev.done ? { percent: 100, step: 'Готово', done: true } : prev));
+        refetch();
+        setTimeout(() => setProgress(null), 2500);
+      }
+      isFirstConnect = false;
+    });
+    socket.on('disconnect', () => {
+      setProgress((prev) => {
+        if (prev && !prev.done) {
+          setWaitingForBackend(true);
+        }
+        return prev;
+      });
+    });
+    return () => {
+      socket.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const updateMutation = useMutation({
     mutationFn: triggerUpdate,
@@ -54,14 +107,28 @@ export function SettingsPage() {
             )}
           </Stack>
         )}
-        <Stack direction="row" spacing={2} mt={2}>
-          <Button onClick={() => refetch()} disabled={isFetching}>
-            Проверить
-          </Button>
-          <Button variant="contained" color="warning" onClick={() => setConfirmOpen(true)}>
-            Обновить
-          </Button>
-        </Stack>
+        {progress && !progress.done ? (
+          <Stack direction="row" spacing={2} alignItems="center" mt={2}>
+            <CircularProgress variant={waitingForBackend ? 'indeterminate' : 'determinate'} value={progress.percent} size={32} />
+            <Typography variant="body2">
+              {waitingForBackend ? 'Backend перезапускается, ждём восстановления соединения…' : `${progress.percent}% — ${progress.step}`}
+            </Typography>
+          </Stack>
+        ) : (
+          <Stack direction="row" spacing={2} mt={2}>
+            <Button onClick={() => refetch()} disabled={isFetching}>
+              Проверить
+            </Button>
+            <Button variant="contained" color="warning" onClick={() => setConfirmOpen(true)}>
+              Обновить
+            </Button>
+          </Stack>
+        )}
+        {progress?.done && (
+          <Alert severity={progress.error ? 'error' : 'success'} sx={{ mt: 2 }}>
+            {progress.error ?? 'Обновление завершено'}
+          </Alert>
+        )}
         {updateMessage && (
           <Alert severity="info" sx={{ mt: 2 }}>
             {updateMessage}

@@ -1,4 +1,25 @@
+import { io, Socket } from 'socket.io-client';
+import { tokenStorage } from '../auth/tokenStorage';
 import { apiClient } from './client';
+
+export interface UpdateProgress {
+  percent: number;
+  step: string;
+  done: boolean;
+  error?: string;
+}
+
+// Namespace 'system' (backend/src/system/system.gateway.ts) — прогресс самообновления.
+// Последний шаг (пересоздание backend) неизбежно рвёт это же соединение — это ожидаемо,
+// не ошибка, см. обработку disconnect в SettingsPage.
+export function connectUpdateProgressSocket(onProgress: (progress: UpdateProgress) => void): Socket {
+  const socket = io('/system', {
+    path: '/socket.io',
+    auth: { token: tokenStorage.getAccessToken() },
+  });
+  socket.on('update-progress', onProgress);
+  return socket;
+}
 
 export interface VersionInfo {
   currentCommit: string;
