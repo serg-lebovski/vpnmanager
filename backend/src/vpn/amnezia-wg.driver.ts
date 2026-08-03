@@ -24,7 +24,14 @@ export class AmneziaWgDriver extends BaseWireGuardLikeDriver {
     super(sshService);
   }
 
+  // См. комментарий в WireGuardDriver.ensureClientToolsInstalled — тут это ещё важнее:
+  // без проверки при КАЖДОМ переключении upstream гонялись бы два apt-get update и
+  // add-apt-repository (сеть + PPA), даже если awg-tools давно установлен.
   async ensureClientToolsInstalled(ssh: NodeSSH): Promise<void> {
+    const check = await this.sshService.exec(ssh, 'command -v awg-quick');
+    if (check.code === 0) {
+      return;
+    }
     await this.sshService.execOrThrow(
       ssh,
       [

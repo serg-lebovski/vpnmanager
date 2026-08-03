@@ -4,6 +4,7 @@ import {
   Button,
   Checkbox,
   Chip,
+  CircularProgress,
   Divider,
   FormControlLabel,
   MenuItem,
@@ -14,7 +15,7 @@ import {
   Typography,
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
 import {
   BridgeClientProtocolInput,
   CreateBridgeInput,
@@ -26,6 +27,7 @@ import {
   setBridgeUpstream,
   updateBridge,
 } from '../api/bridges';
+import { BridgeSwitchProgress, connectBridgeProgressSocket } from '../api/bridgeSocket';
 import { getErrorMessage } from '../api/errors';
 import { fetchOrganizations } from '../api/organizations';
 import { fetchServers } from '../api/servers';
@@ -53,6 +55,29 @@ export function BridgePage() {
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['bridges'] });
 
   const deleteMutation = useMutation({ mutationFn: deleteBridge, onSuccess: invalidate });
+
+  const [progressByBridge, setProgressByBridge] = useState<Record<string, BridgeSwitchProgress>>({});
+
+  useEffect(() => {
+    const socket = connectBridgeProgressSocket((progress) => {
+      setProgressByBridge((prev) => ({ ...prev, [progress.bridgeId]: progress }));
+      if (progress.done) {
+        invalidate();
+        // Даём секунду увидеть "Готово"/ошибку, потом убираем прогресс-бар — дальше
+        // актуальное состояние моста видно по обычным полям карточки.
+        setTimeout(() => {
+          setProgressByBridge((prev) => {
+            const { [progress.bridgeId]: _omit, ...rest } = prev;
+            return rest;
+          });
+        }, 1500);
+      }
+    });
+    return () => {
+      socket.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [name, setName] = useState('Мост');
   const [selfServerId, setSelfServerId] = useState('');
@@ -179,6 +204,7 @@ export function BridgePage() {
           bridge={bridge}
           servers={servers || []}
           organizations={organizations || []}
+          progress={progressByBridge[bridge.id]}
           onChanged={invalidate}
           onDelete={() => deleteMutation.mutate(bridge.id)}
         />
@@ -233,12 +259,14 @@ function BridgeCard({
   bridge,
   servers,
   organizations,
+  progress,
   onChanged,
   onDelete,
 }: {
   bridge: BridgeEntity;
   servers: ServerEntity[];
   organizations: Organization[];
+  progress?: BridgeSwitchProgress;
   onChanged: () => void;
   onDelete: () => void;
 }) {
@@ -349,9 +377,13 @@ function BridgeCard({
           <Switch
             checked={bridge.upstreamMode === 'auto'}
             onChange={(e) => modeMutation.mutate(e.target.checked ? 'auto' : 'manual')}
-            disabled={!bridge.upstreamServerProtocolId}
+            disabled={!bridge.upstreamServerProtocolId || (progress && !progress.done)}
           />
-          <Button size="small" onClick={() => rebalanceMutation.mutate()} disabled={!bridge.upstreamServerProtocolId}>
+          <Button
+            size="small"
+            onClick={() => rebalanceMutation.mutate()}
+            disabled={!bridge.upstreamServerProtocolId || (progress && !progress.done)}
+          >
             Пересчитать баланс
           </Button>
           {!isEditing && (
@@ -374,28 +406,42 @@ function BridgeCard({
 
       <Divider sx={{ my: 2 }} />
 
-      <Stack direction="row" spacing={2} alignItems="flex-start">
-        <TextField
-          select
-          label="Переключить upstream вручную"
-          value={selectedUpstream}
-          onChange={(e) => setSelectedUpstream(e.target.value)}
-          sx={{ minWidth: 260 }}
-        >
-          {candidates.map((c) => (
-            <MenuItem key={c.id} value={c.id}>
-              {c.serverName} — {c.protocol} ({c.host})
-            </MenuItem>
-          ))}
-        </TextField>
-        <Button
-          variant="outlined"
-          disabled={!selectedUpstream || upstreamMutation.isPending}
-          onClick={() => upstreamMutation.mutate(selectedUpstream)}
-        >
-          Переключить
-        </Button>
-      </Stack>
+      {progress && !progress.done ? (
+        <Stack direction="row" spacing={2} alignItems="center">
+          <CircularProgress variant="determinate" value={progress.percent} size={32} />
+          <Typography variant="body2">
+            {progress.percent}% — {progress.step}
+          </Typography>
+        </Stack>
+      ) : (
+        <Stack direction="row" spacing={2} alignItems="flex-start">
+          <TextField
+            select
+            label="Переключить upstream вручную"
+            value={selectedUpstream}
+            onChange={(e) => setSelectedUpstream(e.target.value)}
+            sx={{ minWidth: 260 }}
+          >
+            {candidates.map((c) => (
+              <MenuItem key={c.id} value={c.id}>
+                {c.serverName} — {c.protocol} ({c.host})
+              </MenuItem>
+            ))}
+          </TextField>
+          <Button
+            variant="outlined"
+            disabled={!selectedUpstream || upstreamMutation.isPending}
+            onClick={() => upstreamMutation.mutate(selectedUpstream)}
+          >
+            Переключить
+          </Button>
+        </Stack>
+      )}
+      {progress?.done && progress.error && (
+        <Alert severity="error" sx={{ mt: 2 }}>
+          {progress.error}
+        </Alert>
+      )}
       {error && (
         <Alert severity="error" sx={{ mt: 2 }}>
           {error}

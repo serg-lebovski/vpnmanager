@@ -1,9 +1,9 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { BridgesService } from '../bridges/bridges.service';
 import { decryptSecret, encryptSecret } from '../common/encryption.util';
-import { ServerStatus, VpnProtocol } from '../common/enums';
+import { ServerProtocolStatus, ServerStatus, VpnProtocol } from '../common/enums';
 import { PeersService } from '../peers/peers.service';
 import { SshService } from '../ssh/ssh.service';
 import { VpnProvisioningService } from '../vpn/vpn-provisioning.service';
@@ -16,6 +16,8 @@ export type ServerListItem = Omit<Server, 'protocols'> & { protocols: Array<Serv
 
 @Injectable()
 export class ServersService {
+  private readonly logger = new Logger(ServersService.name);
+
   constructor(
     @InjectRepository(Server) private readonly serversRepository: Repository<Server>,
     @InjectRepository(ServerProtocol) private readonly serverProtocolsRepository: Repository<ServerProtocol>,
@@ -94,7 +96,26 @@ export class ServersService {
   }
 
   async installProtocol(serverId: string, dto: InstallProtocolDto): Promise<ServerProtocol> {
-    return this.vpnProvisioningService.installProtocol(serverId, dto.protocol, dto.listenPort, dto.networkCidr);
+    const serverProtocol = await this.vpnProvisioningService.installProtocol(serverId, dto.protocol, dto.listenPort, dto.networkCidr);
+    if (serverProtocol.status === ServerProtocolStatus.ACTIVE) {
+      await this.ensureReservedUpstreamPeer(serverProtocol);
+    }
+    return serverProtocol;
+  }
+
+  // Заранее поднимает системный upstream-peer на только что установленном протоколе —
+  // BridgesService.setUpstream переиспользует его вместо создания нового при первом же
+  // переключении моста на этот сервер (см. комментарий у ServerProtocol.reservedUpstreamPeer).
+  // Best-effort: если не получилось (например, сервер стал недоступен сразу после
+  // установки) — не валим сам install, setUpstream просто создаст peer на лету как раньше.
+  private async ensureReservedUpstreamPeer(serverProtocol: ServerProtocol): Promise<void> {
+    try {
+      const reserved = await this.peersService.createSystemPeer(serverProtocol.id, `upstream-reserved:${serverProtocol.id.slice(0, 8)}`);
+      serverProtocol.reservedUpstreamPeerId = reserved.id;
+      await this.serverProtocolsRepository.save(serverProtocol);
+    } catch (error) {
+      this.logger.warn(`Не удалось заранее создать upstream-peer для ${serverProtocol.id}: ${(error as Error).message}`);
+    }
   }
 
   async scanAndImport(serverProtocolId: string): Promise<{ importedCount: number }> {

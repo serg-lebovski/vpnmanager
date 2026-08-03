@@ -2,7 +2,7 @@ import { randomBytes } from 'crypto';
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { DataSource, In, Repository } from 'typeorm';
+import { DataSource, In, Not, Repository } from 'typeorm';
 import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { decryptSecret } from '../common/encryption.util';
 import { BridgeStatus, BridgeUpstreamMode, PeerStatus, Role, ServerProtocolStatus, VpnProtocol } from '../common/enums';
@@ -14,6 +14,7 @@ import { Server } from '../servers/server.entity';
 import { UpstreamPeerConfig } from '../vpn/vpn-driver.interface';
 import { VpnProvisioningService } from '../vpn/vpn-provisioning.service';
 import { Bridge } from './bridge.entity';
+import { BridgesGateway } from './bridges.gateway';
 import { CreateBridgeDto } from './dto/create-bridge.dto';
 import { UpdateBridgeDto } from './dto/update-bridge.dto';
 
@@ -60,6 +61,7 @@ export class BridgesService {
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly peersService: PeersService,
     private readonly vpnProvisioningService: VpnProvisioningService,
+    private readonly bridgesGateway: BridgesGateway,
   ) {}
 
   async findAll(requester: AuthenticatedUser): Promise<BridgeListItem[]> {
@@ -316,10 +318,21 @@ export class BridgesService {
     bridge.lastError = null;
     await this.bridgesRepository.save(bridge);
 
+    const progress = (percent: number, step: string) =>
+      this.bridgesGateway.broadcastProgress({ bridgeId: bridge.id, percent, step, done: false });
+
     try {
-      // Создаём системный peer на цели ДО отключения старого — если что-то пойдёт не так,
-      // старый upstream останется рабочим и клиенты моста не потеряют связь.
-      const systemPeer = await this.peersService.createSystemPeer(target.id, `bridge:${bridge.name}`);
+      progress(5, 'Проверка целевого сервера');
+
+      // Заранее поднятый на этапе установки протокола (см. ServerProtocol.reservedUpstreamPeer
+      // и ServersService.installProtocol) upstream-peer переиспользуем, если он свободен —
+      // это экономит SSH на целевой сервер и полную перезапись/обрыв его интерфейса,
+      // которые как раз и делают переключение долгим. Если резерва нет или он уже занят
+      // ДРУГИМ мостом — откатываемся к старому поведению (создаём peer на лету).
+      progress(15, 'Подготовка upstream-peer на целевом сервере');
+      const reusedReserved = await this.tryReuseReservedPeer(bridge, target);
+      const systemPeer = reusedReserved ?? (await this.peersService.createSystemPeer(target.id, `bridge:${bridge.name}`));
+
       const privateKey = decryptSecret(systemPeer.privateKeyEnc!);
       const presharedKey = systemPeer.presharedKeyEnc ? decryptSecret(systemPeer.presharedKeyEnc) : null;
 
@@ -336,15 +349,21 @@ export class BridgesService {
       const wasConfiguredBefore = Boolean(bridge.upstreamServerProtocolId);
       const previousPeerId = bridge.upstreamPeerId;
       const previousProtocol = bridge.upstreamServerProtocol?.protocol;
+      // Резерв НЕ отзываем при уходе с сервера (см. ниже) — он остаётся жить там для
+      // следующего переключения, а не только для текущего моста.
+      const previousReservedPeerId = bridge.upstreamServerProtocol?.reservedUpstreamPeerId;
 
       try {
         if (wasConfiguredBefore) {
+          progress(35, 'Отключение предыдущего upstream-интерфейса');
           await this.vpnProvisioningService.disconnectBridgeUpstream(selfServer, previousProtocol!, bridge.upstreamInterfaceName);
         }
         // self-сервер мог ещё не иметь дела с протоколом upstream-сервера (например, поднят
         // под обычный WireGuard для клиентов моста, а upstream — AmneziaWG) — доустанавливаем
         // недостающие CLI-инструменты перед подключением.
+        progress(55, 'Проверка CLI-инструментов на self-сервере');
         await this.vpnProvisioningService.ensureClientToolsInstalled(selfServer, target.protocol);
+        progress(75, 'Подключение нового upstream-интерфейса');
         await this.vpnProvisioningService.connectBridgeUpstream(
           selfServer,
           target.protocol,
@@ -355,12 +374,16 @@ export class BridgesService {
       } catch (error) {
         // self-сервер не удалось подключить к новому upstream — системный peer уже создан
         // и применён НА ЦЕЛЕВОМ сервере (это отдельный шаг с собственным успехом), но раз
-        // мост им не воспользуется, не оставляем его висеть там.
-        await this.peersService.revokeSystemPeer(systemPeer.id);
+        // мост им не воспользуется, не оставляем его висеть там (кроме резерва — его
+        // оставляем жить для следующей попытки).
+        if (!reusedReserved) {
+          await this.peersService.revokeSystemPeer(systemPeer.id);
+        }
         throw error;
       }
 
       if (!wasConfiguredBefore) {
+        progress(90, 'Настройка NAT');
         await this.configureNat(selfServer, bridge);
       }
 
@@ -369,17 +392,44 @@ export class BridgesService {
       bridge.status = BridgeStatus.ACTIVE;
       const saved = await this.bridgesRepository.save(bridge);
 
-      if (previousPeerId) {
+      if (previousPeerId && previousPeerId !== previousReservedPeerId) {
+        progress(95, 'Отзыв старого upstream-peer');
         await this.peersService.revokeSystemPeer(previousPeerId);
       }
 
+      this.bridgesGateway.broadcastProgress({ bridgeId: bridge.id, percent: 100, step: 'Готово', done: true });
       return this.toSafeBridge(saved);
     } catch (error) {
       bridge.status = BridgeStatus.ERROR;
       bridge.lastError = (error as Error).message;
       await this.bridgesRepository.save(bridge);
+      this.bridgesGateway.broadcastProgress({
+        bridgeId: bridge.id,
+        percent: 100,
+        step: 'Ошибка',
+        done: true,
+        error: (error as Error).message,
+      });
       throw error;
     }
+  }
+
+  // Возвращает резерв, если он есть, активен и не занят другим мостом прямо сейчас; иначе
+  // null (вызывающий код создаёт peer на лету, как до этой оптимизации).
+  private async tryReuseReservedPeer(bridge: Bridge, target: ServerProtocol): Promise<Peer | null> {
+    if (!target.reservedUpstreamPeerId) {
+      return null;
+    }
+    const reserved = await this.peersRepository.findOne({
+      where: { id: target.reservedUpstreamPeerId, status: PeerStatus.ACTIVE },
+    });
+    if (!reserved) {
+      return null;
+    }
+    const claimedByOtherBridge = await this.bridgesRepository.findOne({
+      where: { upstreamPeerId: reserved.id, id: Not(bridge.id) },
+    });
+    return claimedByOtherBridge ? null : reserved;
   }
 
   async rebalanceNow(bridgeId: string): Promise<BridgeListItem> {

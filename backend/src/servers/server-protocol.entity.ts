@@ -77,4 +77,18 @@ export class ServerProtocol {
 
   @OneToMany(() => Peer, (peer) => peer.serverProtocol)
   peers: Peer[];
+
+  // Заранее поднятый системный upstream-peer (PeerSource.BRIDGE_UPSTREAM) — создаётся
+  // один раз при установке протокола (см. ServersService.installProtocol), а не заново
+  // при каждом переключении моста на этот сервер. BridgesService.setUpstream переиспользует
+  // его, если он свободен (не занят другим мостом прямо сейчас) — экономит SSH-раунд-трип
+  // на целевой сервер и полную перезапись/обрыв его интерфейса при переключении. null —
+  // протокол установлен до появления этой оптимизации или резерв ещё не создан; тогда
+  // setUpstream откатывается к старому поведению (создаёт peer на лету).
+  @ManyToOne(() => Peer, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'reserved_upstream_peer_id' })
+  reservedUpstreamPeer: Peer | null;
+
+  @Column({ name: 'reserved_upstream_peer_id', type: 'uuid', nullable: true })
+  reservedUpstreamPeerId: string | null;
 }
