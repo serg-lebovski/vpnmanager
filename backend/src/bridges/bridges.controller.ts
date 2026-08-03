@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { AuthenticatedUser, CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/enums';
@@ -8,6 +8,7 @@ import { BridgesService } from './bridges.service';
 import { CreateBridgeDto } from './dto/create-bridge.dto';
 import { SetModeDto } from './dto/set-mode.dto';
 import { SetUpstreamDto } from './dto/set-upstream.dto';
+import { UpdateBridgeDto } from './dto/update-bridge.dto';
 
 @Controller('bridges')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -26,6 +27,12 @@ export class BridgesController {
   @Roles(Role.SUPER_ADMIN)
   create(@Body() dto: CreateBridgeDto) {
     return this.bridgesService.create(dto);
+  }
+
+  @Patch(':id')
+  @Roles(Role.SUPER_ADMIN)
+  update(@Param('id') id: string, @Body() dto: UpdateBridgeDto) {
+    return this.bridgesService.update(id, dto);
   }
 
   @Post(':id/upstream')

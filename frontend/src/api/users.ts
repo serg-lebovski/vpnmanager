@@ -18,6 +18,18 @@ export async function createUser(input: CreateUserInput): Promise<AppUser> {
   return data;
 }
 
+export interface UpdateUserInput {
+  email?: string;
+  password?: string;
+  role?: Role;
+  organizationId?: string | null;
+}
+
+export async function updateUser(id: string, input: UpdateUserInput): Promise<AppUser> {
+  const { data } = await apiClient.patch<AppUser>(`/users/${id}`, input);
+  return data;
+}
+
 export async function deleteUser(id: string): Promise<void> {
   await apiClient.delete(`/users/${id}`);
 }

@@ -17,6 +17,16 @@ export async function createOrganization(input: CreateOrganizationInput): Promis
   return data;
 }
 
+export async function fetchOrganization(id: string): Promise<Organization> {
+  const { data } = await apiClient.get<Organization>(`/organizations/${id}`);
+  return data;
+}
+
+export async function updateOrganization(id: string, input: { name: string }): Promise<Organization> {
+  const { data } = await apiClient.patch<Organization>(`/organizations/${id}`, input);
+  return data;
+}
+
 export async function deleteOrganization(id: string): Promise<void> {
   await apiClient.delete(`/organizations/${id}`);
 }

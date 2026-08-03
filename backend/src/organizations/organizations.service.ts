@@ -5,6 +5,7 @@ import { DataSource, Repository } from 'typeorm';
 import { Role } from '../common/enums';
 import { User } from '../users/user.entity';
 import { CreateOrganizationDto } from './dto/create-organization.dto';
+import { UpdateOrganizationDto } from './dto/update-organization.dto';
 import { Organization } from './organization.entity';
 
 @Injectable()
@@ -50,6 +51,18 @@ export class OrganizationsService {
       );
       return organization;
     });
+  }
+
+  async update(id: string, dto: UpdateOrganizationDto): Promise<Organization> {
+    const organization = await this.findOneOrFail(id);
+    if (dto.name !== undefined && dto.name !== organization.name) {
+      const existing = await this.organizationsRepository.findOne({ where: { name: dto.name } });
+      if (existing) {
+        throw new ConflictException('Организация с таким именем уже существует');
+      }
+      organization.name = dto.name;
+    }
+    return this.organizationsRepository.save(organization);
   }
 
   async remove(id: string): Promise<void> {

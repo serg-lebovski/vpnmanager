@@ -24,6 +24,16 @@ export async function createBridge(input: CreateBridgeInput): Promise<BridgeEnti
   return data;
 }
 
+export interface UpdateBridgeInput {
+  name?: string;
+  organizationId?: string | null;
+}
+
+export async function updateBridge(bridgeId: string, input: UpdateBridgeInput): Promise<BridgeEntity> {
+  const { data } = await apiClient.patch<BridgeEntity>(`/bridges/${bridgeId}`, input);
+  return data;
+}
+
 export async function setBridgeUpstream(bridgeId: string, serverProtocolId: string): Promise<BridgeEntity> {
   const { data } = await apiClient.post<BridgeEntity>(`/bridges/${bridgeId}/upstream`, { serverProtocolId });
   return data;

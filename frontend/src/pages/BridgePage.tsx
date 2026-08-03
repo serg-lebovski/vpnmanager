@@ -24,11 +24,12 @@ import {
   rebalanceBridge,
   setBridgeMode,
   setBridgeUpstream,
+  updateBridge,
 } from '../api/bridges';
 import { getErrorMessage } from '../api/errors';
 import { fetchOrganizations } from '../api/organizations';
 import { fetchServers } from '../api/servers';
-import { BridgeEntity, ServerEntity, VpnProtocol } from '../api/types';
+import { BridgeEntity, Organization, ServerEntity, VpnProtocol } from '../api/types';
 
 const statusColor: Record<string, 'default' | 'success' | 'error' | 'warning'> = {
   not_configured: 'default',
@@ -177,7 +178,7 @@ export function BridgePage() {
           key={bridge.id}
           bridge={bridge}
           servers={servers || []}
-          organizationName={organizations?.find((o) => o.id === bridge.organizationId)?.name}
+          organizations={organizations || []}
           onChanged={invalidate}
           onDelete={() => deleteMutation.mutate(bridge.id)}
         />
@@ -231,18 +232,33 @@ function ProtocolRow({
 function BridgeCard({
   bridge,
   servers,
-  organizationName,
+  organizations,
   onChanged,
   onDelete,
 }: {
   bridge: BridgeEntity;
   servers: ServerEntity[];
-  organizationName?: string;
+  organizations: Organization[];
   onChanged: () => void;
   onDelete: () => void;
 }) {
   const [selectedUpstream, setSelectedUpstream] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editName, setEditName] = useState(bridge.name);
+  const [editOrganizationId, setEditOrganizationId] = useState(bridge.organizationId ?? '');
+
+  const organizationName = organizations.find((o) => o.id === bridge.organizationId)?.name;
+
+  const updateMutation = useMutation({
+    mutationFn: () => updateBridge(bridge.id, { name: editName, organizationId: editOrganizationId || null }),
+    onSuccess: () => {
+      onChanged();
+      setError(null);
+      setIsEditing(false);
+    },
+    onError: (err) => setError(getErrorMessage(err, 'Не удалось сохранить изменения моста')),
+  });
 
   const upstreamMutation = useMutation({
     mutationFn: (serverProtocolId: string) => setBridgeUpstream(bridge.id, serverProtocolId),
@@ -278,12 +294,39 @@ function BridgeCard({
 
   return (
     <Paper sx={{ p: 2 }}>
-      <Stack direction="row" justifyContent="space-between" alignItems="center">
-        <Box>
-          <Typography variant="h6">
-            {bridge.name} <Chip size="small" label={bridge.status} color={statusColor[bridge.status]} sx={{ ml: 1 }} />
-            <Chip size="small" label={organizationName ?? 'общий'} variant="outlined" sx={{ ml: 1 }} />
-          </Typography>
+      <Stack direction="row" justifyContent="space-between" alignItems="flex-start">
+        <Box flex={1}>
+          {isEditing ? (
+            <Stack direction="row" spacing={2} alignItems="flex-start" mb={1}>
+              <TextField label="Название" size="small" value={editName} onChange={(e) => setEditName(e.target.value)} required />
+              <TextField
+                select
+                label="Организация"
+                size="small"
+                value={editOrganizationId}
+                onChange={(e) => setEditOrganizationId(e.target.value)}
+                sx={{ minWidth: 200 }}
+              >
+                <MenuItem value="">Общий (без организации)</MenuItem>
+                {organizations.map((org) => (
+                  <MenuItem key={org.id} value={org.id}>
+                    {org.name}
+                  </MenuItem>
+                ))}
+              </TextField>
+              <Button size="small" variant="contained" disabled={updateMutation.isPending} onClick={() => updateMutation.mutate()}>
+                Сохранить
+              </Button>
+              <Button size="small" onClick={() => setIsEditing(false)}>
+                Отмена
+              </Button>
+            </Stack>
+          ) : (
+            <Typography variant="h6">
+              {bridge.name} <Chip size="small" label={bridge.status} color={statusColor[bridge.status]} sx={{ ml: 1 }} />
+              <Chip size="small" label={organizationName ?? 'общий'} variant="outlined" sx={{ ml: 1 }} />
+            </Typography>
+          )}
           {clientInterfaces.map(({ label, sp }) => (
             <Typography key={label} variant="body2" color="text.secondary">
               Клиентский интерфейс ({label}): {sp?.server?.name} · порт {sp?.listenPort} · сеть {sp?.networkCidr}
@@ -311,6 +354,18 @@ function BridgeCard({
           <Button size="small" onClick={() => rebalanceMutation.mutate()} disabled={!bridge.upstreamServerProtocolId}>
             Пересчитать баланс
           </Button>
+          {!isEditing && (
+            <Button
+              size="small"
+              onClick={() => {
+                setEditName(bridge.name);
+                setEditOrganizationId(bridge.organizationId ?? '');
+                setIsEditing(true);
+              }}
+            >
+              Изменить
+            </Button>
+          )}
           <Button size="small" color="error" onClick={onDelete}>
             Удалить
           </Button>

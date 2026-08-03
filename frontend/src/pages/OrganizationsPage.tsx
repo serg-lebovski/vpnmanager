@@ -1,6 +1,7 @@
 import {
   Alert,
   Button,
+  Link,
   Paper,
   Stack,
   Table,
@@ -13,6 +14,7 @@ import {
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, useState } from 'react';
+import { Link as RouterLink } from 'react-router-dom';
 import { getErrorMessage } from '../api/errors';
 import { createOrganization, deleteOrganization, fetchOrganizations } from '../api/organizations';
 
@@ -49,11 +51,11 @@ export function OrganizationsPage() {
 
   return (
     <Stack spacing={3}>
-      <Typography variant="h5">Организации (клиентские аккаунты)</Typography>
+      <Typography variant="h5">Клиенты</Typography>
 
       <Paper sx={{ p: 2 }}>
         <Typography variant="subtitle1" mb={2}>
-          Новая организация
+          Новый клиент
         </Typography>
         <form onSubmit={handleSubmit}>
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems="flex-start">
@@ -96,7 +98,11 @@ export function OrganizationsPage() {
           <TableBody>
             {organizations?.map((org) => (
               <TableRow key={org.id}>
-                <TableCell>{org.name}</TableCell>
+                <TableCell>
+                  <Link component={RouterLink} to={`/organizations/${org.id}`}>
+                    {org.name}
+                  </Link>
+                </TableCell>
                 <TableCell>{new Date(org.createdAt).toLocaleString()}</TableCell>
                 <TableCell align="right">
                   <Button size="small" color="error" onClick={() => deleteMutation.mutate(org.id)}>
@@ -107,7 +113,7 @@ export function OrganizationsPage() {
             ))}
             {!isLoading && organizations?.length === 0 && (
               <TableRow>
-                <TableCell colSpan={3}>Организаций пока нет</TableCell>
+                <TableCell colSpan={3}>Клиентов пока нет</TableCell>
               </TableRow>
             )}
           </TableBody>

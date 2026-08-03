@@ -1,6 +1,10 @@
 import {
   Alert,
   Button,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   MenuItem,
   Paper,
   Stack,
@@ -16,8 +20,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, useState } from 'react';
 import { getErrorMessage } from '../api/errors';
 import { fetchOrganizations } from '../api/organizations';
-import { Role } from '../api/types';
-import { createUser, deleteUser, fetchUsers } from '../api/users';
+import { AppUser, Role } from '../api/types';
+import { createUser, deleteUser, fetchUsers, updateUser } from '../api/users';
 import { useAuth } from '../auth/AuthContext';
 
 export function UsersPage() {
@@ -53,6 +57,37 @@ export function UsersPage() {
     mutationFn: deleteUser,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['users'] }),
   });
+
+  const [editingUser, setEditingUser] = useState<AppUser | null>(null);
+  const [editEmail, setEditEmail] = useState('');
+  const [editPassword, setEditPassword] = useState('');
+  const [editRole, setEditRole] = useState<Role>('org_user');
+  const [editOrganizationId, setEditOrganizationId] = useState('');
+  const [editError, setEditError] = useState<string | null>(null);
+
+  const updateMutation = useMutation({
+    mutationFn: () =>
+      updateUser(editingUser!.id, {
+        email: editEmail,
+        password: editPassword || undefined,
+        role: editRole,
+        organizationId: editRole === 'super_admin' ? null : editOrganizationId,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['users'] });
+      setEditingUser(null);
+    },
+    onError: (err) => setEditError(getErrorMessage(err, 'Не удалось сохранить изменения')),
+  });
+
+  function openEdit(u: AppUser) {
+    setEditingUser(u);
+    setEditEmail(u.email);
+    setEditPassword('');
+    setEditRole(u.role);
+    setEditOrganizationId(u.organizationId ?? '');
+    setEditError(null);
+  }
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -123,6 +158,7 @@ export function UsersPage() {
             <TableRow>
               <TableCell>Email</TableCell>
               <TableCell>Роль</TableCell>
+              <TableCell>Организация</TableCell>
               <TableCell align="right">Действия</TableCell>
             </TableRow>
           </TableHead>
@@ -131,7 +167,13 @@ export function UsersPage() {
               <TableRow key={u.id}>
                 <TableCell>{u.email}</TableCell>
                 <TableCell>{u.role}</TableCell>
+                <TableCell>{organizations?.find((o) => o.id === u.organizationId)?.name ?? '—'}</TableCell>
                 <TableCell align="right">
+                  {isSuperAdmin && (
+                    <Button size="small" onClick={() => openEdit(u)}>
+                      Изменить
+                    </Button>
+                  )}
                   <Button size="small" color="error" onClick={() => deleteMutation.mutate(u.id)}>
                     Удалить
                   </Button>
@@ -140,12 +182,55 @@ export function UsersPage() {
             ))}
             {!isLoading && users?.length === 0 && (
               <TableRow>
-                <TableCell colSpan={3}>Пользователей пока нет</TableCell>
+                <TableCell colSpan={4}>Пользователей пока нет</TableCell>
               </TableRow>
             )}
           </TableBody>
         </Table>
       </Paper>
+
+      <Dialog open={!!editingUser} onClose={() => setEditingUser(null)} fullWidth maxWidth="xs">
+        <DialogTitle>Изменить пользователя</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} mt={1}>
+            <TextField label="Email" type="email" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} required />
+            <TextField
+              label="Новый пароль"
+              type="password"
+              value={editPassword}
+              onChange={(e) => setEditPassword(e.target.value)}
+              helperText="Оставьте пустым, чтобы не менять"
+            />
+            <TextField select label="Роль" value={editRole} onChange={(e) => setEditRole(e.target.value as Role)}>
+              <MenuItem value="org_admin">Администратор организации</MenuItem>
+              <MenuItem value="org_user">Пользователь организации</MenuItem>
+              <MenuItem value="super_admin">Суперадмин</MenuItem>
+            </TextField>
+            {editRole !== 'super_admin' && (
+              <TextField
+                select
+                label="Организация"
+                value={editOrganizationId}
+                onChange={(e) => setEditOrganizationId(e.target.value)}
+                required
+              >
+                {organizations?.map((org) => (
+                  <MenuItem key={org.id} value={org.id}>
+                    {org.name}
+                  </MenuItem>
+                ))}
+              </TextField>
+            )}
+            {editError && <Alert severity="error">{editError}</Alert>}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEditingUser(null)}>Отмена</Button>
+          <Button variant="contained" disabled={updateMutation.isPending} onClick={() => updateMutation.mutate()}>
+            Сохранить
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Stack>
   );
 }

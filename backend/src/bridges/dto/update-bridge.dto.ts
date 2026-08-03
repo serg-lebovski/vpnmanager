@@ -1,0 +1,14 @@
+import { IsOptional, IsString, IsUUID, MinLength, ValidateIf } from 'class-validator';
+
+export class UpdateBridgeDto {
+  @IsString()
+  @MinLength(1)
+  @IsOptional()
+  name?: string;
+
+  // null — сделать мост общим/суперадминским; отсутствие поля — не менять организацию.
+  @IsUUID()
+  @ValidateIf((_, value) => value !== null)
+  @IsOptional()
+  organizationId?: string | null;
+}
