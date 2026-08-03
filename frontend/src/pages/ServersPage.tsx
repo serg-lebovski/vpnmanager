@@ -159,7 +159,9 @@ export function ServersPage() {
 
       {isLoading && <Typography>Загрузка...</Typography>}
 
-      {servers?.map((server) => (
+      {/* Self-серверы (инфраструктура моста) не показываем здесь — ими управляют через
+          вкладку «Мост», а не как обычными backend-серверами. */}
+      {servers?.filter((server) => !server.isSelf).map((server) => (
         <ServerCard
           key={server.id}
           server={server}
