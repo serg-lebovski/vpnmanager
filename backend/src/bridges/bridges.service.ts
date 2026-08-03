@@ -219,7 +219,11 @@ export class BridgesService {
   async remove(id: string): Promise<void> {
     const bridge = await this.findOneOrFail(id);
     if (bridge.upstreamPeerId) {
+      // revoke — снимает peer с upstream-сервера по SSH (пока запись ещё жива);
+      // purge — убирает саму запись, чтобы она не висела в БД вечно как "отозванная,
+      // но не удалённая".
       await this.peersService.revokeSystemPeer(bridge.upstreamPeerId);
+      await this.peersService.purgeSystemPeer(bridge.upstreamPeerId);
     }
     const clientProtocolIds = this.clientProtocolIds(bridge);
     if (clientProtocolIds.length > 0) {
@@ -382,10 +386,16 @@ export class BridgesService {
         throw error;
       }
 
-      if (!wasConfiguredBefore) {
-        progress(90, 'Настройка NAT');
-        await this.configureNat(selfServer, bridge);
-      }
+      // Вызываем при КАЖДОМ переключении, не только при первом назначении upstream —
+      // сама функция идемпотентна (проверяет перед добавлением, см.
+      // VpnProvisioningService.setupBridgeNat). Раньше вызывалась только один раз в
+      // расчёте на то, что правила не нужно пересоздавать — но ip rule/iptables не
+      // переживают перезагрузку self-сервера и ничем не восстанавливались сами; поймано
+      // вживую (трафик клиентов моста молча уходил через обычный интернет self-сервера
+      // вместо upstream-туннеля). Теперь каждое переключение заодно чинит то, что могло
+      // пропасть.
+      progress(90, 'Настройка NAT');
+      await this.configureNat(selfServer, bridge);
 
       bridge.upstreamServerProtocolId = target.id;
       bridge.upstreamPeerId = systemPeer.id;

@@ -225,6 +225,18 @@ export class VpnProvisioningService {
   // каждого своя routeTable) продолжает идти через основной маршрут без изменений.
   // Настраивается один раз при первом подключении upstream (правила ссылаются только
   // на имена интерфейсов, которые не меняются при последующих переключениях upstream).
+  // ИДЕМПОТЕНТНО: каждая команда сначала проверяет (-C для iptables, grep по `ip rule
+  // show` для policy routing), существует ли правило, и добавляет только если его нет.
+  // Раньше вызывалось только ОДИН раз — при первом назначении upstream моста (расчёт был
+  // на то, что правила ссылаются на постоянные имена интерфейсов и не требуют
+  // пересоздания при последующих переключениях) — но `ip rule`/iptables это состояние
+  // ядра, не переживающее перезагрузку self-сервера, и ничего не пересоздавало их
+  // само собой. Поймано вживую: правило исчезло (сервер перезагружали/что-то его
+  // сбросило), трафик клиентов моста стал молча уходить через обычный интернет
+  // self-сервера вместо upstream-туннеля — работоспособность моста никак не
+  // сигнализировала об этой поломке. Теперь setupBridgeNat вызывается при КАЖДОМ
+  // setUpstream (см. bridges.service.ts) — самовосстанавливается при следующем же
+  // переключении, а не только при самом первом назначении.
   async setupBridgeNat(
     selfServer: Server,
     clientInterfaces: Array<{ networkCidr: string; interfaceName: string }>,
@@ -240,15 +252,28 @@ export class VpnProvisioningService {
       for (const { networkCidr, interfaceName } of clientInterfaces) {
         await this.sshService.execOrThrow(
           ssh,
-          `iptables -t nat -A POSTROUTING -s ${networkCidr} -o ${upstreamInterfaceName} -j MASQUERADE`,
+          `iptables -t nat -C POSTROUTING -s ${networkCidr} -o ${upstreamInterfaceName} -j MASQUERADE 2>/dev/null || ` +
+            `iptables -t nat -A POSTROUTING -s ${networkCidr} -o ${upstreamInterfaceName} -j MASQUERADE`,
         );
-        await this.sshService.execOrThrow(ssh, `iptables -A FORWARD -i ${interfaceName} -o ${upstreamInterfaceName} -j ACCEPT`);
-        await this.sshService.execOrThrow(ssh, `iptables -A FORWARD -i ${upstreamInterfaceName} -o ${interfaceName} -j ACCEPT`);
+        await this.sshService.execOrThrow(
+          ssh,
+          `iptables -C FORWARD -i ${interfaceName} -o ${upstreamInterfaceName} -j ACCEPT 2>/dev/null || ` +
+            `iptables -A FORWARD -i ${interfaceName} -o ${upstreamInterfaceName} -j ACCEPT`,
+        );
+        await this.sshService.execOrThrow(
+          ssh,
+          `iptables -C FORWARD -i ${upstreamInterfaceName} -o ${interfaceName} -j ACCEPT 2>/dev/null || ` +
+            `iptables -A FORWARD -i ${upstreamInterfaceName} -o ${interfaceName} -j ACCEPT`,
+        );
         // Только пакеты с источником из сети ЭТОГО клиентского интерфейса ищут маршрут
         // в отдельной таблице ЭТОГО моста (routeTable — там upstream — шлюз по
         // умолчанию, см. connectAsClient); всё остальное на хосте по-прежнему
         // резолвится через main. Приоритет 100 — заведомо раньше правила main (32766).
-        await this.sshService.execOrThrow(ssh, `ip rule add from ${networkCidr} table ${routeTable} priority 100`);
+        await this.sshService.execOrThrow(
+          ssh,
+          `ip rule show | grep -q "from ${networkCidr} lookup ${routeTable}" || ` +
+            `ip rule add from ${networkCidr} table ${routeTable} priority 100`,
+        );
       }
     });
   }

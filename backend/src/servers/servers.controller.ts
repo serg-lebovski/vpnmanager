@@ -44,6 +44,11 @@ export class ServersController {
     return this.serversService.testConnection(id);
   }
 
+  @Post(':id/reboot')
+  reboot(@Param('id') id: string) {
+    return this.serversService.reboot(id);
+  }
+
   @Post(':id/protocols')
   installProtocol(@Param('id') id: string, @Body() dto: InstallProtocolDto) {
     return this.serversService.installProtocol(id, dto);

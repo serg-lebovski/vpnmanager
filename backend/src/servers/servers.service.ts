@@ -1,9 +1,10 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { BridgesService } from '../bridges/bridges.service';
 import { decryptSecret, encryptSecret } from '../common/encryption.util';
-import { ServerProtocolStatus, ServerStatus, VpnProtocol } from '../common/enums';
+import { PeerStatus, ServerProtocolStatus, ServerStatus, VpnProtocol } from '../common/enums';
+import { Peer } from '../peers/peer.entity';
 import { PeersService } from '../peers/peers.service';
 import { SshService } from '../ssh/ssh.service';
 import { VpnProvisioningService } from '../vpn/vpn-provisioning.service';
@@ -22,6 +23,7 @@ export class ServersService {
   constructor(
     @InjectRepository(Server) private readonly serversRepository: Repository<Server>,
     @InjectRepository(ServerProtocol) private readonly serverProtocolsRepository: Repository<ServerProtocol>,
+    @InjectRepository(Peer) private readonly peersRepository: Repository<Peer>,
     private readonly sshService: SshService,
     private readonly vpnProvisioningService: VpnProvisioningService,
     private readonly peersService: PeersService,
@@ -88,6 +90,18 @@ export class ServersService {
     // upstream и без возможности исправить это иначе как вручную по SSH).
     const protocolIds = server.protocols.map((p) => p.id);
     await this.bridgesService.reassignUpstreamAwayFrom(protocolIds);
+
+    if (protocolIds.length > 0) {
+      // Явно деактивируем и удаляем peers и протоколы этого сервера, а не полагаемся
+      // только на ON DELETE CASCADE в БД — надёжнее и нагляднее, что после удаления
+      // сервера ничего не остаётся "подвешенным" (peer, к которому уже не подключиться,
+      // раз сервера в панели больше нет). SSH на сам удаляемый сервер не дёргаем —
+      // сервер обычно удаляют именно потому, что он недоступен/выводится из эксплуатации.
+      await this.peersRepository.update({ serverProtocolId: In(protocolIds) }, { status: PeerStatus.REVOKED });
+      await this.peersRepository.delete({ serverProtocolId: In(protocolIds) });
+      await this.serverProtocolsRepository.delete(protocolIds);
+    }
+
     await this.serversRepository.remove(server);
   }
 
@@ -105,6 +119,20 @@ export class ServersService {
     server.lastError = result.ok ? null : result.error || null;
     await this.serversRepository.save(server);
     return result;
+  }
+
+  // Отправляет команду перезагрузки по SSH и сразу возвращает управление — сама
+  // перезагрузка обрывает SSH-соединение раньше, чем оно успело бы штатно закрыться
+  // (это нормально, не ошибка выполнения команды, поэтому подавляем исключение).
+  async reboot(id: string): Promise<{ message: string }> {
+    const server = await this.findOneOrFail(id);
+    const connection = this.vpnProvisioningService.connectionParams(server);
+    try {
+      await this.sshService.withConnection(connection, (ssh) => this.sshService.exec(ssh, 'reboot'));
+    } catch (error) {
+      this.logger.debug(`SSH-соединение оборвалось при перезагрузке ${server.name} (ожидаемо): ${(error as Error).message}`);
+    }
+    return { message: 'Команда перезагрузки отправлена' };
   }
 
   async installProtocol(serverId: string, dto: InstallProtocolDto): Promise<ServerProtocol> {

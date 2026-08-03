@@ -137,6 +137,15 @@ export class PeersService {
     await this.peersRepository.remove(peer);
   }
 
+  // Безвозвратное удаление системного upstream-peer — аналог purge(), но без требования
+  // "текущего пользователя"/org-скоупинга (peer системный). Используется BridgesService
+  // при удалении моста — после revokeSystemPeer (который уже убрал peer с upstream-
+  // сервера по SSH), чтобы запись не висела в БД вечно как "отозванная, но не удалённая".
+  async purgeSystemPeer(id: string): Promise<void> {
+    const peer = await this.peersRepository.findOneOrFail({ where: { id } });
+    await this.peersRepository.remove(peer);
+  }
+
   // Отзыв системного upstream-peer моста — без требования "текущего пользователя" и без
   // org-скоупинга (peer системный). Используется BridgesService при смене upstream.
   async revokeSystemPeer(id: string): Promise<void> {

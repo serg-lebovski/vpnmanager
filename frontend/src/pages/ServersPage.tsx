@@ -4,6 +4,11 @@ import {
   Button,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
   Divider,
   LinearProgress,
   MenuItem,
@@ -13,7 +18,8 @@ import {
   Typography,
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
+import { connectDashboardSocket } from '../api/dashboard';
 import { getErrorMessage } from '../api/errors';
 import {
   CreateServerInput,
@@ -23,6 +29,7 @@ import {
   detectExistingInstallations,
   fetchServers,
   installProtocol,
+  rebootServer,
   scanAndImportPeers,
   testServerConnection,
   updateServer,
@@ -55,6 +62,25 @@ export function ServersPage() {
   });
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['servers'] });
+
+  // Живой статус связи с сервером — переиспользуем тот же WebSocket-канал, что и
+  // дашборд (backend уже опрашивает все серверы по SSH каждые несколько секунд для
+  // него), отдельного механизма опроса заводить не нужно.
+  const [onlineByServer, setOnlineByServer] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    const socket = connectDashboardSocket((snapshot) => {
+      setOnlineByServer(Object.fromEntries(snapshot.servers.map((s) => [s.serverId, s.online])));
+    });
+    return () => {
+      socket.disconnect();
+    };
+  }, []);
+
+  const [rebootConfirmId, setRebootConfirmId] = useState<string | null>(null);
+  const rebootMutation = useMutation({
+    mutationFn: rebootServer,
+    onSuccess: () => setRebootConfirmId(null),
+  });
 
   const [form, setForm] = useState<CreateServerInput>({
     name: '',
@@ -171,9 +197,11 @@ export function ServersPage() {
         <ServerCard
           key={server.id}
           server={server}
+          online={onlineByServer[server.id]}
           onDelete={() => deleteMutation.mutate(server.id)}
           onRename={(name) => renameMutation.mutate({ id: server.id, name })}
           onTest={() => testMutation.mutate(server.id)}
+          onReboot={() => setRebootConfirmId(server.id)}
           onInstall={(protocol, listenPort, networkCidr) =>
             installMutation.mutate({ serverId: server.id, protocol, listenPort, networkCidr })
           }
@@ -183,15 +211,38 @@ export function ServersPage() {
           onDetected={invalidate}
         />
       ))}
+
+      <Dialog open={!!rebootConfirmId} onClose={() => setRebootConfirmId(null)}>
+        <DialogTitle>Перезагрузить сервер?</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            На сервер уйдёт команда <code>reboot</code> по SSH. Все текущие VPN-подключения клиентов к этому серверу
+            прервутся до его повторной загрузки.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setRebootConfirmId(null)}>Отмена</Button>
+          <Button
+            variant="contained"
+            color="warning"
+            disabled={rebootMutation.isPending}
+            onClick={() => rebootConfirmId && rebootMutation.mutate(rebootConfirmId)}
+          >
+            Перезагрузить
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Stack>
   );
 }
 
 function ServerCard({
   server,
+  online,
   onDelete,
   onRename,
   onTest,
+  onReboot,
   onInstall,
   isInstalling,
   installError,
@@ -199,9 +250,11 @@ function ServerCard({
   onDetected,
 }: {
   server: ServerEntity;
+  online?: boolean;
   onDelete: () => void;
   onRename: (name: string) => void;
   onTest: () => void;
+  onReboot: () => void;
   onInstall: (protocol: VpnProtocol, listenPort: number, networkCidr: string) => void;
   isInstalling: boolean;
   installError: string | null;
@@ -250,6 +303,13 @@ function ServerCard({
             <Typography variant="h6">
               {server.name} <Chip size="small" label={server.status} color={statusColor[server.status]} sx={{ ml: 1 }} />
               {server.isSelf && <Chip size="small" label="Мост (self)" color="info" sx={{ ml: 1 }} />}
+              <Chip
+                size="small"
+                label={online === undefined ? 'проверяем связь…' : online ? 'на связи' : 'нет связи'}
+                color={online === undefined ? 'default' : online ? 'success' : 'error'}
+                variant="outlined"
+                sx={{ ml: 1 }}
+              />
             </Typography>
           )}
           <Typography variant="body2" color="text.secondary">
@@ -267,6 +327,9 @@ function ServerCard({
           </Button>
           <Button size="small" onClick={() => detectMutation.mutate()} disabled={detectMutation.isPending}>
             Проверить существующую установку
+          </Button>
+          <Button size="small" color="warning" onClick={onReboot}>
+            Перезагрузить
           </Button>
           {!isEditingName && (
             <Button

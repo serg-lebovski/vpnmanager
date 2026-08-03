@@ -35,6 +35,11 @@ export async function testServerConnection(id: string): Promise<{ ok: boolean; i
   return data;
 }
 
+export async function rebootServer(id: string): Promise<{ message: string }> {
+  const { data } = await apiClient.post(`/servers/${id}/reboot`);
+  return data;
+}
+
 export interface InstallProtocolInput {
   protocol: VpnProtocol;
   listenPort: number;
