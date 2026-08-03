@@ -7,6 +7,7 @@ import {
   InstallOptions,
   InstallResult,
   PeerSpec,
+  PeerTransferStats,
   ScannedPeer,
   UpstreamPeerConfig,
   VpnDriver,
@@ -198,6 +199,28 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
   async getActivePeerCount(ctx: VpnDriverContext): Promise<number> {
     const peers = await this.scanExistingPeers(ctx);
     return peers.length;
+  }
+
+  // `wg show <iface> transfer` печатает по строке на peer: "<publicKey>\t<rxBytes>\t<txBytes>"
+  // (awg — тот же формат, drop-in совместимый CLI). Пустая карта, если интерфейс сейчас не
+  // поднят (команда завершается ошибкой) — не считаем это фатальным, просто нет данных.
+  async getTransferStats(ctx: VpnDriverContext): Promise<Map<string, PeerTransferStats>> {
+    const interfaceName = ctx.serverProtocol.interfaceName;
+    const result = await this.sshService.exec(
+      ctx.ssh,
+      this.buildCommand(`${this.binary} show ${interfaceName} transfer`, ctx.serverProtocol.execContainer),
+    );
+    const stats = new Map<string, PeerTransferStats>();
+    if (result.code !== 0) {
+      return stats;
+    }
+    for (const line of result.stdout.split('\n')) {
+      const [publicKey, rx, tx] = line.trim().split(/\s+/);
+      if (publicKey && rx !== undefined && tx !== undefined) {
+        stats.set(publicKey, { rxBytes: Number(rx) || 0, txBytes: Number(tx) || 0 });
+      }
+    }
+    return stats;
   }
 
   // Режим моста: поднимает интерфейс в роли КЛИЕНТА (один [Peer] — upstream-сервер) на

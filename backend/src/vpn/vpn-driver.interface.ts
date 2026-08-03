@@ -46,6 +46,11 @@ export interface ScannedPeer {
   presharedKey?: string;
 }
 
+export interface PeerTransferStats {
+  rxBytes: number;
+  txBytes: number;
+}
+
 export interface DetectedInstallation {
   interfaceName: string;
   listenPort: number;
@@ -81,6 +86,10 @@ export interface VpnDriver {
   scanExistingPeers(ctx: VpnDriverContext): Promise<ScannedPeer[]>;
   applyPeers(ctx: VpnDriverContext, peers: PeerSpec[]): Promise<void>;
   getActivePeerCount(ctx: VpnDriverContext): Promise<number>;
+  // Живая статистика трафика по каждому peer'у интерфейса (`wg show <iface> transfer` /
+  // аналог у AmneziaWG) — ключ карты: publicKey peer'а. Пусто, если интерфейс сейчас не
+  // поднят (не ошибка — например, протокол помечен ACTIVE, но интерфейс временно лежит).
+  getTransferStats(ctx: VpnDriverContext): Promise<Map<string, PeerTransferStats>>;
   // Ищет уже существующую (настроенную не через наш сервис) установку протокола на
   // сервере: сначала по стандартным путям на хосте, затем — среди Docker-контейнеров
   // (в т.ч. официальный self-hosted сервер AmneziaVPN, разворачивающий протоколы как

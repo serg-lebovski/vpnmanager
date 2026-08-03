@@ -8,7 +8,7 @@ import { Server } from '../servers/server.entity';
 import { SshConnectionParams, SshService } from '../ssh/ssh.service';
 import { AmneziaWgDriver } from './amnezia-wg.driver';
 import { assertSupportedCidr } from './network.util';
-import { PeerSpec, ScannedPeer, UpstreamPeerConfig, VpnDriver } from './vpn-driver.interface';
+import { PeerSpec, PeerTransferStats, ScannedPeer, UpstreamPeerConfig, VpnDriver } from './vpn-driver.interface';
 import { WireGuardDriver } from './wireguard.driver';
 
 @Injectable()
@@ -119,6 +119,35 @@ export class VpnProvisioningService {
     await this.sshService.withConnection(connection, (ssh) =>
       driver.applyPeers({ ssh, server, serverProtocol }, peers),
     );
+  }
+
+  // Для дашборда (см. dashboard/) — живая статистика трафика по peer'ам конкретного
+  // ServerProtocol, без похода в БД.
+  async getTransferStats(serverProtocol: ServerProtocol, server: Server): Promise<Map<string, PeerTransferStats>> {
+    const driver = this.driverFor(serverProtocol.protocol);
+    const connection = this.connectionParams(server);
+    return this.sshService.withConnection(connection, (ssh) => driver.getTransferStats({ ssh, server, serverProtocol }));
+  }
+
+  // Для дашборда — общая (не привязанная к протоколу) нагрузка хоста: 1-минутный
+  // loadavg и память. null-поля — команда не удалась (сервер недоступен и т.п.), не бросаем.
+  async getServerLoad(server: Server): Promise<{ loadAvg1: number | null; memTotalMb: number | null; memUsedMb: number | null }> {
+    const connection = this.connectionParams(server);
+    try {
+      return await this.sshService.withConnection(connection, async (ssh) => {
+        const loadResult = await this.sshService.exec(ssh, `cat /proc/loadavg`);
+        const memResult = await this.sshService.exec(ssh, `free -m | awk '/Mem:/ {print $2, $3}'`);
+        const loadAvg1 = loadResult.code === 0 ? parseFloat(loadResult.stdout.trim().split(/\s+/)[0]) : null;
+        const [memTotal, memUsed] = memResult.code === 0 ? memResult.stdout.trim().split(/\s+/) : [];
+        return {
+          loadAvg1: Number.isFinite(loadAvg1) ? loadAvg1 : null,
+          memTotalMb: memTotal !== undefined ? Number(memTotal) : null,
+          memUsedMb: memUsed !== undefined ? Number(memUsed) : null,
+        };
+      });
+    } catch {
+      return { loadAvg1: null, memTotalMb: null, memUsedMb: null };
+    }
   }
 
   // Ищет на сервере уже настроенный (не через наш сервис) VPN по стандартным путям
