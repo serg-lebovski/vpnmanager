@@ -63,7 +63,14 @@ export class NginxConfigService implements OnModuleInit {
 
     let config: string;
     if (serveHttps) {
-      const { fullchain, privkey } = this.certbotService.certPaths(resolved.domain!);
+      // ВАЖНО: здесь нужны пути так, как их видит КОНТЕЙНЕР NGINX (смонтирован
+      // ./certbot/conf:/etc/letsencrypt:ro в docker-compose.yml), а НЕ
+      // certbotService.certPaths() — тот возвращает путь так, как его видит backend
+      // (${REPO_PATH}/certbot/conf/..., через бланковый ${PWD}:${PWD}), у nginx такого
+      // пути в файловой системе просто нет (поймано вживую при первом живом тесте —
+      // "cannot load certificate ... No such file or directory").
+      const fullchain = `/etc/letsencrypt/live/${resolved.domain}/fullchain.pem`;
+      const privkey = `/etc/letsencrypt/live/${resolved.domain}/privkey.pem`;
       const port80Body = resolved.httpEnabled
         ? `    location / {\n        return 301 https://$host$request_uri;\n    }\n`
         : `    location / {\n        return 404;\n    }\n`;
