@@ -1,14 +1,20 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
+import { TypeOrmModule } from '@nestjs/typeorm';
 import { BackupService } from './backup.service';
+import { CertbotService } from './certbot.service';
 import { LogsService } from './logs.service';
+import { NginxConfigService } from './nginx-config.service';
+import { SettingsService } from './settings.service';
 import { SystemController } from './system.controller';
 import { SystemGateway } from './system.gateway';
+import { SystemSettings } from './system-settings.entity';
 import { UpdateService } from './update.service';
 
 @Module({
   imports: [
+    TypeOrmModule.forFeature([SystemSettings]),
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -18,6 +24,6 @@ import { UpdateService } from './update.service';
     }),
   ],
   controllers: [SystemController],
-  providers: [BackupService, UpdateService, SystemGateway, LogsService],
+  providers: [BackupService, UpdateService, SystemGateway, LogsService, CertbotService, NginxConfigService, SettingsService],
 })
 export class SystemModule {}

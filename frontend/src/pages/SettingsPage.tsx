@@ -11,12 +11,14 @@ import {
   MenuItem,
   Paper,
   Stack,
+  Switch,
   TextField,
   Typography,
 } from '@mui/material';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { getErrorMessage } from '../api/errors';
+import { fetchSettings, renewCertificate, updateSettings } from '../api/settings';
 import {
   connectUpdateProgressSocket,
   downloadDatabaseBackup,
@@ -94,6 +96,53 @@ export function SettingsPage() {
     onError: (err) => setBackupError(getErrorMessage(err, 'Не удалось скачать бэкап')),
   });
 
+  const { data: settings, refetch: refetchSettings } = useQuery({ queryKey: ['system', 'settings'], queryFn: fetchSettings });
+  const [domainInput, setDomainInput] = useState('');
+  const [emailInput, setEmailInput] = useState('');
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (settings) {
+      setDomainInput(settings.domain ?? '');
+      setEmailInput(settings.letsEncryptEmail ?? '');
+    }
+  }, [settings]);
+
+  const saveDomainMutation = useMutation({
+    mutationFn: () => updateSettings({ domain: domainInput.trim(), letsEncryptEmail: emailInput.trim() }),
+    onSuccess: () => {
+      refetchSettings();
+      setSettingsError(null);
+    },
+    onError: (err) => setSettingsError(getErrorMessage(err, 'Не удалось сохранить домен/email')),
+  });
+  const toggleHttpsMutation = useMutation({
+    mutationFn: (httpsEnabled: boolean) => updateSettings({ httpsEnabled }),
+    onSuccess: () => {
+      refetchSettings();
+      setSettingsError(null);
+    },
+    onError: (err) => setSettingsError(getErrorMessage(err, 'Не удалось изменить HTTPS')),
+  });
+  const toggleHttpMutation = useMutation({
+    mutationFn: (httpEnabled: boolean) => updateSettings({ httpEnabled }),
+    onSuccess: () => {
+      refetchSettings();
+      setSettingsError(null);
+    },
+    onError: (err) => setSettingsError(getErrorMessage(err, 'Не удалось изменить HTTP')),
+  });
+  const renewCertMutation = useMutation({
+    mutationFn: () => renewCertificate(true),
+    onSuccess: () => {
+      refetchSettings();
+      setSettingsError(null);
+    },
+    onError: (err) => setSettingsError(getErrorMessage(err, 'Не удалось обновить сертификат')),
+  });
+  const settingsBusy =
+    saveDomainMutation.isPending || toggleHttpsMutation.isPending || toggleHttpMutation.isPending || renewCertMutation.isPending;
+
   const [logService, setLogService] = useState<LogService>('backend');
   const [logTail, setLogTail] = useState(300);
   const [logError, setLogError] = useState<string | null>(null);
@@ -168,6 +217,80 @@ export function SettingsPage() {
           повторно запускать, она сама доведёт до консистентного состояния всё, что
           обновление не успело закончить.
         </Typography>
+      </Paper>
+
+      <Paper sx={{ p: 2 }}>
+        <Typography variant="subtitle1" mb={2}>
+          Домен и HTTPS
+        </Typography>
+        <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="flex-start">
+          <TextField
+            label="Домен"
+            size="small"
+            value={domainInput}
+            onChange={(e) => setDomainInput(e.target.value)}
+            placeholder="example.com"
+            sx={{ minWidth: 220 }}
+          />
+          <TextField
+            label="Email для Let's Encrypt"
+            size="small"
+            value={emailInput}
+            onChange={(e) => setEmailInput(e.target.value)}
+            placeholder="admin@example.com"
+            sx={{ minWidth: 220 }}
+          />
+          <Button variant="outlined" disabled={settingsBusy || !domainInput.trim()} onClick={() => saveDomainMutation.mutate()}>
+            Сохранить
+          </Button>
+        </Stack>
+
+        <Stack direction="row" spacing={3} alignItems="center" mt={2}>
+          <Stack direction="row" spacing={1} alignItems="center">
+            <Typography variant="body2">HTTP</Typography>
+            <Switch
+              checked={settings?.httpEnabled ?? true}
+              disabled={settingsBusy}
+              onChange={(e) => toggleHttpMutation.mutate(e.target.checked)}
+            />
+          </Stack>
+          <Stack direction="row" spacing={1} alignItems="center">
+            <Typography variant="body2">HTTPS</Typography>
+            <Switch
+              checked={settings?.httpsEnabled ?? false}
+              disabled={settingsBusy || (!settings?.httpsEnabled && (!settings?.domain || !settings?.letsEncryptEmail))}
+              onChange={(e) => toggleHttpsMutation.mutate(e.target.checked)}
+            />
+          </Stack>
+          <Button
+            size="small"
+            disabled={settingsBusy || !settings?.httpsEnabled}
+            onClick={() => renewCertMutation.mutate()}
+          >
+            Обновить сертификат сейчас
+          </Button>
+        </Stack>
+
+        {settings?.certExpiresAt && (
+          <Typography variant="body2" color="text.secondary" mt={1}>
+            Сертификат действителен до: {new Date(settings.certExpiresAt).toLocaleString()}
+          </Typography>
+        )}
+        <Typography variant="caption" color="text.secondary" display="block" mt={1}>
+          Порт 80 остаётся открытым даже при включённом HTTPS — он нужен для редиректа на
+          HTTPS и для автообновления сертификата (Let's Encrypt проверяет домен именно по
+          порту 80).
+        </Typography>
+        {settings?.lastCertError && (
+          <Alert severity="error" sx={{ mt: 2 }}>
+            {settings.lastCertError}
+          </Alert>
+        )}
+        {settingsError && (
+          <Alert severity="error" sx={{ mt: 2 }}>
+            {settingsError}
+          </Alert>
+        )}
       </Paper>
 
       <Paper sx={{ p: 2 }}>

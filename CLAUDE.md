@@ -149,14 +149,38 @@ DTO в `*/dto/*.dto.ts` должны точно описывать допуст�
 запускать деплой самостоятельно, если явно не попросили именно в этот раз.
 
 `docker-compose.yml` поднимает 4 сервиса: `postgres`, `backend` (build из `backend/Dockerfile`),
-`frontend` (build из `frontend/Dockerfile`, отдаёт статику), `nginx` (единственный сервис с внешним
-портом, `nginx/nginx.conf` проксирует `/api/` → `backend:3000/`, всё остальное → `frontend:80`).
-`backend` ждёт `postgres` healthy (`pg_isready`) через `depends_on.condition: service_healthy`.
+`frontend` (build из `frontend/Dockerfile`, отдаёт статику), `nginx` (единственный сервис с внешними
+портами 80/443). `nginx` монтирует не статический файл, а целую директорию `nginx/generated`
+(`:ro`) — см. ниже про `NginxConfigService`. `backend` ждёт `postgres` healthy (`pg_isready`) через
+`depends_on.condition: service_healthy`.
 
 Известные эксплуатационные ограничения (подробности и причины — в README.md, раздел «Известные
-ограничения MVP»): поддерживаются только сети `a.b.c.0/24`; TLS не настроен; установка AmneziaWG
-зависит от внешнего PPA и может не собраться под конкретное ядро/дистрибутив; self-сервер моста в
-непривилегированном LXC-контейнере не может поднять реальный WireGuard-интерфейс.
+ограничения MVP»): поддерживаются только сети `a.b.c.0/24`; установка AmneziaWG зависит от внешнего
+PPA и может не собраться под конкретное ядро/дистрибутив; self-сервер моста в непривилегированном
+LXC-контейнере не может поднять реальный WireGuard-интерфейс.
+
+**Домен + HTTPS панели** (`system/settings.service.ts`, `certbot.service.ts`,
+`nginx-config.service.ts`) — вкладка «Настройки» → «Домен и HTTPS», не путать с
+`Bridge.domainName` (это про VPN-эндпоинт клиентов моста, а не про веб-UI/API панели).
+`nginx/nginx.conf.template` (git-tracked, общие `/api/`/`/socket.io/`/`/` локации) —
+единственное место, где редактировать сами локации; `NginxConfigService.render()` собирает
+из него `nginx/generated/default.conf` (тоже git-tracked — закоммичен ОДИН РАЗ с безопасным
+HTTP-only дефолтом для чистой установки и **больше никогда не должен трогаться коммитами** —
+backend перезаписывает этот файл на диске при каждом старте/изменении настроек, и если бы git
+тоже его менял, `git pull` при самообновлении конфликтовал бы с локально сгенерированной
+версией) в зависимости от `SystemSettings` (домен/HTTP/HTTPS/срок сертификата) и перезагружает
+nginx через `docker exec <container> nginx -t && nginx -s reload` (`common/docker.util.ts`,
+резолвит id контейнера по label `com.docker.compose.service`, не по имени — обычный `docker
+exec`, а не sibling-container: это не self-recreation, в отличие от `update.service.ts`).
+Сертификат Let's Encrypt выпускает `certbot`, запущенный обычным child-process ПРЯМО в
+backend-контейнере (HTTP-01 webroot, без нужды в root/эксклюзивном порту) — КРИТИЧНО:
+`--config-dir`/`--work-dir`/`--logs-dir` явно указывают на `${REPO_PATH}/certbot/...` (а не
+дефолтный `/etc/letsencrypt` внутри backend-контейнера, невидимый для nginx), тот же путь
+смонтирован в nginx read-only. `${REPO_PATH}/certbot/` — в `.gitignore` (приватные ключи).
+Инвариант безопасности: слушать 443 начинаем, только если файл сертификата реально существует
+на диске, независимо от `httpsEnabled` в БД; включение HTTPS без домена+email или при неудачном
+выпуске не ломает доступность панели по HTTP. Автообновление — суточный `@Cron` (`certbot renew`,
+самостоятельно no-op, если сертификату ещё не пора).
 
 **Модуль `system/`** (бэкенд, `@Roles(SUPER_ADMIN)`) — вкладка «Настройки»: `backup.service.ts`
 стримит `pg_dump` прямо в HTTP-ответ; `update.service.ts` запускает `git pull` +
@@ -166,7 +190,8 @@ DTO в `*/dto/*.dto.ts` должны точно описывать допуст�
 `docker-compose.yml` (`${PWD}`) обязан совпадать внутри и снаружи контейнера, иначе относительные
 пути в `docker-compose.yml` (build-контексты, volume-мапинги) резолвятся неверно. nginx и frontend
 пересоздаются с `--force-recreate`: без него сервис с неизменившимся образом (у нас так `nginx`) не
-пересоздаётся, даже если поменялся смонтированный ОТДЕЛЬНЫЙ ФАЙЛ конфига (`nginx/nginx.conf`) —
+пересоздаётся, даже если поменялся смонтированный ОТДЕЛЬНЫЙ ФАЙЛ конфига (изначально —
+`nginx/nginx.conf`, сейчас на его месте генерируемый `nginx/generated/default.conf`, см. ниже) —
 `git pull` заменяет файл новым inode, а bind-mount уже запущенного контейнера продолжает указывать
 на старый (поймано вживую при первом деплое этой фичи 2026-08-03). Финальный шаг — пересоздание
 самого backend — **не** выполняется обычным дочерним процессом backend'а: `docker compose up -d

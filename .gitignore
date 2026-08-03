@@ -2,3 +2,5 @@ node_modules/
 dist/
 .env
 *.log
+# Секреты/ключи Let's Encrypt (system/certbot.service.ts) — никогда не коммитить.
+/certbot/

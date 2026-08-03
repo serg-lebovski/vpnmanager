@@ -1,8 +1,12 @@
-server {
-    listen 80;
-    server_name _;
+    # Общее тело, разделяемое всеми server{}-блоками, которые собирает
+    # NginxConfigService.render() (backend/src/system/nginx-config.service.ts) в
+    # nginx/generated/default.conf по текущим настройкам (домен/HTTP/HTTPS) — сам этот
+    # файл НЕ используется nginx напрямую, только как источник для рендера. Редактировать
+    # локации нужно здесь; server{}/listen/ssl_certificate добавляет сервис.
 
-    client_max_body_size 5m;
+    # 5m по умолчанию слишком мало для загрузки бэкапа БД на восстановление
+    # (POST /system/restore, backend/src/system/) — дампы легко больше по размеру.
+    client_max_body_size 200m;
 
     # 127.0.0.11 — встроенный DNS докера внутри compose-сети. Без этого nginx резолвит
     # "backend"/"frontend" ОДИН РАЗ при старте воркера и держит IP в памяти до перезапуска
@@ -65,4 +69,3 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
-}

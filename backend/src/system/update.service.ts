@@ -5,6 +5,7 @@ import * as path from 'path';
 import { promisify } from 'util';
 import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { NginxConfigService } from './nginx-config.service';
 import { SystemGateway } from './system.gateway';
 
 const execFileAsync = promisify(execFile);
@@ -32,6 +33,7 @@ export class UpdateService {
   constructor(
     private readonly configService: ConfigService,
     private readonly systemGateway: SystemGateway,
+    private readonly nginxConfigService: NginxConfigService,
   ) {}
 
   private getRepoPath(): string {
@@ -109,6 +111,13 @@ export class UpdateService {
 
       emit(15, 'Сборка образов backend и frontend');
       await this.runLogged('docker compose build backend frontend', repoPath, logPath);
+
+      // Перерендерить nginx-конфиг из (возможно обновлённого) nginx.conf.template ДО
+      // пересоздания nginx — тот же файл, что nginx/generated/default.conf, git-tracked
+      // один раз и никогда не трогается будущими коммитами (см. NginxConfigService),
+      // поэтому этот шаг безопасно повторять на каждом обновлении.
+      emit(50, 'Обновление конфигурации nginx');
+      await this.nginxConfigService.render();
 
       emit(60, 'Пересоздание nginx и frontend');
       await this.runLogged('docker compose up -d --force-recreate --no-deps nginx frontend', repoPath, logPath);
