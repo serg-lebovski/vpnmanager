@@ -8,10 +8,10 @@ export class SystemSettings {
   @PrimaryColumn({ default: 1 })
   id: number;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   domain: string | null;
 
-  @Column({ name: 'lets_encrypt_email', nullable: true })
+  @Column({ name: 'lets_encrypt_email', type: 'varchar', nullable: true })
   letsEncryptEmail: string | null;
 
   @Column({ name: 'http_enabled', default: true })

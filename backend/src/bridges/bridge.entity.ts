@@ -91,7 +91,7 @@ export class Bridge {
   // домен в Endpoint вместо IP self-сервера (см. PeersService.getDownloadableConfig).
   // Нужно для disaster recovery: self-сервер можно переехать на новый хост/IP, просто
   // переставив DNS-запись, без необходимости раздавать все клиентские конфиги заново.
-  @Column({ name: 'domain_name', nullable: true })
+  @Column({ name: 'domain_name', type: 'varchar', nullable: true })
   domainName: string | null;
 
   // Приоритетный список кандидатов для режима FAILOVER (см. BridgeUpstreamMode.FAILOVER,
