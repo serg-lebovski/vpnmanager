@@ -52,14 +52,16 @@ export function DashboardLayout() {
               <Button color="inherit" {...navButtonProps('/bridge')}>
                 Мост
               </Button>
-              <Button color="inherit" {...navButtonProps('/settings')}>
-                Настройки
-              </Button>
             </>
           )}
           {(user?.role === 'super_admin' || user?.role === 'org_admin') && (
             <Button color="inherit" {...navButtonProps('/users')}>
               Пользователи
+            </Button>
+          )}
+          {user?.role === 'super_admin' && (
+            <Button color="inherit" {...navButtonProps('/settings')}>
+              Настройки
             </Button>
           )}
           <Box sx={{ flexGrow: 1 }} />

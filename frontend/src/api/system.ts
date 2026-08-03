@@ -40,6 +40,25 @@ export async function triggerUpdate(): Promise<{ message: string }> {
   return data;
 }
 
+export type LogService = 'backend' | 'frontend' | 'nginx' | 'postgres';
+
+export async function fetchLogs(service: LogService, tail: number): Promise<string> {
+  const { data } = await apiClient.get<{ logs: string }>('/system/logs', { params: { service, tail } });
+  return data.logs;
+}
+
+export async function downloadLogs(service: LogService): Promise<void> {
+  const response = await apiClient.get('/system/logs/download', { params: { service, tail: 2000 }, responseType: 'blob' });
+  const url = URL.createObjectURL(response.data);
+  const link = document.createElement('a');
+  link.href = url;
+  const disposition = (response.headers as Record<string, string>)['content-disposition'];
+  const match = disposition?.match(/filename="(.+)"/);
+  link.download = match?.[1] ?? `${service}.log`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 export async function downloadDatabaseBackup(): Promise<void> {
   const response = await apiClient.get('/system/backup', { responseType: 'blob' });
   const url = URL.createObjectURL(response.data);

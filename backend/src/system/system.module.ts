@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { BackupService } from './backup.service';
+import { LogsService } from './logs.service';
 import { SystemController } from './system.controller';
 import { SystemGateway } from './system.gateway';
 import { UpdateService } from './update.service';
@@ -17,6 +18,6 @@ import { UpdateService } from './update.service';
     }),
   ],
   controllers: [SystemController],
-  providers: [BackupService, UpdateService, SystemGateway],
+  providers: [BackupService, UpdateService, SystemGateway, LogsService],
 })
 export class SystemModule {}

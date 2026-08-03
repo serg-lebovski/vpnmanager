@@ -8,14 +8,25 @@ import {
   DialogContent,
   DialogContentText,
   DialogTitle,
+  MenuItem,
   Paper,
   Stack,
+  TextField,
   Typography,
 } from '@mui/material';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { getErrorMessage } from '../api/errors';
-import { connectUpdateProgressSocket, downloadDatabaseBackup, fetchVersion, triggerUpdate, UpdateProgress } from '../api/system';
+import {
+  connectUpdateProgressSocket,
+  downloadDatabaseBackup,
+  downloadLogs,
+  fetchLogs,
+  fetchVersion,
+  LogService,
+  triggerUpdate,
+  UpdateProgress,
+} from '../api/system';
 
 export function SettingsPage() {
   const { data: version, isLoading, refetch, isFetching } = useQuery({ queryKey: ['system', 'version'], queryFn: fetchVersion });
@@ -81,6 +92,18 @@ export function SettingsPage() {
   const backupMutation = useMutation({
     mutationFn: downloadDatabaseBackup,
     onError: (err) => setBackupError(getErrorMessage(err, 'Не удалось скачать бэкап')),
+  });
+
+  const [logService, setLogService] = useState<LogService>('backend');
+  const [logTail, setLogTail] = useState(300);
+  const [logError, setLogError] = useState<string | null>(null);
+  const logsMutation = useMutation({
+    mutationFn: () => fetchLogs(logService, logTail),
+    onError: (err) => setLogError(getErrorMessage(err, 'Не удалось получить логи')),
+  });
+  const downloadLogsMutation = useMutation({
+    mutationFn: () => downloadLogs(logService),
+    onError: (err) => setLogError(getErrorMessage(err, 'Не удалось скачать логи')),
   });
 
   return (
@@ -158,6 +181,56 @@ export function SettingsPage() {
           <Alert severity="error" sx={{ mt: 2 }}>
             {backupError}
           </Alert>
+        )}
+      </Paper>
+
+      <Paper sx={{ p: 2 }}>
+        <Typography variant="subtitle1" mb={2}>
+          Логи
+        </Typography>
+        <Stack direction="row" spacing={2} alignItems="flex-start" flexWrap="wrap" useFlexGap>
+          <TextField select label="Сервис" size="small" value={logService} onChange={(e) => setLogService(e.target.value as LogService)} sx={{ minWidth: 140 }}>
+            <MenuItem value="backend">backend</MenuItem>
+            <MenuItem value="frontend">frontend</MenuItem>
+            <MenuItem value="nginx">nginx</MenuItem>
+            <MenuItem value="postgres">postgres</MenuItem>
+          </TextField>
+          <TextField
+            label="Строк"
+            type="number"
+            size="small"
+            value={logTail}
+            onChange={(e) => setLogTail(Number(e.target.value))}
+            sx={{ width: 110 }}
+          />
+          <Button variant="outlined" disabled={logsMutation.isPending} onClick={() => logsMutation.mutate()}>
+            Показать
+          </Button>
+          <Button disabled={downloadLogsMutation.isPending} onClick={() => downloadLogsMutation.mutate()}>
+            Скачать (.log)
+          </Button>
+        </Stack>
+        {logError && (
+          <Alert severity="error" sx={{ mt: 2 }}>
+            {logError}
+          </Alert>
+        )}
+        {logsMutation.data && (
+          <Paper
+            variant="outlined"
+            sx={{
+              mt: 2,
+              p: 1.5,
+              maxHeight: 480,
+              overflow: 'auto',
+              bgcolor: 'grey.900',
+              color: 'grey.100',
+            }}
+          >
+            <Typography component="pre" variant="caption" sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontFamily: 'monospace' }}>
+              {logsMutation.data || 'Логов нет'}
+            </Typography>
+          </Paper>
         )}
       </Paper>
 
