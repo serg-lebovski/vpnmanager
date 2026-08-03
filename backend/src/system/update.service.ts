@@ -71,7 +71,12 @@ export class UpdateService {
     const logPath = path.join(repoPath, 'update.log');
     fs.appendFileSync(logPath, `\n--- Обновление запущено ${new Date().toISOString()} ---\n`);
 
-    const child = exec(`git pull >> "${logPath}" 2>&1 && docker compose up -d --build >> "${logPath}" 2>&1`, {
+    // --force-recreate — без него сервисы с бинд-маунтом ОТДЕЛЬНОГО ФАЙЛА (у нас так
+    // смонтирован nginx.conf), чей образ не менялся, не пересоздаются на `up -d --build`
+    // и остаются жить со СТАРЫМ содержимым: git pull заменяет файл на диске новым inode
+    // (rename, не правка на месте), а bind-mount уже запущенного контейнера продолжает
+    // указывать на прежний inode. Поймано вживую при первом деплое этой самой фичи.
+    const child = exec(`git pull >> "${logPath}" 2>&1 && docker compose up -d --build --force-recreate >> "${logPath}" 2>&1`, {
       cwd: repoPath,
       env: { ...process.env, PWD: repoPath },
     });
