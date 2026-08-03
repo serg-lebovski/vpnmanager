@@ -6,6 +6,7 @@ import { DataSource, In, Repository } from 'typeorm';
 import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { decryptSecret } from '../common/encryption.util';
 import { BridgeStatus, BridgeUpstreamMode, PeerStatus, Role, ServerProtocolStatus, VpnProtocol } from '../common/enums';
+import { Organization } from '../organizations/organization.entity';
 import { Peer } from '../peers/peer.entity';
 import { PeersService } from '../peers/peers.service';
 import { ServerProtocol } from '../servers/server-protocol.entity';
@@ -14,6 +15,7 @@ import { UpstreamPeerConfig } from '../vpn/vpn-driver.interface';
 import { VpnProvisioningService } from '../vpn/vpn-provisioning.service';
 import { Bridge } from './bridge.entity';
 import { CreateBridgeDto } from './dto/create-bridge.dto';
+import { UpdateBridgeDto } from './dto/update-bridge.dto';
 
 // Порог для автобаланса: переключаем upstream только если кандидат загружен заметно
 // меньше текущего — иначе мост будет дёргаться между двумя почти одинаково загруженными
@@ -38,6 +40,13 @@ const BRIDGE_RELATIONS = [
   'upstreamServerProtocol.server',
 ];
 
+type SafeClientProtocol = (Omit<ServerProtocol, 'server' | 'peers'> & { server: Omit<Server, 'sshSecretEnc'> }) | null;
+export type BridgeListItem = Omit<Bridge, 'wireguardClientProtocol' | 'amneziawgClientProtocol' | 'upstreamServerProtocol'> & {
+  wireguardClientProtocol: SafeClientProtocol;
+  amneziawgClientProtocol: SafeClientProtocol;
+  upstreamServerProtocol: SafeClientProtocol;
+};
+
 @Injectable()
 export class BridgesService {
   private readonly logger = new Logger(BridgesService.name);
@@ -47,23 +56,48 @@ export class BridgesService {
     @InjectRepository(ServerProtocol) private readonly serverProtocolsRepository: Repository<ServerProtocol>,
     @InjectRepository(Server) private readonly serversRepository: Repository<Server>,
     @InjectRepository(Peer) private readonly peersRepository: Repository<Peer>,
+    @InjectRepository(Organization) private readonly organizationsRepository: Repository<Organization>,
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly peersService: PeersService,
     private readonly vpnProvisioningService: VpnProvisioningService,
   ) {}
 
-  async findAll(requester: AuthenticatedUser): Promise<Bridge[]> {
+  async findAll(requester: AuthenticatedUser): Promise<BridgeListItem[]> {
     const bridges = await this.bridgesRepository.find({
       relations: BRIDGE_RELATIONS,
       order: { createdAt: 'DESC' },
     });
-    if (requester.role === Role.SUPER_ADMIN) {
-      return bridges;
-    }
-    // org_admin/org_user видят только мосты своей организации плюс общие (organizationId
-    // = null) — по тому же принципу, что видимость peers (см. findAllForRequester в
-    // peers.service.ts).
-    return bridges.filter((bridge) => bridge.organizationId === null || bridge.organizationId === requester.organizationId);
+    const visible =
+      requester.role === Role.SUPER_ADMIN
+        ? bridges
+        : // org_admin/org_user видят только мосты своей организации плюс общие (organizationId
+          // = null) — по тому же принципу, что видимость peers (см. findAllForRequester в
+          // peers.service.ts).
+          bridges.filter((bridge) => bridge.organizationId === null || bridge.organizationId === requester.organizationId);
+    return visible.map((bridge) => this.toSafeBridge(bridge));
+  }
+
+  // Эндпоинт доступен всем ролям (см. BridgesController.findAll), включая org_admin/
+  // org_user — им нельзя видеть сервера панели вообще (это отдельная от Peer/Bridge
+  // граница мультитенантности, см. ServersController), поэтому перед отдачей клиенту
+  // вырезаем зашифрованный SSH-секрет self- и upstream-сервера из вложенных
+  // ServerProtocol.server. Используется только на выходе из сервиса — внутренняя логика
+  // (getSelfServer/connectAsClient и т.п.) продолжает работать с полной Bridge-сущностью.
+  private toSafeBridge(bridge: Bridge): BridgeListItem {
+    const sanitize = (sp: ServerProtocol | null | undefined): SafeClientProtocol => {
+      if (!sp) {
+        return null;
+      }
+      const { server, peers, ...rest } = sp;
+      const { sshSecretEnc, ...safeServer } = server;
+      return { ...rest, server: safeServer };
+    };
+    return {
+      ...bridge,
+      wireguardClientProtocol: sanitize(bridge.wireguardClientProtocol),
+      amneziawgClientProtocol: sanitize(bridge.amneziawgClientProtocol),
+      upstreamServerProtocol: sanitize(bridge.upstreamServerProtocol),
+    };
   }
 
   async create(dto: CreateBridgeDto): Promise<Bridge> {
@@ -146,6 +180,24 @@ export class BridgesService {
     return this.bridgesRepository.save(bridge);
   }
 
+  async update(id: string, dto: UpdateBridgeDto): Promise<BridgeListItem> {
+    const bridge = await this.findOneOrFail(id);
+    if (dto.name !== undefined) {
+      bridge.name = dto.name;
+    }
+    if (dto.organizationId !== undefined) {
+      if (dto.organizationId !== null) {
+        const organization = await this.organizationsRepository.findOne({ where: { id: dto.organizationId } });
+        if (!organization) {
+          throw new NotFoundException('Организация не найдена');
+        }
+      }
+      bridge.organizationId = dto.organizationId;
+    }
+    const saved = await this.bridgesRepository.save(bridge);
+    return this.toSafeBridge(saved);
+  }
+
   // MAX(routeTable) + 1 по всем мостам, под pessimistic-lock — тем же паттерном, что
   // allocateIp/nextHostOctet в peers.service.ts. Низкочастотная админская операция,
   // жёсткая транзакционность важнее производительности.
@@ -173,6 +225,29 @@ export class BridgesService {
     } else {
       await this.bridgesRepository.remove(bridge);
     }
+  }
+
+  // Используется ServersService.findAll: какие сервера сейчас служат self-сервером хотя бы
+  // одному мосту (по FK client-протоколов, а не по хранимому Server.isSelf) и какой мост
+  // владеет каждым конкретным client-протоколом. Считаем от FK, а не только доверяем
+  // Server.isSelf, — при synchronize:true (без миграций) это надёжный источник истины
+  // независимо от того, когда и как флаг был проставлен; ServersService сверяет его с
+  // этими данными и самостоятельно чинит несовпадение.
+  async getSelfServerContext(): Promise<{ selfServerIds: Set<string>; protocolBridgeNames: Map<string, string> }> {
+    const bridges = await this.bridgesRepository.find({
+      relations: ['wireguardClientProtocol', 'amneziawgClientProtocol'],
+    });
+    const selfServerIds = new Set<string>();
+    const protocolBridgeNames = new Map<string, string>();
+    for (const bridge of bridges) {
+      for (const clientProtocol of [bridge.wireguardClientProtocol, bridge.amneziawgClientProtocol]) {
+        if (clientProtocol) {
+          selfServerIds.add(clientProtocol.serverId);
+          protocolBridgeNames.set(clientProtocol.id, bridge.name);
+        }
+      }
+    }
+    return { selfServerIds, protocolBridgeNames };
   }
 
   // Вызывается ServersService ПЕРЕД удалением сервера: если он сейчас служит upstream для
@@ -211,16 +286,17 @@ export class BridgesService {
     }
   }
 
-  async setMode(bridgeId: string, mode: BridgeUpstreamMode): Promise<Bridge> {
+  async setMode(bridgeId: string, mode: BridgeUpstreamMode): Promise<BridgeListItem> {
     const bridge = await this.findOneOrFail(bridgeId);
     if (mode === BridgeUpstreamMode.AUTO && !bridge.upstreamServerProtocolId) {
       throw new BadRequestException('Сначала выберите upstream вручную — автобаланс переключает уже настроенный мост');
     }
     bridge.upstreamMode = mode;
-    return this.bridgesRepository.save(bridge);
+    const saved = await this.bridgesRepository.save(bridge);
+    return this.toSafeBridge(saved);
   }
 
-  async setUpstream(bridgeId: string, targetServerProtocolId: string): Promise<Bridge> {
+  async setUpstream(bridgeId: string, targetServerProtocolId: string): Promise<BridgeListItem> {
     const bridge = await this.findOneOrFail(bridgeId);
     const target = await this.serverProtocolsRepository.findOne({
       where: { id: targetServerProtocolId },
@@ -297,7 +373,7 @@ export class BridgesService {
         await this.peersService.revokeSystemPeer(previousPeerId);
       }
 
-      return saved;
+      return this.toSafeBridge(saved);
     } catch (error) {
       bridge.status = BridgeStatus.ERROR;
       bridge.lastError = (error as Error).message;
@@ -306,11 +382,11 @@ export class BridgesService {
     }
   }
 
-  async rebalanceNow(bridgeId: string): Promise<Bridge> {
+  async rebalanceNow(bridgeId: string): Promise<BridgeListItem> {
     const bridge = await this.findOneOrFail(bridgeId);
     const best = await this.findBetterCandidate(bridge);
     if (!best) {
-      return bridge;
+      return this.toSafeBridge(bridge);
     }
     return this.setUpstream(bridgeId, best.id);
   }

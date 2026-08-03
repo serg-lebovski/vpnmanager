@@ -268,6 +268,7 @@ function ServerCard({
               <Typography variant="body2">
                 порт {sp.listenPort}, сеть {sp.networkCidr}
               </Typography>
+              {sp.bridgeName && <Chip label={`мост «${sp.bridgeName}»`} size="small" color="info" variant="outlined" />}
               {sp.lastError && (
                 <Typography variant="body2" color="error">
                   {sp.lastError}

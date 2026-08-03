@@ -39,6 +39,9 @@ export interface ServerProtocolEntity {
   status: ServerProtocolStatus;
   lastError: string | null;
   createdAt: string;
+  // Имя моста, если этот протокол — клиентский интерфейс моста на self-сервере (см.
+  // ServersService.findAll на бэкенде); null — обычный протокол, мостом не используется.
+  bridgeName?: string | null;
 }
 
 export interface ServerEntity {
@@ -86,4 +89,5 @@ export interface PeerEntity {
   source: PeerSource;
   status: PeerStatus;
   createdAt: string;
+  serverProtocol?: ServerProtocolEntity & { server?: ServerEntity };
 }

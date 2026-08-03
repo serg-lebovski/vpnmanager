@@ -15,8 +15,8 @@ segfault `wg-quick` под systemd в некоторых окружениях) �
 Стек: NestJS + TypeScript + TypeORM/PostgreSQL на бэкенде, React + Vite + TypeScript + MUI на
 фронтенде, `node-ssh` для управления VPS, Docker Compose + Nginx для деплоя.
 
-Репозиторий не является git-репозиторием на этой машине (`.git` отсутствует) — не полагайся на
-`git log`/`git blame` для истории изменений.
+Репозиторий — git-репозиторий с remote `origin` (github.com/serg-lebovski/vpnmanager), основная
+ветка `main`; `git log`/`git blame` можно использовать для истории изменений.
 
 ## Команды разработки
 
@@ -41,6 +41,7 @@ cd frontend && npm run preview
 (`common/encryption.util.ts`), и `ConfigService.getOrThrow` кидает при отсутствии остальных DB_*.
 
 Полный стек через Docker Compose:
+
 ```bash
 cp .env.example .env   # заполнить секреты: APP_ENCRYPTION_KEY, JWT_SECRET, POSTGRES_PASSWORD, SEED_ADMIN_PASSWORD
 docker compose up -d --build
@@ -53,6 +54,7 @@ NestJS-модули, по одному на предметную область:
 enums, шифрование, exception filter). Все они собраны в `app.module.ts`.
 
 **Слой абстракции над VPN-протоколом** — ключевая часть архитектуры:
+
 - `vpn/vpn-driver.interface.ts` определяет интерфейс `VpnDriver`: `install`, `scanExistingPeers`,
   `applyPeers`, `getActivePeerCount`, `detectExisting`, `connectAsClient`/`disconnectAsClient`
   (для режима моста) и `ensureClientToolsInstalled`.
@@ -90,15 +92,30 @@ enum `Role`) → `Peer`. Скоуп по организации применяе
 на `Server` и приватных ключей peers в БД (`encryptSecret`/`decryptSecret`). Формат хранения:
 `iv:authTag:ciphertext` в hex, через `:`.
 
-**Режим моста** (`bridges/`) — панель поднимает WireGuard на собственном хосте (self-сервер),
-клиенты подключаются к нему напрямую, а сам мост работает клиентом к одному из уже добавленных
-backend-серверов через `VpnDriver.connectAsClient`. `BridgesService` держит `@Interval(5 * 60 * 1000)`
-джобу (`@nestjs/schedule`) для авто-переключения upstream при режиме `auto` — сравнивает нагрузку
-текущего upstream с другими ACTIVE серверами того же протокола. NAT/forwarding между интерфейсом
-клиентов моста и upstream-интерфейсом настраивается один раз через
+**Режим моста** (`bridges/`) — панель поднимает WireGuard/AmneziaWG на собственном хосте
+(self-сервер), клиенты подключаются к нему напрямую, а сам мост работает клиентом к одному из уже
+добавленных backend-серверов через `VpnDriver.connectAsClient`. Один self-сервер может нести
+**несколько мостов** (в т.ч. с разными организациями `Bridge.organizationId`, `null` — общий мост,
+виден только суперадмину), и один мост может выдавать клиентам сразу оба протокола
+(`wireguardClientProtocol`/`amneziawgClientProtocol` — независимые `ServerProtocol`, оба
+маршрутизируются через один и тот же upstream). Чтобы несколько мостов на одном self-сервере не
+конфликтовали за один netdev/таблицу маршрутов, у каждого моста свой случайно сгенерированный
+`upstreamInterfaceName` и своя `routeTable` (выделяется как `MAX(routeTable)+1` по всем мостам,
+`bridges.service.ts#allocateRouteTable`); маршрут по умолчанию на upstream добавляется только в эту
+таблицу, а не в основную таблицу хоста. `BridgesService` держит `@Interval(5 * 60 * 1000)` джобу
+(`@nestjs/schedule`) для авто-переключения upstream при режиме `auto` — сравнивает нагрузку текущего
+upstream с другими ACTIVE серверами того же протокола (порог `REBALANCE_THRESHOLD = 0.2`). NAT/
+forwarding между клиентскими интерфейсами моста и upstream-интерфейсом настраивается один раз через
 `VpnProvisioningService.setupBridgeNat` (iptables-правила ссылаются на имена интерфейсов, которые не
 меняются при последующих переключениях upstream — поэтому не нужно их пересоздавать при auto-switch).
 Апстрим-peer моста имеет `PeerSource.BRIDGE_UPSTREAM` и не показывается в обычных списках peers.
+Self-серверы скрыты из списка «Серверы (VPS)» на фронтенде (`Server.isSelf`, фильтр в
+`ServersPage.tsx`) — ими управляют только через вкладку «Мост». Удаление backend-сервера сначала
+вызывает `BridgesService.reassignUpstreamAwayFrom` (переключает зависящие от него мосты на другой
+ACTIVE сервер того же протокола, best-effort по каждому мосту), иначе после `ON DELETE SET NULL`
+мост завис бы без upstream без возможности починки кроме как вручную; удаление самого моста
+(`BridgesService.remove`) отзывает системный upstream-peer и удаляет клиентские `ServerProtocol`
+моста.
 
 **База данных**: TypeORM работает в режиме `synchronize: true` (`app.module.ts`) — миграций нет,
 схема выводится из entity-декораторов автоматически при старте. `database/seed.service.ts` создаёт
@@ -135,3 +152,11 @@ DTO в `*/dto/*.dto.ts` должны точно описывать допуст�
 ограничения MVP»): поддерживаются только сети `a.b.c.0/24`; TLS не настроен; установка AmneziaWG
 зависит от внешнего PPA и может не собраться под конкретное ядро/дистрибутив; self-сервер моста в
 непривилегированном LXC-контейнере не может поднять реальный WireGuard-интерфейс.
+
+**Модуль `system/`** (бэкенд, `@Roles(SUPER_ADMIN)`) — вкладка «Настройки»: `backup.service.ts`
+стримит `pg_dump` прямо в HTTP-ответ; `update.service.ts` запускает `git pull` +
+`docker compose up -d --build` изнутри backend-контейнера через смонтированный
+`/var/run/docker.sock` хоста (Docker-outside-of-Docker, root-эквивалент — осознанный компромисс,
+подробности и как отключить — в README.md, раздел «Настройки сервера»). `REPO_PATH` в
+`docker-compose.yml` (`${PWD}`) обязан совпадать внутри и снаружи контейнера, иначе относительные
+пути в `docker-compose.yml` (build-контексты, volume-мапинги) резолвятся неверно.

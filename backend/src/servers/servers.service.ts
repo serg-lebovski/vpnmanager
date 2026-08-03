@@ -12,6 +12,8 @@ import { InstallProtocolDto } from './dto/install-protocol.dto';
 import { ServerProtocol } from './server-protocol.entity';
 import { Server } from './server.entity';
 
+export type ServerListItem = Omit<Server, 'protocols'> & { protocols: Array<ServerProtocol & { bridgeName: string | null }> };
+
 @Injectable()
 export class ServersService {
   constructor(
@@ -23,8 +25,24 @@ export class ServersService {
     private readonly bridgesService: BridgesService,
   ) {}
 
-  findAll(): Promise<Server[]> {
-    return this.serversRepository.find({ relations: ['protocols'], order: { createdAt: 'DESC' } });
+  async findAll(): Promise<ServerListItem[]> {
+    const servers = await this.serversRepository.find({ relations: ['protocols'], order: { createdAt: 'DESC' } });
+    const { selfServerIds, protocolBridgeNames } = await this.bridgesService.getSelfServerContext();
+
+    // Server.isSelf иногда не проставлен для self-сервера, который уже фактически
+    // используется мостом (см. BridgesService.getSelfServerContext) — чиним здесь же по
+    // факту, чтобы фильтр «не показывать self-сервера» на фронтенде (ServersPage) не
+    // зависел от того, когда и как именно этот флаг был выставлен изначально.
+    const toFix = servers.filter((server) => !server.isSelf && selfServerIds.has(server.id));
+    if (toFix.length > 0) {
+      toFix.forEach((server) => (server.isSelf = true));
+      await this.serversRepository.save(toFix);
+    }
+
+    return servers.map((server) => ({
+      ...server,
+      protocols: server.protocols.map((sp) => ({ ...sp, bridgeName: protocolBridgeNames.get(sp.id) ?? null })),
+    }));
   }
 
   async findOneOrFail(id: string): Promise<Server> {
