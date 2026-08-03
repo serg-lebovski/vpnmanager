@@ -23,14 +23,20 @@ export function DashboardLayout() {
           </Button>
           {user?.role === 'super_admin' && (
             <>
+              <Button color="inherit" component={RouterLink} to="/dashboard">
+                Дашборд
+              </Button>
               <Button color="inherit" component={RouterLink} to="/servers">
                 Серверы
               </Button>
               <Button color="inherit" component={RouterLink} to="/organizations">
-                Организации
+                Клиенты
               </Button>
               <Button color="inherit" component={RouterLink} to="/bridge">
                 Мост
+              </Button>
+              <Button color="inherit" component={RouterLink} to="/settings">
+                Настройки
               </Button>
             </>
           )}

@@ -4,12 +4,14 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthModule } from './auth/auth.module';
 import { BridgesModule } from './bridges/bridges.module';
+import { DashboardModule } from './dashboard/dashboard.module';
 import { DatabaseModule } from './database/database.module';
 import { LoadBalancerModule } from './load-balancer/load-balancer.module';
 import { OrganizationsModule } from './organizations/organizations.module';
 import { PeersModule } from './peers/peers.module';
 import { ServersModule } from './servers/servers.module';
 import { SshModule } from './ssh/ssh.module';
+import { SystemModule } from './system/system.module';
 import { UsersModule } from './users/users.module';
 import { VpnModule } from './vpn/vpn.module';
 
@@ -43,6 +45,8 @@ import { VpnModule } from './vpn/vpn.module';
     LoadBalancerModule,
     PeersModule,
     BridgesModule,
+    SystemModule,
+    DashboardModule,
   ],
 })
 export class AppModule {}
