@@ -9,6 +9,7 @@ import { SshService } from '../ssh/ssh.service';
 import { VpnProvisioningService } from '../vpn/vpn-provisioning.service';
 import { CreateServerDto } from './dto/create-server.dto';
 import { InstallProtocolDto } from './dto/install-protocol.dto';
+import { UpdateServerDto } from './dto/update-server.dto';
 import { ServerProtocol } from './server-protocol.entity';
 import { Server } from './server.entity';
 
@@ -31,13 +32,16 @@ export class ServersService {
     const servers = await this.serversRepository.find({ relations: ['protocols'], order: { createdAt: 'DESC' } });
     const { selfServerIds, protocolBridgeNames } = await this.bridgesService.getSelfServerContext();
 
-    // Server.isSelf иногда не проставлен для self-сервера, который уже фактически
-    // используется мостом (см. BridgesService.getSelfServerContext) — чиним здесь же по
-    // факту, чтобы фильтр «не показывать self-сервера» на фронтенде (ServersPage) не
-    // зависел от того, когда и как именно этот флаг был выставлен изначально.
-    const toFix = servers.filter((server) => !server.isSelf && selfServerIds.has(server.id));
+    // Server.isSelf может разойтись с реальностью в обе стороны: не проставлен вовремя
+    // (см. BridgesService.getSelfServerContext) — или, наоборот, остался true у сервера,
+    // который раньше был self-сервером какого-то моста, а потом мост с него сняли
+    // (сменили клиентский интерфейс на другой сервер) — флаг никогда не сбрасывался
+    // обратно (поймано вживую: bithosting nl продолжал висеть с пометкой "Мост (self)"
+    // после того, как перестал использоваться мостом). Чиним оба случая по факту при
+    // каждом чтении списка.
+    const toFix = servers.filter((server) => server.isSelf !== selfServerIds.has(server.id));
     if (toFix.length > 0) {
-      toFix.forEach((server) => (server.isSelf = true));
+      toFix.forEach((server) => (server.isSelf = selfServerIds.has(server.id)));
       await this.serversRepository.save(toFix);
     }
 
@@ -66,6 +70,14 @@ export class ServersService {
       maxPeers: dto.maxPeers ?? 100,
       status: ServerStatus.UNKNOWN,
     });
+    return this.serversRepository.save(server);
+  }
+
+  async update(id: string, dto: UpdateServerDto): Promise<Server> {
+    const server = await this.findOneOrFail(id);
+    if (dto.name !== undefined) {
+      server.name = dto.name;
+    }
     return this.serversRepository.save(server);
   }
 

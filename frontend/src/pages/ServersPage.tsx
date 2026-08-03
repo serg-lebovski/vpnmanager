@@ -25,6 +25,7 @@ import {
   installProtocol,
   scanAndImportPeers,
   testServerConnection,
+  updateServer,
 } from '../api/servers';
 import { ServerEntity, SshAuthType, VpnProtocol } from '../api/types';
 
@@ -77,6 +78,10 @@ export function ServersPage() {
   });
 
   const deleteMutation = useMutation({ mutationFn: deleteServer, onSuccess: invalidate });
+  const renameMutation = useMutation({
+    mutationFn: (vars: { id: string; name: string }) => updateServer(vars.id, { name: vars.name }),
+    onSuccess: invalidate,
+  });
   const testMutation = useMutation({ mutationFn: testServerConnection, onSuccess: invalidate });
   const installMutation = useMutation({
     mutationFn: (vars: { serverId: string; protocol: VpnProtocol; listenPort: number; networkCidr: string }) =>
@@ -167,6 +172,7 @@ export function ServersPage() {
           key={server.id}
           server={server}
           onDelete={() => deleteMutation.mutate(server.id)}
+          onRename={(name) => renameMutation.mutate({ id: server.id, name })}
           onTest={() => testMutation.mutate(server.id)}
           onInstall={(protocol, listenPort, networkCidr) =>
             installMutation.mutate({ serverId: server.id, protocol, listenPort, networkCidr })
@@ -184,6 +190,7 @@ export function ServersPage() {
 function ServerCard({
   server,
   onDelete,
+  onRename,
   onTest,
   onInstall,
   isInstalling,
@@ -193,6 +200,7 @@ function ServerCard({
 }: {
   server: ServerEntity;
   onDelete: () => void;
+  onRename: (name: string) => void;
   onTest: () => void;
   onInstall: (protocol: VpnProtocol, listenPort: number, networkCidr: string) => void;
   isInstalling: boolean;
@@ -204,6 +212,8 @@ function ServerCard({
   const [listenPort, setListenPort] = useState(51820);
   const [networkCidr, setNetworkCidr] = useState('10.8.0.0/24');
   const [detectResult, setDetectResult] = useState<DetectionResult[] | null>(null);
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [editName, setEditName] = useState(server.name);
 
   const detectMutation = useMutation({
     mutationFn: () => detectExistingInstallations(server.id),
@@ -218,11 +228,30 @@ function ServerCard({
   return (
     <Paper sx={{ p: 2 }}>
       <Stack direction="row" justifyContent="space-between" alignItems="center">
-        <Box>
-          <Typography variant="h6">
-            {server.name} <Chip size="small" label={server.status} color={statusColor[server.status]} sx={{ ml: 1 }} />
-            {server.isSelf && <Chip size="small" label="Мост (self)" color="info" sx={{ ml: 1 }} />}
-          </Typography>
+        <Box flex={1}>
+          {isEditingName ? (
+            <Stack direction="row" spacing={1} alignItems="center" mb={1}>
+              <TextField size="small" value={editName} onChange={(e) => setEditName(e.target.value)} autoFocus />
+              <Button
+                size="small"
+                variant="contained"
+                onClick={() => {
+                  onRename(editName);
+                  setIsEditingName(false);
+                }}
+              >
+                Сохранить
+              </Button>
+              <Button size="small" onClick={() => setIsEditingName(false)}>
+                Отмена
+              </Button>
+            </Stack>
+          ) : (
+            <Typography variant="h6">
+              {server.name} <Chip size="small" label={server.status} color={statusColor[server.status]} sx={{ ml: 1 }} />
+              {server.isSelf && <Chip size="small" label="Мост (self)" color="info" sx={{ ml: 1 }} />}
+            </Typography>
+          )}
           <Typography variant="body2" color="text.secondary">
             {server.sshUsername}@{server.host}:{server.sshPort} · лимит {server.maxPeers} peers
           </Typography>
@@ -239,6 +268,17 @@ function ServerCard({
           <Button size="small" onClick={() => detectMutation.mutate()} disabled={detectMutation.isPending}>
             Проверить существующую установку
           </Button>
+          {!isEditingName && (
+            <Button
+              size="small"
+              onClick={() => {
+                setEditName(server.name);
+                setIsEditingName(true);
+              }}
+            >
+              Переименовать
+            </Button>
+          )}
           <Button size="small" color="error" onClick={onDelete}>
             Удалить
           </Button>

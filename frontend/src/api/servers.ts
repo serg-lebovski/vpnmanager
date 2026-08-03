@@ -21,6 +21,11 @@ export async function createServer(input: CreateServerInput): Promise<ServerEnti
   return data;
 }
 
+export async function updateServer(id: string, input: { name: string }): Promise<ServerEntity> {
+  const { data } = await apiClient.patch<ServerEntity>(`/servers/${id}`, input);
+  return data;
+}
+
 export async function deleteServer(id: string): Promise<void> {
   await apiClient.delete(`/servers/${id}`);
 }

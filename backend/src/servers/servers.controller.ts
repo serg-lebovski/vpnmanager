@@ -1,10 +1,11 @@
-import { Body, Controller, Delete, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/enums';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { CreateServerDto } from './dto/create-server.dto';
 import { InstallProtocolDto } from './dto/install-protocol.dto';
+import { UpdateServerDto } from './dto/update-server.dto';
 import { ServersService } from './servers.service';
 
 @Controller('servers')
@@ -21,6 +22,11 @@ export class ServersController {
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.serversService.findOneOrFail(id);
+  }
+
+  @Patch(':id')
+  update(@Param('id') id: string, @Body() dto: UpdateServerDto) {
+    return this.serversService.update(id, dto);
   }
 
   @Post()
