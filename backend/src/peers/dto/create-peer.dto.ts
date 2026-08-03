@@ -19,8 +19,10 @@ export class CreatePeerDto {
   @IsOptional()
   bridgeId?: string;
 
-  // Только для SUPER_ADMIN: создать peer сразу для конкретной организации.
+  // Только для SUPER_ADMIN: создать peer сразу для конкретной организации. Явный null —
+  // «без клиента» (peer не привязан ни к одной организации); отсутствие поля вообще —
+  // ошибка (см. PeersService.resolveOrganizationId), суперадмин должен выбрать осознанно.
   @IsUUID()
   @IsOptional()
-  organizationId?: string;
+  organizationId?: string | null;
 }

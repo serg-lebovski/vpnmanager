@@ -16,6 +16,9 @@ import { Peer } from './peer.entity';
 import { generatePresharedKey, generateWgKeyPair } from './wg-keypair.util';
 import { hostAddress } from '../vpn/network.util';
 
+type SafeServerProtocol = Omit<ServerProtocol, 'server' | 'peers'> & { server: Omit<Server, 'sshSecretEnc'> };
+export type PeerListItem = Omit<Peer, 'privateKeyEnc' | 'presharedKeyEnc' | 'serverProtocol'> & { serverProtocol: SafeServerProtocol };
+
 @Injectable()
 export class PeersService {
   constructor(
@@ -28,19 +31,30 @@ export class PeersService {
     private readonly vpnProvisioningService: VpnProvisioningService,
   ) {}
 
-  async findAllForRequester(requester: AuthenticatedUser, organizationId?: string): Promise<Peer[]> {
+  async findAllForRequester(requester: AuthenticatedUser, organizationId?: string): Promise<PeerListItem[]> {
     // Системные upstream-peers моста (BRIDGE_UPSTREAM) не показываются в обычных списках —
     // ими управляет только BridgesService.
-    if (requester.role === Role.SUPER_ADMIN) {
-      return this.peersRepository.find({
-        where: { source: Not(PeerSource.BRIDGE_UPSTREAM), ...(organizationId ? { organizationId } : {}) },
-        order: { createdAt: 'DESC' },
-      });
-    }
-    return this.peersRepository.find({
-      where: { organizationId: requester.organizationId ?? IsNull(), source: Not(PeerSource.BRIDGE_UPSTREAM) },
+    const where =
+      requester.role === Role.SUPER_ADMIN
+        ? { source: Not(PeerSource.BRIDGE_UPSTREAM), ...(organizationId ? { organizationId } : {}) }
+        : { organizationId: requester.organizationId ?? IsNull(), source: Not(PeerSource.BRIDGE_UPSTREAM) };
+
+    const peers = await this.peersRepository.find({
+      where,
+      relations: ['serverProtocol', 'serverProtocol.server'],
       order: { createdAt: 'DESC' },
     });
+    return peers.map((peer) => this.toListItem(peer));
+  }
+
+  // Убирает секреты перед отдачей на фронтенд: приватный/preshared ключ peer'а и
+  // зашифрованный SSH-секрет сервера (иначе он попал бы в ответ /peers даже org_admin/
+  // org_user — сервер должен оставаться видимым только по имени, не как полная сущность).
+  private toListItem(peer: Peer): PeerListItem {
+    const { privateKeyEnc, presharedKeyEnc, serverProtocol, ...rest } = peer;
+    const { server, ...serverProtocolRest } = serverProtocol;
+    const { sshSecretEnc, ...safeServer } = server;
+    return { ...rest, serverProtocol: { ...serverProtocolRest, server: safeServer } };
   }
 
   async create(requester: AuthenticatedUser, dto: CreatePeerDto): Promise<Peer> {
@@ -214,10 +228,13 @@ export class PeersService {
     });
   }
 
-  private resolveOrganizationId(requester: AuthenticatedUser, requestedOrgId?: string): string {
+  // null — явный осознанный выбор суперадмина «без клиента» (peer не привязан ни к одной
+  // организации); undefined — поле не передали вовсе, это ошибка, суперадмин должен
+  // выбрать явно (см. CreatePeerDto.organizationId).
+  private resolveOrganizationId(requester: AuthenticatedUser, requestedOrgId?: string | null): string | null {
     if (requester.role === Role.SUPER_ADMIN) {
-      if (!requestedOrgId) {
-        throw new BadRequestException('Для суперадмина обязателен organizationId');
+      if (requestedOrgId === undefined) {
+        throw new BadRequestException('Для суперадмина обязателен organizationId (или явно null — «без клиента»)');
       }
       return requestedOrgId;
     }
@@ -228,6 +245,18 @@ export class PeersService {
   }
 
   private async findActiveServerProtocolByServer(serverId: string, protocol: CreatePeerDto['protocol']): Promise<ServerProtocol> {
+    const server = await this.serversRepository.findOneOrFail({ where: { id: serverId } });
+    // Self-сервер моста может нести несколько клиентских интерфейсов одного протокола (по
+    // одному на каждый мост, см. CLAUDE.md/README про несколько мостов на self-сервере) —
+    // выбор по serverId+protocol ниже был бы неоднозначен (взял бы первый попавшийся,
+    // рискуя создать peer не в том мосту). Явный выбор конкретного моста через поле
+    // «Мост» (bridgeId, см. findBridgeClientProtocol выше) резолвит нужный интерфейс
+    // однозначно — им и нужно пользоваться для self-серверов, а не полем «Сервер».
+    if (server.isSelf) {
+      throw new BadRequestException(
+        'Этот сервер — self-сервер моста и может нести несколько интерфейсов одного протокола (по одному на мост). Выберите конкретный мост в поле «Мост» вместо сервера.',
+      );
+    }
     const serverProtocol = await this.serverProtocolsRepository.findOne({
       where: { serverId, protocol },
     });

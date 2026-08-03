@@ -1,10 +1,12 @@
 import {
   Alert,
   Button,
+  Checkbox,
   Chip,
   Dialog,
   DialogContent,
   DialogTitle,
+  FormControlLabel,
   MenuItem,
   Paper,
   Stack,
@@ -17,19 +19,38 @@ import {
   Typography,
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
 import { fetchBridges } from '../api/bridges';
 import { getErrorMessage } from '../api/errors';
 import { fetchOrganizations } from '../api/organizations';
 import { CreatePeerInput, createPeer, downloadPeerConfig, fetchPeerQrCodeUrl, fetchPeers, purgePeer, revokePeer } from '../api/peers';
 import { fetchServers } from '../api/servers';
-import { PeerEntity, VpnProtocol } from '../api/types';
+import { BridgeEntity, PeerEntity, VpnProtocol } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 
 const statusColor: Record<string, 'success' | 'default'> = {
   active: 'success',
   revoked: 'default',
 };
+
+// Сентинел для «Клиент» в форме создания peer — отличает осознанный выбор «без клиента»
+// (organizationId: null отправится на бэкенд) от ещё не подгруженного значения по
+// умолчанию (пустая строка, см. useEffect ниже).
+const NO_CLIENT = '__none__';
+const DEFAULT_CLIENT_ORG_NAME = 'main';
+
+// Peer моста ссылается на клиентский ServerProtocol моста, а не напрямую на мост —
+// сверяем serverProtocolId со списком мостов, чтобы показать имя моста, а не имя
+// (обычно скрытого от UI) self-сервера.
+function serverLabel(peer: PeerEntity, bridges?: BridgeEntity[]): string {
+  const bridge = bridges?.find(
+    (b) => b.wireguardClientProtocolId === peer.serverProtocolId || b.amneziawgClientProtocolId === peer.serverProtocolId,
+  );
+  if (bridge) {
+    return `Мост «${bridge.name}»`;
+  }
+  return peer.serverProtocol?.server?.name ?? '—';
+}
 
 export function PeersPage() {
   const { user } = useAuth();
@@ -53,15 +74,28 @@ export function PeersPage() {
   });
 
   const [form, setForm] = useState<CreatePeerInput>({ protocol: 'wireguard', name: '' });
+  const [useBridge, setUseBridge] = useState(false);
+  const [clientOrgId, setClientOrgId] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [qrPeer, setQrPeer] = useState<PeerEntity | null>(null);
   const [qrUrl, setQrUrl] = useState<string | null>(null);
+
+  // По умолчанию — организация "main", если она есть; иначе явное «без клиента». Ставим
+  // только один раз при первой загрузке списка организаций, не мешая последующему
+  // осознанному выбору пользователя (в т.ч. выбору «Без клиента», который тоже непустой).
+  useEffect(() => {
+    if (isSuperAdmin && organizations && !clientOrgId) {
+      const defaultOrg = organizations.find((org) => org.name === DEFAULT_CLIENT_ORG_NAME);
+      setClientOrgId(defaultOrg ? defaultOrg.id : NO_CLIENT);
+    }
+  }, [isSuperAdmin, organizations, clientOrgId]);
 
   const createMutation = useMutation({
     mutationFn: createPeer,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['peers'] });
       setForm({ protocol: 'wireguard', name: '' });
+      setUseBridge(false);
       setError(null);
     },
     onError: (err) => setError(getErrorMessage(err, 'Не удалось создать peer')),
@@ -81,7 +115,7 @@ export function PeersPage() {
     event.preventDefault();
     createMutation.mutate({
       ...form,
-      organizationId: isSuperAdmin ? organizationFilter || undefined : undefined,
+      organizationId: isSuperAdmin ? (clientOrgId === NO_CLIENT ? null : clientOrgId) : undefined,
     });
   }
 
@@ -130,9 +164,39 @@ export function PeersPage() {
               <MenuItem value="amneziawg">AmneziaWG</MenuItem>
             </TextField>
             {bridges && bridges.length > 0 && (
+              <FormControlLabel
+                sx={{ mt: 1 }}
+                control={
+                  <Checkbox
+                    checked={useBridge}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setUseBridge(checked);
+                      if (!checked) {
+                        setForm({ ...form, bridgeId: undefined });
+                        return;
+                      }
+                      // Если мост ровно один — сразу подставляем его, иначе оставляем
+                      // выбор пользователю (см. поле «Мост» ниже).
+                      const bridgeId = bridges.length === 1 ? bridges[0].id : undefined;
+                      const selected = bridges.find((b) => b.id === bridgeId);
+                      const availableProtocols: VpnProtocol[] = selected
+                        ? ([selected.wireguardClientProtocolId && 'wireguard', selected.amneziawgClientProtocolId && 'amneziawg'].filter(
+                            Boolean,
+                          ) as VpnProtocol[])
+                        : [];
+                      const protocol = availableProtocols.includes(form.protocol) ? form.protocol : availableProtocols[0] ?? form.protocol;
+                      setForm({ ...form, bridgeId, serverId: undefined, protocol });
+                    }}
+                  />
+                }
+                label="Мост"
+              />
+            )}
+            {useBridge && (
               <TextField
                 select
-                label="Мост"
+                label="Какой мост"
                 value={form.bridgeId || ''}
                 onChange={(e) => {
                   const bridgeId = e.target.value || undefined;
@@ -141,17 +205,17 @@ export function PeersPage() {
                   // подставляем тот, что реально доступен, чтобы не наткнуться на ошибку
                   // "протокол не установлен".
                   const availableProtocols: VpnProtocol[] = selected
-                    ? [selected.wireguardClientProtocolId && 'wireguard', selected.amneziawgClientProtocolId && 'amneziawg'].filter(
+                    ? ([selected.wireguardClientProtocolId && 'wireguard', selected.amneziawgClientProtocolId && 'amneziawg'].filter(
                         Boolean,
-                      ) as VpnProtocol[]
+                      ) as VpnProtocol[])
                     : [];
                   const protocol = availableProtocols.includes(form.protocol) ? form.protocol : availableProtocols[0] ?? form.protocol;
-                  setForm({ ...form, bridgeId, serverId: bridgeId ? undefined : form.serverId, protocol });
+                  setForm({ ...form, bridgeId, protocol });
                 }}
                 sx={{ minWidth: 200 }}
-                helperText="Peer станет клиентом этого моста"
+                helperText="Peer станет клиентом этого моста — создастся на менеджере"
+                required
               >
-                <MenuItem value="">Без моста</MenuItem>
                 {bridges?.map((b) => (
                   <MenuItem key={b.id} value={b.id}>
                     {b.name}
@@ -159,7 +223,7 @@ export function PeersPage() {
                 ))}
               </TextField>
             )}
-            {isSuperAdmin && (
+            {isSuperAdmin && !useBridge && (
               <TextField
                 select
                 label="Сервер (авто, если не выбран)"
@@ -171,7 +235,7 @@ export function PeersPage() {
                   // выбрали при создании моста — WireGuard или AmneziaWG). Подставляем его
                   // автоматически, иначе комбинация протокол+сервер может не найтись.
                   const activeProtocol = selected?.protocols.find((p) => p.status === 'active')?.protocol;
-                  setForm({ ...form, serverId, bridgeId: serverId ? undefined : form.bridgeId, protocol: activeProtocol ?? form.protocol });
+                  setForm({ ...form, serverId, protocol: activeProtocol ?? form.protocol });
                 }}
                 sx={{ minWidth: 240 }}
                 helperText="Обычный сервер — не мост"
@@ -186,16 +250,28 @@ export function PeersPage() {
                   ))}
               </TextField>
             )}
-            <Button type="submit" variant="contained" disabled={createMutation.isPending}>
+            {isSuperAdmin && (
+              <TextField
+                select
+                label="Клиент"
+                value={clientOrgId}
+                onChange={(e) => setClientOrgId(e.target.value)}
+                sx={{ minWidth: 200 }}
+                helperText="Организация, для которой создаётся peer"
+              >
+                <MenuItem value={NO_CLIENT}>Без клиента</MenuItem>
+                {organizations?.map((org) => (
+                  <MenuItem key={org.id} value={org.id}>
+                    {org.name}
+                  </MenuItem>
+                ))}
+              </TextField>
+            )}
+            <Button type="submit" variant="contained" disabled={createMutation.isPending || (isSuperAdmin && !clientOrgId)}>
               Создать
             </Button>
           </Stack>
         </form>
-        {isSuperAdmin && !organizationFilter && (
-          <Alert severity="info" sx={{ mt: 2 }}>
-            Выберите организацию выше, чтобы создать peer для конкретного клиента.
-          </Alert>
-        )}
         {error && (
           <Alert severity="error" sx={{ mt: 2 }}>
             {error}
@@ -209,6 +285,7 @@ export function PeersPage() {
             <TableRow>
               <TableCell>Название</TableCell>
               <TableCell>Протокол/IP</TableCell>
+              <TableCell>Сервер</TableCell>
               <TableCell>Источник</TableCell>
               <TableCell>Статус</TableCell>
               <TableCell align="right">Действия</TableCell>
@@ -219,6 +296,7 @@ export function PeersPage() {
               <TableRow key={peer.id}>
                 <TableCell>{peer.name}</TableCell>
                 <TableCell>{peer.allowedIp}</TableCell>
+                <TableCell>{serverLabel(peer, bridges)}</TableCell>
                 <TableCell>{peer.source === 'created' ? 'создан в сервисе' : 'импортирован'}</TableCell>
                 <TableCell>
                   <Chip size="small" label={peer.status} color={statusColor[peer.status]} />
@@ -249,7 +327,7 @@ export function PeersPage() {
             ))}
             {!isLoading && peers?.length === 0 && (
               <TableRow>
-                <TableCell colSpan={5}>Peers пока нет</TableCell>
+                <TableCell colSpan={6}>Peers пока нет</TableCell>
               </TableRow>
             )}
           </TableBody>

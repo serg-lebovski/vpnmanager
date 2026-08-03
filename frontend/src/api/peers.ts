@@ -13,7 +13,9 @@ export interface CreatePeerInput {
   name: string;
   serverId?: string;
   bridgeId?: string;
-  organizationId?: string;
+  // null — явное «без клиента» (только для super_admin); undefined — не передавать
+  // (org_admin/org_user всегда создают peer в своей организации на бэкенде).
+  organizationId?: string | null;
 }
 
 export async function createPeer(input: CreatePeerInput): Promise<PeerEntity> {
