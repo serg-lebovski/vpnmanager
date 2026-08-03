@@ -71,15 +71,34 @@ export class UpdateService {
     const logPath = path.join(repoPath, 'update.log');
     fs.appendFileSync(logPath, `\n--- Обновление запущено ${new Date().toISOString()} ---\n`);
 
-    // --force-recreate — без него сервисы с бинд-маунтом ОТДЕЛЬНОГО ФАЙЛА (у нас так
-    // смонтирован nginx.conf), чей образ не менялся, не пересоздаются на `up -d --build`
-    // и остаются жить со СТАРЫМ содержимым: git pull заменяет файл на диске новым inode
-    // (rename, не правка на месте), а bind-mount уже запущенного контейнера продолжает
-    // указывать на прежний inode. Поймано вживую при первом деплое этой самой фичи.
-    const child = exec(`git pull >> "${logPath}" 2>&1 && docker compose up -d --build --force-recreate >> "${logPath}" 2>&1`, {
-      cwd: repoPath,
-      env: { ...process.env, PWD: repoPath },
-    });
+    // Пойманный вживую реальный инцидент (2026-08-03) научил разбивать это на отдельные,
+    // явно упорядоченные шаги, а не одна команда "up -d --build --force-recreate" на все
+    // сервисы разом:
+    //
+    // 1. postgres никогда не трогаем — его образ/конфиг никогда не меняется этим
+    //    обновлением, а force-recreate на нём — чистый лишний риск (реально пересоздавали
+    //    и роняли рабочую БД без всякой пользы).
+    // 2. nginx/frontend пересоздаём (--force-recreate — иначе бинд-маунт nginx.conf не
+    //    подхватит новый файл, git pull заменяет его новым inode) ДО backend, а не после.
+    // 3. backend — САМЫЙ ПОСЛЕДНИЙ шаг и без --force-recreate (пересоздастся сам, раз
+    //    образ изменился). Он особый: это тот же контейнер, ИЗ КОТОРОГО запущен этот
+    //    скрипт, — когда docker его останавливает, чтобы пересоздать, обрывается и сам
+    //    скрипт (детач/unref не спасают — контейнер целиком, вместе со всеми процессами
+    //    внутри, всё равно убивается). Ставя backend последним, мы гарантируем, что
+    //    nginx/frontend в любом случае успеют обновиться, даже если сам скрипт оборвётся
+    //    прямо на этом шаге.
+    // 4. nginx настроен на резолвинг backend/frontend через встроенный DNS докера с TTL
+    //    (см. nginx.conf) — при пересоздании backend/frontend в последнюю очередь nginx
+    //    сам переспросит их новый IP по истечении TTL, без необходимости его перезапускать.
+    const child = exec(
+      [
+        `git pull >> "${logPath}" 2>&1`,
+        `docker compose build backend frontend >> "${logPath}" 2>&1`,
+        `docker compose up -d --force-recreate --no-deps nginx frontend >> "${logPath}" 2>&1`,
+        `docker compose up -d --no-deps backend >> "${logPath}" 2>&1`,
+      ].join(' && '),
+      { cwd: repoPath, env: { ...process.env, PWD: repoPath } },
+    );
     child.unref();
 
     return { logFile: logPath };

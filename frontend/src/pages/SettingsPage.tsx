@@ -72,6 +72,12 @@ export function SettingsPage() {
             {updateError}
           </Alert>
         )}
+        <Typography variant="caption" color="text.secondary" display="block" mt={2}>
+          Если после обновления сайт перестал открываться — зайдите по SSH в каталог
+          репозитория и выполните <code>docker compose up -d</code>: команда безопасна
+          повторно запускать, она сама доведёт до консистентного состояния всё, что
+          обновление не успело закончить.
+        </Typography>
       </Paper>
 
       <Paper sx={{ p: 2 }}>
