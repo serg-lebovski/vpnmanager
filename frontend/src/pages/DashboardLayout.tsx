@@ -1,5 +1,5 @@
 import { AppBar, Box, Button, Container, Toolbar, Typography } from '@mui/material';
-import { Link as RouterLink, Outlet } from 'react-router-dom';
+import { Link as RouterLink, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 
 const roleLabels: Record<string, string> = {
@@ -10,6 +10,23 @@ const roleLabels: Record<string, string> = {
 
 export function DashboardLayout() {
   const { user, logout } = useAuth();
+  const location = useLocation();
+
+  // "/" — только точное совпадение (иначе подсвечивался бы всегда, это префикс всех
+  // путей); остальные вкладки — по префиксу, чтобы вложенные страницы (например,
+  // /organizations/:id) тоже подсвечивали свой родительский пункт меню.
+  function isActive(path: string): boolean {
+    return path === '/' ? location.pathname === '/' : location.pathname.startsWith(path);
+  }
+
+  function navButtonProps(path: string) {
+    return {
+      component: RouterLink,
+      to: path,
+      variant: isActive(path) ? ('outlined' as const) : undefined,
+      sx: isActive(path) ? { borderColor: 'currentColor' } : undefined,
+    };
+  }
 
   return (
     <Box>
@@ -18,30 +35,30 @@ export function DashboardLayout() {
           <Typography variant="h6" sx={{ flexGrow: 0 }}>
             VPN Manager
           </Typography>
-          <Button color="inherit" component={RouterLink} to="/">
+          <Button color="inherit" {...navButtonProps('/')}>
             Peers
           </Button>
           {user?.role === 'super_admin' && (
             <>
-              <Button color="inherit" component={RouterLink} to="/dashboard">
+              <Button color="inherit" {...navButtonProps('/dashboard')}>
                 Дашборд
               </Button>
-              <Button color="inherit" component={RouterLink} to="/servers">
+              <Button color="inherit" {...navButtonProps('/servers')}>
                 Серверы
               </Button>
-              <Button color="inherit" component={RouterLink} to="/organizations">
+              <Button color="inherit" {...navButtonProps('/organizations')}>
                 Клиенты
               </Button>
-              <Button color="inherit" component={RouterLink} to="/bridge">
+              <Button color="inherit" {...navButtonProps('/bridge')}>
                 Мост
               </Button>
-              <Button color="inherit" component={RouterLink} to="/settings">
+              <Button color="inherit" {...navButtonProps('/settings')}>
                 Настройки
               </Button>
             </>
           )}
           {(user?.role === 'super_admin' || user?.role === 'org_admin') && (
-            <Button color="inherit" component={RouterLink} to="/users">
+            <Button color="inherit" {...navButtonProps('/users')}>
               Пользователи
             </Button>
           )}

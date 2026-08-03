@@ -4,7 +4,7 @@ import { DataSource, IsNull, Not, Repository } from 'typeorm';
 import { Bridge } from '../bridges/bridge.entity';
 import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { decryptSecret, encryptSecret } from '../common/encryption.util';
-import { PeerSource, PeerStatus, Role } from '../common/enums';
+import { PeerSource, PeerStatus, Role, ServerProtocolStatus } from '../common/enums';
 import { LoadBalancerService } from '../load-balancer/load-balancer.service';
 import { ServerProtocol } from '../servers/server-protocol.entity';
 import { Server } from '../servers/server.entity';
@@ -244,24 +244,34 @@ export class PeersService {
     return requester.organizationId;
   }
 
+  // Раньше блокировался весь self-сервер целиком (Server.isSelf) — но self-сервер может
+  // нести и protocols, НЕ занятые ни одним мостом (например, если на нём есть запас
+  // ёмкости помимо клиентских интерфейсов моста), и такой сервер не должен пропадать из
+  // выбора целиком. Поэтому проверяем неоднозначность/занятость на уровне КОНКРЕТНОГО
+  // протокола, а не сервера.
   private async findActiveServerProtocolByServer(serverId: string, protocol: CreatePeerDto['protocol']): Promise<ServerProtocol> {
-    const server = await this.serversRepository.findOneOrFail({ where: { id: serverId } });
-    // Self-сервер моста может нести несколько клиентских интерфейсов одного протокола (по
-    // одному на каждый мост, см. CLAUDE.md/README про несколько мостов на self-сервере) —
-    // выбор по serverId+protocol ниже был бы неоднозначен (взял бы первый попавшийся,
-    // рискуя создать peer не в том мосту). Явный выбор конкретного моста через поле
-    // «Мост» (bridgeId, см. findBridgeClientProtocol выше) резолвит нужный интерфейс
-    // однозначно — им и нужно пользоваться для self-серверов, а не полем «Сервер».
-    if (server.isSelf) {
+    const candidates = await this.serverProtocolsRepository.find({ where: { serverId, protocol } });
+    const active = candidates.filter((sp) => sp.status === ServerProtocolStatus.ACTIVE);
+    if (active.length === 0) {
+      throw new BadRequestException('На указанном сервере протокол не установлен или неактивен');
+    }
+    if (active.length > 1) {
+      // На одном self-сервере может быть несколько мостов с одним и тем же протоколом
+      // (разные порты/сети, см. CLAUDE.md про несколько мостов на self-сервере) — выбор
+      // по serverId+protocol был бы неоднозначен (взял бы первый попавшийся, рискуя
+      // создать peer не в том мосту).
       throw new BadRequestException(
-        'Этот сервер — self-сервер моста и может нести несколько интерфейсов одного протокола (по одному на мост). Выберите конкретный мост в поле «Мост» вместо сервера.',
+        'На этом сервере несколько интерфейсов этого протокола (используются разными мостами) — выберите конкретный мост в поле «Мост» вместо сервера.',
       );
     }
-    const serverProtocol = await this.serverProtocolsRepository.findOne({
-      where: { serverId, protocol },
+    const serverProtocol = active[0];
+    const claimedByBridge = await this.bridgesRepository.findOne({
+      where: [{ wireguardClientProtocolId: serverProtocol.id }, { amneziawgClientProtocolId: serverProtocol.id }],
     });
-    if (!serverProtocol || serverProtocol.status !== 'active') {
-      throw new BadRequestException('На указанном сервере протокол не установлен или неактивен');
+    if (claimedByBridge) {
+      throw new BadRequestException(
+        `Этот протокол — клиентский интерфейс моста «${claimedByBridge.name}». Выберите этот мост в поле «Мост» вместо сервера.`,
+      );
     }
     return serverProtocol;
   }

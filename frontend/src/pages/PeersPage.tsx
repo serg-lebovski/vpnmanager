@@ -241,13 +241,12 @@ export function PeersPage() {
                 helperText="Обычный сервер — не мост"
               >
                 <MenuItem value="">Автоматически (балансировка)</MenuItem>
-                {servers
-                  ?.filter((s) => !s.isSelf)
-                  .map((s) => (
-                    <MenuItem key={s.id} value={s.id}>
-                      {s.name}
-                    </MenuItem>
-                  ))}
+                {servers?.map((s) => (
+                  <MenuItem key={s.id} value={s.id}>
+                    {s.name}
+                    {s.isSelf && ' (используется мостом)'}
+                  </MenuItem>
+                ))}
               </TextField>
             )}
             {isSuperAdmin && (
