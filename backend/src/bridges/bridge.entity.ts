@@ -1,8 +1,9 @@
-import { Column, CreateDateColumn, Entity, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, CreateDateColumn, Entity, JoinColumn, ManyToOne, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
 import { BridgeStatus, BridgeUpstreamMode } from '../common/enums';
 import { Organization } from '../organizations/organization.entity';
 import { Peer } from '../peers/peer.entity';
 import { ServerProtocol } from '../servers/server-protocol.entity';
+import { BridgeUpstreamCandidate } from './bridge-upstream-candidate.entity';
 
 @Entity('bridges')
 export class Bridge {
@@ -92,6 +93,12 @@ export class Bridge {
   // переставив DNS-запись, без необходимости раздавать все клиентские конфиги заново.
   @Column({ name: 'domain_name', nullable: true })
   domainName: string | null;
+
+  // Приоритетный список кандидатов для режима FAILOVER (см. BridgeUpstreamMode.FAILOVER,
+  // BridgeFailoverService) — независим от upstreamServerProtocolId ("что активно прямо
+  // сейчас"), это "в каком порядке предпочитать".
+  @OneToMany(() => BridgeUpstreamCandidate, (candidate) => candidate.bridge)
+  upstreamCandidates: BridgeUpstreamCandidate[];
 
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;

@@ -14,6 +14,7 @@ import { Server } from '../servers/server.entity';
 import { UpstreamPeerConfig } from '../vpn/vpn-driver.interface';
 import { VpnProvisioningService } from '../vpn/vpn-provisioning.service';
 import { Bridge } from './bridge.entity';
+import { BridgeUpstreamCandidate } from './bridge-upstream-candidate.entity';
 import { BridgesGateway } from './bridges.gateway';
 import { CreateBridgeDto } from './dto/create-bridge.dto';
 import { UpdateBridgeDto } from './dto/update-bridge.dto';
@@ -39,13 +40,20 @@ const BRIDGE_RELATIONS = [
   'amneziawgClientProtocol.server',
   'upstreamServerProtocol',
   'upstreamServerProtocol.server',
+  'upstreamCandidates',
+  'upstreamCandidates.serverProtocol',
+  'upstreamCandidates.serverProtocol.server',
 ];
 
 type SafeClientProtocol = (Omit<ServerProtocol, 'server' | 'peers'> & { server: Omit<Server, 'sshSecretEnc'> }) | null;
-export type BridgeListItem = Omit<Bridge, 'wireguardClientProtocol' | 'amneziawgClientProtocol' | 'upstreamServerProtocol'> & {
+export type BridgeListItem = Omit<
+  Bridge,
+  'wireguardClientProtocol' | 'amneziawgClientProtocol' | 'upstreamServerProtocol' | 'upstreamCandidates'
+> & {
   wireguardClientProtocol: SafeClientProtocol;
   amneziawgClientProtocol: SafeClientProtocol;
   upstreamServerProtocol: SafeClientProtocol;
+  upstreamCandidates: Array<{ id: string; priority: number; serverProtocol: SafeClientProtocol }>;
 };
 
 @Injectable()
@@ -54,6 +62,7 @@ export class BridgesService {
 
   constructor(
     @InjectRepository(Bridge) private readonly bridgesRepository: Repository<Bridge>,
+    @InjectRepository(BridgeUpstreamCandidate) private readonly upstreamCandidatesRepository: Repository<BridgeUpstreamCandidate>,
     @InjectRepository(ServerProtocol) private readonly serverProtocolsRepository: Repository<ServerProtocol>,
     @InjectRepository(Server) private readonly serversRepository: Repository<Server>,
     @InjectRepository(Peer) private readonly peersRepository: Repository<Peer>,
@@ -94,11 +103,16 @@ export class BridgesService {
       const { sshSecretEnc, ...safeServer } = server;
       return { ...rest, server: safeServer };
     };
+    const upstreamCandidates = (bridge.upstreamCandidates ?? [])
+      .slice()
+      .sort((a, b) => a.priority - b.priority)
+      .map((candidate) => ({ id: candidate.id, priority: candidate.priority, serverProtocol: sanitize(candidate.serverProtocol) }));
     return {
       ...bridge,
       wireguardClientProtocol: sanitize(bridge.wireguardClientProtocol),
       amneziawgClientProtocol: sanitize(bridge.amneziawgClientProtocol),
       upstreamServerProtocol: sanitize(bridge.upstreamServerProtocol),
+      upstreamCandidates,
     };
   }
 
@@ -300,9 +314,47 @@ export class BridgesService {
     if (mode === BridgeUpstreamMode.AUTO && !bridge.upstreamServerProtocolId) {
       throw new BadRequestException('Сначала выберите upstream вручную — автобаланс переключает уже настроенный мост');
     }
+    if (mode === BridgeUpstreamMode.FAILOVER) {
+      const candidateCount = await this.upstreamCandidatesRepository.count({ where: { bridgeId } });
+      if (candidateCount === 0) {
+        throw new BadRequestException('Сначала настройте основной и резервные серверы в разделе "Приоритет upstream"');
+      }
+    }
     bridge.upstreamMode = mode;
     const saved = await this.bridgesRepository.save(bridge);
     return this.toSafeBridge(saved);
+  }
+
+  // Полностью заменяет приоритетный список upstream-кандидатов моста (delete-all-then-
+  // insert, тот же UX, что у clientProtocols при создании моста) — порядок serverProtocolIds
+  // задаёт priority (индекс = приоритет, 0 = основной). Используется формой "Приоритет
+  // upstream" на фронтенде и опрашивается BridgeFailoverService.
+  async setUpstreamCandidates(bridgeId: string, serverProtocolIds: string[]): Promise<BridgeListItem> {
+    const bridge = await this.findOneOrFail(bridgeId);
+    if (new Set(serverProtocolIds).size !== serverProtocolIds.length) {
+      throw new BadRequestException('Сервер нельзя указывать в списке кандидатов дважды');
+    }
+    const clientProtocolIds = this.clientProtocolIds(bridge);
+    if (serverProtocolIds.some((id) => clientProtocolIds.includes(id))) {
+      throw new BadRequestException('Нельзя маршрутизировать мост через его же собственный клиентский интерфейс');
+    }
+    const candidates = await this.serverProtocolsRepository.find({ where: { id: In(serverProtocolIds) } });
+    if (candidates.length !== serverProtocolIds.length) {
+      throw new BadRequestException('Один или несколько серверов-кандидатов не найдены');
+    }
+    if (candidates.some((c) => c.status !== ServerProtocolStatus.ACTIVE)) {
+      throw new BadRequestException('Все кандидаты должны быть активными протоколами');
+    }
+
+    await this.dataSource.transaction(async (manager) => {
+      await manager.delete(BridgeUpstreamCandidate, { bridgeId });
+      const rows = serverProtocolIds.map((serverProtocolId, index) =>
+        manager.create(BridgeUpstreamCandidate, { bridgeId, serverProtocolId, priority: index }),
+      );
+      await manager.save(rows);
+    });
+
+    return this.toSafeBridge(await this.findOneOrFail(bridgeId));
   }
 
   async setUpstream(bridgeId: string, targetServerProtocolId: string): Promise<BridgeListItem> {

@@ -45,6 +45,17 @@ export async function setBridgeMode(bridgeId: string, mode: BridgeUpstreamMode):
   return data;
 }
 
+// Порядок serverProtocolIds = приоритет (индекс 0 — основной сервер).
+export async function setUpstreamCandidates(bridgeId: string, serverProtocolIds: string[]): Promise<BridgeEntity> {
+  const { data } = await apiClient.put<BridgeEntity>(`/bridges/${bridgeId}/upstream-candidates`, { serverProtocolIds });
+  return data;
+}
+
+export async function fetchCandidateStatus(bridgeId: string): Promise<Record<string, boolean | null>> {
+  const { data } = await apiClient.get<Record<string, boolean | null>>(`/bridges/${bridgeId}/candidate-status`);
+  return data;
+}
+
 export async function rebalanceBridge(bridgeId: string): Promise<BridgeEntity> {
   const { data } = await apiClient.post<BridgeEntity>(`/bridges/${bridgeId}/rebalance`);
   return data;

@@ -43,6 +43,12 @@ export enum SshAuthType {
 export enum BridgeUpstreamMode {
   MANUAL = 'manual',
   AUTO = 'auto',
+  // По доступности: постоянно проверяет TCP-доступность SSH-порта кандидатов из
+  // bridge_upstream_candidates (см. BridgeFailoverService) и держит upstream на первом
+  // доступном по приоритету — включая автоматический возврат на основной, когда он снова
+  // станет доступен. Взаимоисключающий с AUTO на одном мосту (оба дёргают setUpstream по
+  // интервалу) — валидируется в BridgesService.setMode.
+  FAILOVER = 'failover',
 }
 
 export enum BridgeStatus {

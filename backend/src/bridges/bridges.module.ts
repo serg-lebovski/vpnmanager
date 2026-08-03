@@ -9,13 +9,15 @@ import { ServerProtocol } from '../servers/server-protocol.entity';
 import { Server } from '../servers/server.entity';
 import { VpnModule } from '../vpn/vpn.module';
 import { Bridge } from './bridge.entity';
+import { BridgeUpstreamCandidate } from './bridge-upstream-candidate.entity';
+import { BridgeFailoverService } from './bridge-failover.service';
 import { BridgesController } from './bridges.controller';
 import { BridgesGateway } from './bridges.gateway';
 import { BridgesService } from './bridges.service';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Bridge, ServerProtocol, Server, Peer, Organization]),
+    TypeOrmModule.forFeature([Bridge, BridgeUpstreamCandidate, ServerProtocol, Server, Peer, Organization]),
     PeersModule,
     VpnModule,
     JwtModule.registerAsync({
@@ -27,7 +29,7 @@ import { BridgesService } from './bridges.service';
     }),
   ],
   controllers: [BridgesController],
-  providers: [BridgesService, BridgesGateway],
+  providers: [BridgesService, BridgesGateway, BridgeFailoverService],
   exports: [BridgesService],
 })
 export class BridgesModule {}

@@ -5,7 +5,7 @@ export type ServerProtocolStatus = 'not_installed' | 'installing' | 'active' | '
 export type PeerSource = 'created' | 'imported' | 'bridge_upstream';
 export type PeerStatus = 'active' | 'revoked';
 export type SshAuthType = 'password' | 'private_key';
-export type BridgeUpstreamMode = 'manual' | 'auto';
+export type BridgeUpstreamMode = 'manual' | 'auto' | 'failover';
 export type BridgeStatus = 'not_configured' | 'configuring' | 'active' | 'error';
 
 export interface AuthUser {
@@ -76,6 +76,7 @@ export interface BridgeEntity {
   status: BridgeStatus;
   lastError: string | null;
   domainName: string | null;
+  upstreamCandidates: Array<{ id: string; priority: number; serverProtocol: (ServerProtocolEntity & { server?: ServerEntity }) | null }>;
   createdAt: string;
 }
 

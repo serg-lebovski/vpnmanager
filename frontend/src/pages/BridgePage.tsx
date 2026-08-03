@@ -22,16 +22,18 @@ import {
   createBridge,
   deleteBridge,
   fetchBridges,
+  fetchCandidateStatus,
   rebalanceBridge,
   setBridgeMode,
   setBridgeUpstream,
+  setUpstreamCandidates,
   updateBridge,
 } from '../api/bridges';
 import { BridgeSwitchProgress, connectBridgeProgressSocket } from '../api/bridgeSocket';
 import { getErrorMessage } from '../api/errors';
 import { fetchOrganizations } from '../api/organizations';
 import { fetchServers } from '../api/servers';
-import { BridgeEntity, Organization, ServerEntity, VpnProtocol } from '../api/types';
+import { BridgeEntity, BridgeUpstreamMode, Organization, ServerEntity, VpnProtocol } from '../api/types';
 
 const statusColor: Record<string, 'default' | 'success' | 'error' | 'warning'> = {
   not_configured: 'default',
@@ -303,7 +305,7 @@ function BridgeCard({
     onError: (err) => setError(getErrorMessage(err, 'Не удалось переключить upstream')),
   });
   const modeMutation = useMutation({
-    mutationFn: (mode: 'manual' | 'auto') => setBridgeMode(bridge.id, mode),
+    mutationFn: (mode: BridgeUpstreamMode) => setBridgeMode(bridge.id, mode),
     onSuccess: onChanged,
     onError: (err) => setError(getErrorMessage(err, 'Не удалось сменить режим')),
   });
@@ -315,6 +317,48 @@ function BridgeCard({
     },
     onError: (err) => setError(getErrorMessage(err, 'Не удалось пересчитать баланс')),
   });
+
+  const [isEditingCandidates, setIsEditingCandidates] = useState(false);
+  const [candidatePriority, setCandidatePriority] = useState<Record<string, number | ''>>({});
+
+  const candidatesMutation = useMutation({
+    mutationFn: (serverProtocolIds: string[]) => setUpstreamCandidates(bridge.id, serverProtocolIds),
+    onSuccess: () => {
+      onChanged();
+      setError(null);
+      setIsEditingCandidates(false);
+    },
+    onError: (err) => setError(getErrorMessage(err, 'Не удалось сохранить список кандидатов')),
+  });
+
+  const { data: candidateStatus } = useQuery({
+    queryKey: ['bridge-candidate-status', bridge.id],
+    queryFn: () => fetchCandidateStatus(bridge.id),
+    enabled: bridge.upstreamMode === 'failover' || isEditingCandidates,
+    refetchInterval: 20_000,
+  });
+
+  function openCandidateEditor() {
+    const initial: Record<string, number | ''> = {};
+    bridge.upstreamCandidates.forEach((c) => {
+      if (c.serverProtocol) {
+        initial[c.serverProtocol.id] = c.priority;
+      }
+    });
+    setCandidatePriority(initial);
+    setIsEditingCandidates(true);
+  }
+
+  function saveCandidates() {
+    const entries = Object.entries(candidatePriority).filter((entry): entry is [string, number] => entry[1] !== '');
+    entries.sort((a, b) => a[1] - b[1]);
+    const serverProtocolIds = entries.map(([id]) => id);
+    if (serverProtocolIds.length === 0) {
+      setError('Выберите хотя бы основной сервер');
+      return;
+    }
+    candidatesMutation.mutate(serverProtocolIds);
+  }
 
   const clientProtocolIds = [bridge.wireguardClientProtocolId, bridge.amneziawgClientProtocolId].filter(Boolean);
   const candidates = servers
@@ -390,12 +434,23 @@ function BridgeCard({
           )}
         </Box>
         <Stack direction="row" spacing={1} alignItems="center">
-          <Typography variant="body2">Авто-баланс</Typography>
-          <Switch
-            checked={bridge.upstreamMode === 'auto'}
-            onChange={(e) => modeMutation.mutate(e.target.checked ? 'auto' : 'manual')}
-            disabled={!bridge.upstreamServerProtocolId || (progress && !progress.done)}
-          />
+          <TextField
+            select
+            size="small"
+            label="Режим upstream"
+            value={bridge.upstreamMode}
+            onChange={(e) => modeMutation.mutate(e.target.value as BridgeUpstreamMode)}
+            disabled={(progress && !progress.done) || modeMutation.isPending}
+            sx={{ minWidth: 200 }}
+          >
+            <MenuItem value="manual">Ручной</MenuItem>
+            <MenuItem value="auto" disabled={!bridge.upstreamServerProtocolId}>
+              Авто (по нагрузке)
+            </MenuItem>
+            <MenuItem value="failover" disabled={bridge.upstreamCandidates.length === 0}>
+              Failover (по доступности)
+            </MenuItem>
+          </TextField>
           <Button
             size="small"
             onClick={() => rebalanceMutation.mutate()}
@@ -455,6 +510,86 @@ function BridgeCard({
           </Button>
         </Stack>
       )}
+
+      <Divider sx={{ my: 2 }} />
+
+      <Stack direction="row" justifyContent="space-between" alignItems="center" mb={1}>
+        <Typography variant="subtitle2">Приоритет upstream (для режима Failover)</Typography>
+        {!isEditingCandidates && (
+          <Button size="small" onClick={openCandidateEditor}>
+            Настроить
+          </Button>
+        )}
+      </Stack>
+
+      {!isEditingCandidates ? (
+        bridge.upstreamCandidates.length === 0 ? (
+          <Typography variant="body2" color="text.secondary">
+            Основной и резервные серверы не заданы — режим Failover недоступен.
+          </Typography>
+        ) : (
+          <Stack spacing={0.5}>
+            {bridge.upstreamCandidates.map((c) => {
+              const serverId = c.serverProtocol?.server?.id;
+              const reachable = serverId ? candidateStatus?.[serverId] : undefined;
+              return (
+                <Stack key={c.id} direction="row" spacing={1} alignItems="center">
+                  <Chip
+                    size="small"
+                    label={c.priority === 0 ? 'Основной' : `Резерв ${c.priority}`}
+                    color={c.priority === 0 ? 'primary' : 'default'}
+                    variant="outlined"
+                  />
+                  <Typography variant="body2">
+                    {c.serverProtocol?.server?.name} ({c.serverProtocol?.protocol})
+                  </Typography>
+                  {reachable !== undefined && (
+                    <Chip
+                      size="small"
+                      label={reachable === null ? 'проверяем…' : reachable ? 'доступен' : 'недоступен'}
+                      color={reachable === null ? 'default' : reachable ? 'success' : 'error'}
+                    />
+                  )}
+                </Stack>
+              );
+            })}
+          </Stack>
+        )
+      ) : (
+        <Stack spacing={1}>
+          {candidates.map((c) => (
+            <Stack key={c.id} direction="row" spacing={2} alignItems="center">
+              <TextField
+                select
+                size="small"
+                label={`${c.serverName} — ${c.protocol} (${c.host})`}
+                value={candidatePriority[c.id] ?? ''}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setCandidatePriority((prev) => ({ ...prev, [c.id]: value === '' ? '' : Number(value) }));
+                }}
+                sx={{ minWidth: 320 }}
+              >
+                <MenuItem value="">Не участвует</MenuItem>
+                {candidates.map((_, idx) => (
+                  <MenuItem key={idx} value={idx}>
+                    {idx === 0 ? 'Основной' : `Резерв ${idx}`}
+                  </MenuItem>
+                ))}
+              </TextField>
+            </Stack>
+          ))}
+          <Stack direction="row" spacing={1}>
+            <Button size="small" variant="contained" disabled={candidatesMutation.isPending} onClick={saveCandidates}>
+              Сохранить
+            </Button>
+            <Button size="small" onClick={() => setIsEditingCandidates(false)}>
+              Отмена
+            </Button>
+          </Stack>
+        </Stack>
+      )}
+
       {progress?.done && progress.error && (
         <Alert severity="error" sx={{ mt: 2 }}>
           {progress.error}
