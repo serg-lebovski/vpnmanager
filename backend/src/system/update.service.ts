@@ -1,5 +1,6 @@
 import { execFile, exec } from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { promisify } from 'util';
 import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
@@ -94,15 +95,9 @@ export class UpdateService {
   //    и роняли рабочую БД без всякой пользы).
   // 2. nginx/frontend пересоздаём (--force-recreate — иначе бинд-маунт nginx.conf не
   //    подхватит новый файл, git pull заменяет его новым inode) ДО backend, а не после.
-  // 3. backend — САМЫЙ ПОСЛЕДНИЙ шаг и без --force-recreate (пересоздастся сам, раз
-  //    образ изменился). Он особый: это тот же контейнер, ИЗ КОТОРОГО запущен этот же
-  //    процесс, — когда docker его останавливает, чтобы пересоздать, обрывается и сам
-  //    процесс (весь контейнер, вместе со всеми процессами внутри, убивается разом,
-  //    никакой detach/unref от этого не защищает). Ставя backend последним, мы
-  //    гарантируем, что nginx/frontend в любом случае успеют обновиться, даже если сам
-  //    процесс оборвётся прямо на этом шаге — а прогресс до этого момента фронтенд уже
-  //    увидит по WebSocket. Обрыв соединения на этом шаге — ожидаемый, не ошибка (см.
-  //    обработку на фронтенде).
+  // 3. backend — САМЫЙ ПОСЛЕДНИЙ шаг, и пересоздаётся НЕ этим же процессом (см.
+  //    recreateBackendDetached ниже — второй пойманный вживую инцидент, 2026-08-04, научил,
+  //    что просто "поставить backend последним" недостаточно).
   // 4. nginx настроен на резолвинг backend/frontend через встроенный DNS докера с TTL
   //    (см. nginx.conf) — при пересоздании backend/frontend в последнюю очередь nginx
   //    сам переспросит их новый IP по истечении TTL, без необходимости его перезапускать.
@@ -118,8 +113,8 @@ export class UpdateService {
       emit(60, 'Пересоздание nginx и frontend');
       await this.runLogged('docker compose up -d --force-recreate --no-deps nginx frontend', repoPath, logPath);
 
-      emit(85, 'Перезапуск backend — соединение сейчас оборвётся, это ожидаемо');
-      await this.runLogged('docker compose up -d --no-deps backend', repoPath, logPath);
+      emit(85, 'Запуск пересоздания backend в отдельном служебном контейнере — соединение сейчас оборвётся, это ожидаемо');
+      await this.recreateBackendDetached(repoPath, logPath);
 
       this.systemGateway.broadcastUpdateProgress({ percent: 100, step: 'Готово', done: true });
     } catch (error) {
@@ -131,6 +126,50 @@ export class UpdateService {
       });
       throw error;
     }
+  }
+
+  // Реальный повторный инцидент (2026-08-04): "docker compose up -d --no-deps backend",
+  // запущенный обычным дочерним процессом ЭТОГО ЖЕ backend-процесса, сам является клиентом
+  // docker-демона, посылающим ПОСЛЕДОВАТЕЛЬНОСТЬ запросов (stop → rm → create → start).
+  // Когда демон останавливает старый backend-контейнер (первый шаг этой последовательности),
+  // убивается вся его cgroup/pid namespace — включая сам процесс docker compose, который эту
+  // последовательность и вёл. Итог: старый контейнер остановлен и удалён, а создать и
+  // запустить новый уже некому — backend остаётся недоступен до ручного "docker compose up
+  // -d" по SSH. Простое "поставить backend последним шагом" эту гонку не устраняет, потому
+  // что причина не в порядке шагов, а в том, что оркестратор пересоздания и его цель — один
+  // и тот же контейнер.
+  //
+  // Фикс: финальный шаг выполняет НЕ этот процесс, а независимый sibling-контейнер,
+  // запущенный через тот же смонтированный docker.sock (`docker run -d --rm`). Такой
+  // контейнер не входит в cgroup/pid namespace backend'а — это просто ещё один контейнер на
+  // хосте, знающий про backend не больше, чем про любой другой сосед по демону. Убийство
+  // backend-контейнера его никак не касается: он спокойно доводит "docker compose up" до
+  // конца сам, уже после того как текущий процесс мог быть убит. `docker run -d` возвращает
+  // управление сразу после того, как sibling-контейнер СОЗДАН И ЗАПУЩЕН демоном — то есть эта
+  // функция успевает успешно завершиться и передать управление обратно в runUpdateSequence
+  // ДО того, как что-либо внутри sibling-контейнера (включая `sleep 2`) успеет остановить
+  // текущий backend.
+  private async recreateBackendDetached(repoPath: string, logPath: string): Promise<void> {
+    const containerId = os.hostname();
+    const { stdout } = await execFileAsync('docker', ['inspect', '--format', '{{.Image}}', containerId]);
+    const selfImage = stdout.trim();
+
+    const helperCommand = `sleep 2 && docker compose up -d --no-deps backend >> "${logPath}" 2>&1`;
+    await execFileAsync('docker', [
+      'run',
+      '-d',
+      '--rm',
+      '-v',
+      '/var/run/docker.sock:/var/run/docker.sock',
+      '-v',
+      `${repoPath}:${repoPath}`,
+      '-w',
+      repoPath,
+      selfImage,
+      'sh',
+      '-c',
+      helperCommand,
+    ]);
   }
 
   private runLogged(command: string, cwd: string, logPath: string): Promise<void> {
