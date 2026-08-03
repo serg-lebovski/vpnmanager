@@ -275,11 +275,17 @@ function BridgeCard({
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(bridge.name);
   const [editOrganizationId, setEditOrganizationId] = useState(bridge.organizationId ?? '');
+  const [editDomainName, setEditDomainName] = useState(bridge.domainName ?? '');
 
   const organizationName = organizations.find((o) => o.id === bridge.organizationId)?.name;
 
   const updateMutation = useMutation({
-    mutationFn: () => updateBridge(bridge.id, { name: editName, organizationId: editOrganizationId || null }),
+    mutationFn: () =>
+      updateBridge(bridge.id, {
+        name: editName,
+        organizationId: editOrganizationId || null,
+        domainName: editDomainName.trim() || null,
+      }),
     onSuccess: () => {
       onChanged();
       setError(null);
@@ -342,6 +348,14 @@ function BridgeCard({
                   </MenuItem>
                 ))}
               </TextField>
+              <TextField
+                label="Доменное имя моста"
+                size="small"
+                value={editDomainName}
+                onChange={(e) => setEditDomainName(e.target.value)}
+                sx={{ minWidth: 220 }}
+                helperText="Вместо IP self-сервера в скачиваемых конфигах peers"
+              />
               <Button size="small" variant="contained" disabled={updateMutation.isPending} onClick={() => updateMutation.mutate()}>
                 Сохранить
               </Button>
@@ -365,6 +379,9 @@ function BridgeCard({
             {bridge.upstreamServerProtocol
               ? `${bridge.upstreamServerProtocol.server?.name} (${bridge.upstreamServerProtocol.protocol})`
               : 'не настроен'}
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Домен: {bridge.domainName ?? 'не задан (в конфигах — IP self-сервера)'}
           </Typography>
           {bridge.lastError && (
             <Typography variant="body2" color="error">
@@ -392,6 +409,7 @@ function BridgeCard({
               onClick={() => {
                 setEditName(bridge.name);
                 setEditOrganizationId(bridge.organizationId ?? '');
+                setEditDomainName(bridge.domainName ?? '');
                 setIsEditing(true);
               }}
             >

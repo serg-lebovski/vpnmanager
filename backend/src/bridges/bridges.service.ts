@@ -196,6 +196,9 @@ export class BridgesService {
       }
       bridge.organizationId = dto.organizationId;
     }
+    if (dto.domainName !== undefined) {
+      bridge.domainName = dto.domainName;
+    }
     const saved = await this.bridgesRepository.save(bridge);
     return this.toSafeBridge(saved);
   }

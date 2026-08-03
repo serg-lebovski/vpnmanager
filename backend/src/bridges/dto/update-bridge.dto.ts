@@ -11,4 +11,12 @@ export class UpdateBridgeDto {
   @ValidateIf((_, value) => value !== null)
   @IsOptional()
   organizationId?: string | null;
+
+  // null — очистить домен (вернуться к IP self-сервера в клиентских конфигах);
+  // отсутствие поля — не менять.
+  @IsString()
+  @MinLength(1)
+  @ValidateIf((_, value) => value !== null)
+  @IsOptional()
+  domainName?: string | null;
 }

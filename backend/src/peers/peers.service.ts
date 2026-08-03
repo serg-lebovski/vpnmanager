@@ -177,7 +177,14 @@ export class PeersService {
     const server = await this.serversRepository.findOneOrFail({ where: { id: serverProtocol.serverId } });
     const privateKey = decryptSecret(peer.privateKeyEnc);
     const presharedKey = peer.presharedKeyEnc ? decryptSecret(peer.presharedKeyEnc) : null;
-    const content = buildClientConfig(peer, privateKey, server, serverProtocol, presharedKey);
+    // Если serverProtocol — клиентский интерфейс моста с заданным domainName, Endpoint в
+    // конфиге должен указывать на домен, а не на IP self-сервера (см. Bridge.domainName) —
+    // так peer переживёт переезд self-сервера на новый хост/IP после смены DNS-записи.
+    const bridge = await this.bridgesRepository.findOne({
+      where: [{ wireguardClientProtocolId: serverProtocol.id }, { amneziawgClientProtocolId: serverProtocol.id }],
+    });
+    const endpointServer = bridge?.domainName ? { ...server, host: bridge.domainName } : server;
+    const content = buildClientConfig(peer, privateKey, endpointServer, serverProtocol, presharedKey);
     return { filename: `${peer.name.replace(/[^a-zA-Z0-9-_]/g, '_')}.conf`, content };
   }
 

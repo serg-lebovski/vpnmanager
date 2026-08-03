@@ -75,6 +75,7 @@ export interface BridgeEntity {
   upstreamInterfaceName: string;
   status: BridgeStatus;
   lastError: string | null;
+  domainName: string | null;
   createdAt: string;
 }
 

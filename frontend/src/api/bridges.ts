@@ -27,6 +27,7 @@ export async function createBridge(input: CreateBridgeInput): Promise<BridgeEnti
 export interface UpdateBridgeInput {
   name?: string;
   organizationId?: string | null;
+  domainName?: string | null;
 }
 
 export async function updateBridge(bridgeId: string, input: UpdateBridgeInput): Promise<BridgeEntity> {

@@ -86,6 +86,13 @@ export class Bridge {
   @Column({ name: 'last_error', type: 'text', nullable: true })
   lastError: string | null;
 
+  // Если задано — клиентские конфиги, скачанные через peers этого моста, используют этот
+  // домен в Endpoint вместо IP self-сервера (см. PeersService.getDownloadableConfig).
+  // Нужно для disaster recovery: self-сервер можно переехать на новый хост/IP, просто
+  // переставив DNS-запись, без необходимости раздавать все клиентские конфиги заново.
+  @Column({ name: 'domain_name', nullable: true })
+  domainName: string | null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 }
