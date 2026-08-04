@@ -201,32 +201,36 @@ export function ServersPage() {
 
       {/* Self-серверы (используемые мостами) тоже показываем — у них может быть свободная
           ёмкость помимо клиентского интерфейса моста. Какой именно протокол занят каким
-          мостом — видно по чипу "мост «Имя»" у самого протокола ниже. */}
-      {servers?.map((server) => (
-        <ServerCard
-          key={server.id}
-          server={server}
-          online={onlineByServer[server.id]}
-          onDelete={() => deleteMutation.mutate(server.id)}
-          onRename={(name) => renameMutation.mutate({ id: server.id, name })}
-          onTest={() => testMutation.mutate(server.id)}
-          onReboot={() => setRebootConfirmId(server.id)}
-          onUpdateCredentials={(input) => credentialsMutation.mutate({ id: server.id, input })}
-          credentialsSaving={credentialsMutation.isPending && credentialsMutation.variables?.id === server.id}
-          credentialsError={
-            credentialsMutation.isError && credentialsMutation.variables?.id === server.id
-              ? getErrorMessage(credentialsMutation.error, 'Не удалось сохранить учётные данные')
-              : null
-          }
-          onInstall={(protocol, listenPort, networkCidr) =>
-            installMutation.mutate({ serverId: server.id, protocol, listenPort, networkCidr })
-          }
-          isInstalling={installMutation.isPending && installMutation.variables?.serverId === server.id}
-          installError={installError?.serverId === server.id ? installError.message : null}
-          onScan={(serverProtocolId) => scanMutation.mutate(serverProtocolId)}
-          onDetected={invalidate}
-        />
-      ))}
+          мостом — видно по чипу "мост «Имя»" у самого протокола ниже. Сетка вместо
+          вертикального списка — auto-fill сам решает, сколько карточек влезает в ряд
+          (обычно 2-3 на десктопе), пересчитывая при изменении ширины окна. */}
+      <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 2 }}>
+        {servers?.map((server) => (
+          <ServerCard
+            key={server.id}
+            server={server}
+            online={onlineByServer[server.id]}
+            onDelete={() => deleteMutation.mutate(server.id)}
+            onRename={(name) => renameMutation.mutate({ id: server.id, name })}
+            onTest={() => testMutation.mutate(server.id)}
+            onReboot={() => setRebootConfirmId(server.id)}
+            onUpdateCredentials={(input) => credentialsMutation.mutate({ id: server.id, input })}
+            credentialsSaving={credentialsMutation.isPending && credentialsMutation.variables?.id === server.id}
+            credentialsError={
+              credentialsMutation.isError && credentialsMutation.variables?.id === server.id
+                ? getErrorMessage(credentialsMutation.error, 'Не удалось сохранить учётные данные')
+                : null
+            }
+            onInstall={(protocol, listenPort, networkCidr) =>
+              installMutation.mutate({ serverId: server.id, protocol, listenPort, networkCidr })
+            }
+            isInstalling={installMutation.isPending && installMutation.variables?.serverId === server.id}
+            installError={installError?.serverId === server.id ? installError.message : null}
+            onScan={(serverProtocolId) => scanMutation.mutate(serverProtocolId)}
+            onDetected={invalidate}
+          />
+        ))}
+      </Box>
 
       <Dialog open={!!rebootConfirmId} onClose={() => setRebootConfirmId(null)}>
         <DialogTitle>Перезагрузить сервер?</DialogTitle>
@@ -305,8 +309,8 @@ function ServerCard({
 
   return (
     <Paper sx={{ p: 2 }}>
-      <Stack direction="row" justifyContent="space-between" alignItems="center">
-        <Box flex={1}>
+      <Stack spacing={1}>
+        <Box>
           {isEditingName ? (
             <Stack direction="row" spacing={1} alignItems="center" mb={1}>
               <TextField size="small" value={editName} onChange={(e) => setEditName(e.target.value)} autoFocus />
@@ -349,7 +353,7 @@ function ServerCard({
             </Typography>
           )}
         </Box>
-        <Stack direction="row" spacing={1}>
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
           <Button size="small" onClick={onTest}>
             Проверить подключение
           </Button>

@@ -1,5 +1,6 @@
-import { AppBar, Box, Button, Container, Toolbar, Typography } from '@mui/material';
-import { Link as RouterLink, Outlet, useLocation } from 'react-router-dom';
+import { AppBar, Box, Button, Container, Divider, Menu, MenuItem, Toolbar, Typography } from '@mui/material';
+import { useState } from 'react';
+import { Link as RouterLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 
 const roleLabels: Record<string, string> = {
@@ -11,6 +12,9 @@ const roleLabels: Record<string, string> = {
 export function DashboardLayout() {
   const { user, logout } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
+
+  const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
 
   // "/" — только точное совпадение (иначе подсвечивался бы всегда, это префикс всех
   // путей); остальные вкладки — по префиксу, чтобы вложенные страницы (например,
@@ -59,18 +63,39 @@ export function DashboardLayout() {
               Пользователи
             </Button>
           )}
-          {user?.role === 'super_admin' && (
-            <Button color="inherit" {...navButtonProps('/settings')}>
-              Настройки
-            </Button>
-          )}
           <Box sx={{ flexGrow: 1 }} />
-          <Typography variant="body2">
-            {user?.email} ({user ? roleLabels[user.role] : ''})
-          </Typography>
-          <Button color="inherit" onClick={logout}>
-            Выйти
+          <Button color="inherit" onClick={(e) => setMenuAnchor(e.currentTarget)} sx={{ textTransform: 'none' }}>
+            <Box sx={{ textAlign: 'left', lineHeight: 1.2 }}>
+              <Typography variant="body2" component="div">
+                {user?.email} ▾
+              </Typography>
+              <Typography variant="caption" component="div" sx={{ opacity: 0.8 }}>
+                {user ? roleLabels[user.role] : ''}
+              </Typography>
+            </Box>
           </Button>
+          <Menu anchorEl={menuAnchor} open={!!menuAnchor} onClose={() => setMenuAnchor(null)}>
+            {user?.role === 'super_admin' && [
+              <MenuItem
+                key="settings"
+                onClick={() => {
+                  setMenuAnchor(null);
+                  navigate('/settings');
+                }}
+              >
+                Настройки
+              </MenuItem>,
+              <Divider key="divider" />,
+            ]}
+            <MenuItem
+              onClick={() => {
+                setMenuAnchor(null);
+                logout();
+              }}
+            >
+              Выйти
+            </MenuItem>
+          </Menu>
         </Toolbar>
       </AppBar>
       <Container sx={{ mt: 4, mb: 4 }}>

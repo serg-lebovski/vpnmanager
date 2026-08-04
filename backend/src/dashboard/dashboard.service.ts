@@ -15,8 +15,16 @@ export interface DashboardServerStats {
   isSelf: boolean;
   online: boolean;
   loadAvg1: number | null;
+  cpuCores: number | null;
   memUsedMb: number | null;
   memTotalMb: number | null;
+  diskUsedMb: number | null;
+  diskTotalMb: number | null;
+  // Суммарная текущая скорость (rx+tx) по всем активным peers сервера, байт/сек — сырое
+  // число, а не готовый %: во сколько это % от "полосы" сервера решает фронтенд
+  // (условный фиксированный лимит для наглядности, у SSH-сессии нет способа узнать
+  // реальную пропускную способность канала VPS).
+  networkBps: number;
   activePeers: number;
   maxPeers: number;
 }
@@ -95,8 +103,12 @@ export class DashboardService {
           isSelf: server.isSelf,
           online: false,
           loadAvg1: null,
+          cpuCores: null,
           memUsedMb: null,
           memTotalMb: null,
+          diskUsedMb: null,
+          diskTotalMb: null,
+          networkBps: 0,
           activePeers: 0,
           maxPeers: server.maxPeers,
         });
@@ -112,6 +124,7 @@ export class DashboardService {
 
     const peersNested = await Promise.all(activeProtocols.map((serverProtocol) => this.pollProtocol(server, serverProtocol)));
     const peers = peersNested.flat();
+    const networkBps = peers.reduce((sum, peer) => sum + peer.rxBps + peer.txBps, 0);
 
     return {
       server: {
@@ -123,8 +136,12 @@ export class DashboardService {
         // трогая Server.status (его меняет только явная "Проверить подключение").
         online: load.loadAvg1 !== null,
         loadAvg1: load.loadAvg1,
+        cpuCores: load.cpuCores,
         memUsedMb: load.memUsedMb,
         memTotalMb: load.memTotalMb,
+        diskUsedMb: load.diskUsedMb,
+        diskTotalMb: load.diskTotalMb,
+        networkBps,
         activePeers: peers.length,
         maxPeers: server.maxPeers,
       },

@@ -8,8 +8,12 @@ export interface DashboardServerStats {
   isSelf: boolean;
   online: boolean;
   loadAvg1: number | null;
+  cpuCores: number | null;
   memUsedMb: number | null;
   memTotalMb: number | null;
+  diskUsedMb: number | null;
+  diskTotalMb: number | null;
+  networkBps: number;
   activePeers: number;
   maxPeers: number;
 }

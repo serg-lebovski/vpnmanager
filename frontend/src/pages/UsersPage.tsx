@@ -13,11 +13,12 @@ import {
   TableCell,
   TableHead,
   TableRow,
+  TableSortLabel,
   TextField,
   Typography,
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { FormEvent, useState } from 'react';
+import { FormEvent, useMemo, useState } from 'react';
 import { getErrorMessage } from '../api/errors';
 import { fetchOrganizations } from '../api/organizations';
 import { AppUser, Role } from '../api/types';
@@ -79,6 +80,17 @@ export function UsersPage() {
     },
     onError: (err) => setEditError(getErrorMessage(err, 'Не удалось сохранить изменения')),
   });
+
+  const [search, setSearch] = useState('');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+
+  // Фильтр по email (де-факто "имени" пользователя — своего поля name у User нет) + сортировка
+  // по клику на заголовок колонки, по умолчанию по возрастанию.
+  const visibleUsers = useMemo(() => {
+    const filtered = (users ?? []).filter((u) => u.email.toLowerCase().includes(search.trim().toLowerCase()));
+    const sorted = filtered.sort((a, b) => a.email.localeCompare(b.email));
+    return sortDir === 'asc' ? sorted : sorted.reverse();
+  }, [users, search, sortDir]);
 
   function openEdit(u: AppUser) {
     setEditingUser(u);
@@ -153,17 +165,28 @@ export function UsersPage() {
       </Paper>
 
       <Paper sx={{ p: 2 }}>
+        <TextField
+          size="small"
+          label="Поиск по email"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          sx={{ mb: 2, minWidth: 260 }}
+        />
         <Table size="small">
           <TableHead>
             <TableRow>
-              <TableCell>Email</TableCell>
+              <TableCell sortDirection={sortDir}>
+                <TableSortLabel active direction={sortDir} onClick={() => setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))}>
+                  Email
+                </TableSortLabel>
+              </TableCell>
               <TableCell>Роль</TableCell>
               <TableCell>Организация</TableCell>
               <TableCell align="right">Действия</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
-            {users?.map((u) => (
+            {visibleUsers.map((u) => (
               <TableRow key={u.id}>
                 <TableCell>{u.email}</TableCell>
                 <TableCell>{u.role}</TableCell>
@@ -180,9 +203,9 @@ export function UsersPage() {
                 </TableCell>
               </TableRow>
             ))}
-            {!isLoading && users?.length === 0 && (
+            {!isLoading && visibleUsers.length === 0 && (
               <TableRow>
-                <TableCell colSpan={4}>Пользователей пока нет</TableCell>
+                <TableCell colSpan={4}>{search ? 'Ничего не найдено' : 'Пользователей пока нет'}</TableCell>
               </TableRow>
             )}
           </TableBody>
