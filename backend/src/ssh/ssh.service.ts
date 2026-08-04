@@ -20,6 +20,16 @@ export interface ExecResult {
 export class SshService {
   private readonly logger = new Logger(SshService.name);
 
+  // apt-get/add-apt-repository иногда зависают навсегда без единой ошибки в логах —
+  // например, add-apt-repository ходит за GPG-ключом PPA на keyserver, который на части
+  // VPS-провайдеров недоступен/фильтруется файрволом, и тогда execCommand у node-ssh
+  // никогда сам не вернёт управление (удалённый процесс не завершается, а SSH-канал не
+  // закрывается). Пойманный вживую инцидент: ServerProtocol застревал в статусе
+  // "installing" без единой ошибки на много часов, повторная попытка через UI была
+  // невозможна без ручного вмешательства в БД. Таймаут ниже — единственный надёжный
+  // способ гарантированно вернуть управление.
+  private static readonly EXEC_TIMEOUT_MS = 8 * 60 * 1000;
+
   // На части хостинг-провайдеров SSH-демон под нагрузкой (сканирующие боты, ограничение
   // MaxStartups) изредка обрывает соединение ещё до завершения авторизации даже при
   // верных учётных данных — повторная попытка почти всегда проходит. Поэтому подключение
@@ -73,7 +83,7 @@ export class SshService {
     this.logger.debug(`exec: ${command}`);
     let result: ExecResult;
     for (let attempt = 1; attempt <= attempts; attempt++) {
-      result = await ssh.execCommand(command, { execOptions: { pty: false } });
+      result = await this.execWithTimeout(ssh, command);
       if (result.code === 0 || !this.isAptLockError(result.stderr) || attempt === attempts) {
         break;
       }
@@ -84,6 +94,35 @@ export class SshService {
       this.logger.warn(`Команда завершилась с кодом ${result!.code}: ${command}\n${result!.stderr}`);
     }
     return result!;
+  }
+
+  // 124 — тот же условный код, что использует утилита coreutils `timeout` для команд,
+  // не уложившихся в отведённое время; не совпадает ни с одним реальным кодом возврата
+  // apt/wg-quick, поэтому не путается с настоящими ошибками при разборе result.code выше
+  // по стеку. Промис execCommand не отменяется по-настоящему (node-ssh/ssh2 такого не
+  // умеют) — таймаут только возвращает управление вызывающему коду; сам SSH-канал
+  // закрывается позже, при ssh.dispose() в withConnection.
+  private execWithTimeout(ssh: NodeSSH, command: string): Promise<ExecResult> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.logger.error(`Команда не завершилась за ${SshService.EXEC_TIMEOUT_MS / 60000} мин, таймаут: ${command}`);
+        resolve({ stdout: '', stderr: `Команда не завершилась за ${SshService.EXEC_TIMEOUT_MS / 60000} мин (таймаут)`, code: 124 });
+      }, SshService.EXEC_TIMEOUT_MS);
+      ssh.execCommand(command, { execOptions: { pty: false } }).then(
+        (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        },
+        // execCommand в норме не должен отклоняться (ошибки самой команды приходят через
+        // code/stderr, не через reject) — но на случай обрыва канала всё равно settle'им
+        // (после срабатывания таймаута resolve() ниже уже no-op), иначе при отклонении ДО
+        // таймаута промис завис бы навсегда без единого resolve/reject.
+        (error: Error) => {
+          clearTimeout(timer);
+          resolve({ stdout: '', stderr: error.message, code: null });
+        },
+      );
+    });
   }
 
   async execOrThrow(ssh: NodeSSH, command: string): Promise<string> {

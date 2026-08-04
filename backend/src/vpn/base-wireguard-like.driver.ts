@@ -133,7 +133,27 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
     // через systemd), отрабатывают штатно. Прямой вызов работает везде и для установки не
     // требует systemd, поэтому используем его.
     await this.sshService.execOrThrow(ctx.ssh, `systemctl enable ${this.quickBinary}@${interfaceName}`);
-    await this.sshService.execOrThrow(ctx.ssh, `${this.quickBinary} up ${this.confPath(this.confDir, interfaceName)}`);
+    try {
+      await this.sshService.execOrThrow(ctx.ssh, `${this.quickBinary} up ${this.confPath(this.confDir, interfaceName)}`);
+    } catch (error) {
+      // "Address already in use" здесь почти всегда значит, что шлюзовой IP этой сети уже
+      // занят ДРУГИМ интерфейсом на хосте — например, оставшимся от протокола/моста,
+      // который удалили через панель (удаление трогает только БД, сам wg-quick/awg-quick
+      // интерфейс на хосте не снимается, см. README про удаление серверов/мостов) и он
+      // просто продолжает жить с той же сетью. Обычная ошибка netlink тут малопонятна
+      // пользователю без доступа по SSH — добавляем прямую подсказку.
+      const message = (error as Error).message;
+      if (/address already in use/i.test(message)) {
+        const hint =
+          `Похоже, сеть ${options.networkCidr} уже занята другим интерфейсом на этом сервере ` +
+          `(часто остаётся от ранее удалённого протокола/моста — удаление в панели не трогает сам сетевой ` +
+          `интерфейс на сервере). Зайдите по SSH и выполните "ip link show", найдите интерфейс с этим адресом ` +
+          `и удалите его ("ip link delete <имя>", а также "systemctl disable --now ${this.quickBinary}@<имя>" ` +
+          `если включён автозапуск), либо выберите другую сеть клиентов.`;
+        throw new Error(`${message}\n\n${hint}`);
+      }
+      throw error;
+    }
 
     return { interfaceName, serverPublicKey, obfuscationParams, mtu: options.mtu };
   }
