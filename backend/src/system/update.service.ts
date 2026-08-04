@@ -1,6 +1,5 @@
 import { execFile, exec } from 'child_process';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { promisify } from 'util';
 import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
@@ -159,9 +158,25 @@ export class UpdateService {
   // ДО того, как что-либо внутри sibling-контейнера (включая `sleep 2`) успеет остановить
   // текущий backend.
   private async recreateBackendDetached(repoPath: string, logPath: string): Promise<void> {
-    const containerId = os.hostname();
-    const { stdout } = await execFileAsync('docker', ['inspect', '--format', '{{.Image}}', containerId]);
+    // РАНЬШЕ здесь резолвился `docker inspect --format '{{.Image}}' $(hostname)` — sha256-
+    // digest образа, из которого создан ТЕКУЩИЙ (ещё не пересозданный) контейнер. Проблема,
+    // пойманная вживую (2026-08-04, второй раз подряд после "фикса" от 2026-08-04): к
+    // моменту, когда sibling-контейнер реально пытался запуститься по этому digest'у, самого
+    // образа в локальном хранилище уже не было ("No such image") — предыдущий шаг
+    // (`docker compose build`) успевает не только собрать новый образ, но и настолько плотно
+    // занять BuildKit/докер-демон переупаковкой слоёв, что старый (уже расстэгованный,
+    // "dangling") образ иногда попадает под автоматическую сборку мусора демона раньше, чем
+    // до него доходит очередь sibling-контейнера. Digest конкретного (обязательно СТАРОГО)
+    // образа тут в принципе не нужен — sibling-контейнеру нужен ЛЮБОЙ образ с docker-cli +
+    // docker-cli-compose, а свежесобранный образ backend уже есть и куда надёжнее (не может
+    // пропасть между сборкой и использованием). `docker compose images -q backend` резолвит
+    // ТЕКУЩИЙ образ сервиса backend по docker-compose.yml в repoPath — не зависит от имени
+    // проекта/контейнера, всегда актуален на момент вызова.
+    const { stdout } = await execFileAsync('docker', ['compose', 'images', '-q', 'backend'], { cwd: repoPath });
     const selfImage = stdout.trim();
+    if (!selfImage) {
+      throw new Error('Не удалось определить текущий образ backend (docker compose images -q backend вернул пусто)');
+    }
 
     const helperCommand = `sleep 2 && docker compose up -d --no-deps backend >> "${logPath}" 2>&1`;
     await execFileAsync('docker', [

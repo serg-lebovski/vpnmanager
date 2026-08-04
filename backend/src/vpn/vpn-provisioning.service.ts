@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { decryptSecret } from '../common/encryption.util';
@@ -13,6 +13,7 @@ import { WireGuardDriver } from './wireguard.driver';
 
 @Injectable()
 export class VpnProvisioningService {
+  private readonly logger = new Logger(VpnProvisioningService.name);
   private readonly drivers: Record<VpnProtocol, VpnDriver>;
 
   constructor(
@@ -81,6 +82,12 @@ export class VpnProvisioningService {
     const driver = this.driverFor(protocol);
     const connection = this.connectionParams(server);
 
+    // Установка (особенно AmneziaWG: add-apt-repository + apt-get update + install из PPA)
+    // может занимать дольше, чем таймаут HTTP-прокси перед этим эндпоинтом (см.
+    // nginx/nginx.conf.template) — если клиент к этому моменту уже отвалился по таймауту,
+    // единственный способ узнать реальный исход операции без похода в БД напрямую — вот
+    // этот лог (Настройки → «Логи» → backend).
+    this.logger.log(`Установка ${protocol} на сервере "${server.name}" (${server.host}:${listenPort})…`);
     try {
       const result = await this.sshService.withConnection(connection, (ssh) =>
         driver.install({ ssh, server, serverProtocol }, { listenPort, networkCidr, mtu, interfaceName }),
@@ -90,9 +97,11 @@ export class VpnProvisioningService {
       serverProtocol.obfuscationParams = result.obfuscationParams || null;
       serverProtocol.mtu = result.mtu || null;
       serverProtocol.status = ServerProtocolStatus.ACTIVE;
+      this.logger.log(`${protocol} успешно установлен на сервере "${server.name}" (интерфейс ${result.interfaceName})`);
     } catch (error) {
       serverProtocol.status = ServerProtocolStatus.ERROR;
       serverProtocol.lastError = (error as Error).message;
+      this.logger.error(`Установка ${protocol} на сервере "${server.name}" не удалась: ${(error as Error).message}`);
     }
 
     return this.serverProtocolsRepository.save(serverProtocol);

@@ -39,6 +39,15 @@
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        # Установка/детект протокола, ребут и т.п. идут по SSH и могут занимать дольше
+        # дефолтных 60с (особенно AmneziaWG: add-apt-repository + apt-get update + install
+        # из PPA) — без этого nginx обрывал соединение раньше, чем backend успевал
+        # закончить операцию. Backend при этом доводил операцию до конца и сохранял
+        # правильный результат в БД — но клиент уже получил обрыв соединения и показывал
+        # ошибку, хотя по факту всё установилось (поймано вживую: "Не удалось установить
+        # протокол" в UI при реально успешной установке AmneziaWG).
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
     }
 
     # Дашборд (backend/src/dashboard/) держит соединение по WebSocket через socket.io —
