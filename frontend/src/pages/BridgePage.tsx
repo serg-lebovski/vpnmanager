@@ -419,12 +419,6 @@ function BridgeCard({
             </Typography>
           ))}
           <Typography variant="body2" color="text.secondary">
-            Upstream:{' '}
-            {bridge.upstreamServerProtocol
-              ? `${bridge.upstreamServerProtocol.server?.name} (${bridge.upstreamServerProtocol.protocol})`
-              : 'не настроен'}
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
             Домен: {bridge.domainName ?? 'не задан (в конфигах — IP self-сервера)'}
           </Typography>
           {bridge.lastError && (
