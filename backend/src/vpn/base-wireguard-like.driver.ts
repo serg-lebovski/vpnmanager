@@ -155,6 +155,18 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
       throw error;
     }
 
+    // Некоторые провайдеры (например ISPmanager) включают ufw с политикой DROP по
+    // умолчанию и разрешают только явно перечисленные порты — без открытия порта
+    // протокола клиенты не могут даже начать handshake, хотя сам интерфейс/NAT
+    // настроены полностью верно (пойманный вживую инцидент: peer навсегда оставался
+    // без единого handshake, никакой ошибки при этом нигде не было — ufw молча роняет
+    // пакет ДО того, как он доходит до wg/awg). Команда — no-op на хостах без ufw или
+    // с неактивным ufw (`|| true` — не валим установку, если ufw отсутствует).
+    await this.sshService.exec(
+      ctx.ssh,
+      `command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active" && ufw allow ${options.listenPort}/udp || true`,
+    );
+
     return { interfaceName, serverPublicKey, obfuscationParams, mtu: options.mtu };
   }
 
