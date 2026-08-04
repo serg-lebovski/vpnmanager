@@ -59,6 +59,26 @@ export async function downloadLogs(service: LogService): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
+// Namespace 'system', тот же прогресс-паттерн, что у самообновления — RestoreService в
+// конце тоже намеренно рвёт это соединение (process.exit()), обработка disconnect в
+// SettingsPage переиспользует тот же waitingForBackend-паттерн для обоих событий.
+export function connectRestoreProgressSocket(onProgress: (progress: UpdateProgress) => void): Socket {
+  const socket = io('/system', {
+    path: '/socket.io',
+    auth: { token: tokenStorage.getAccessToken() },
+  });
+  socket.on('restore-progress', onProgress);
+  return socket;
+}
+
+export async function restoreDatabase(file: File, confirmationPhrase: string): Promise<{ message: string }> {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('confirmationPhrase', confirmationPhrase);
+  const { data } = await apiClient.post<{ message: string }>('/system/restore', formData);
+  return data;
+}
+
 export async function downloadDatabaseBackup(): Promise<void> {
   const response = await apiClient.get('/system/backup', { responseType: 'blob' });
   const url = URL.createObjectURL(response.data);

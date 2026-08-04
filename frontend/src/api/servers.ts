@@ -26,6 +26,18 @@ export async function updateServer(id: string, input: { name: string }): Promise
   return data;
 }
 
+export interface UpdateServerCredentialsInput {
+  sshUsername?: string;
+  sshPort?: number;
+  sshAuthType?: SshAuthType;
+  secret: string;
+}
+
+export async function updateServerCredentials(id: string, input: UpdateServerCredentialsInput): Promise<ServerEntity> {
+  const { data } = await apiClient.patch<ServerEntity>(`/servers/${id}/credentials`, input);
+  return data;
+}
+
 export async function deleteServer(id: string): Promise<void> {
   await apiClient.delete(`/servers/${id}`);
 }

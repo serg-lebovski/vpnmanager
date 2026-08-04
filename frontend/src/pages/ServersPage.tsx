@@ -24,6 +24,7 @@ import { getErrorMessage } from '../api/errors';
 import {
   CreateServerInput,
   DetectionResult,
+  UpdateServerCredentialsInput,
   createServer,
   deleteServer,
   detectExistingInstallations,
@@ -33,6 +34,7 @@ import {
   scanAndImportPeers,
   testServerConnection,
   updateServer,
+  updateServerCredentials,
 } from '../api/servers';
 import { ServerEntity, SshAuthType, VpnProtocol } from '../api/types';
 
@@ -109,6 +111,10 @@ export function ServersPage() {
     onSuccess: invalidate,
   });
   const testMutation = useMutation({ mutationFn: testServerConnection, onSuccess: invalidate });
+  const credentialsMutation = useMutation({
+    mutationFn: (vars: { id: string; input: UpdateServerCredentialsInput }) => updateServerCredentials(vars.id, vars.input),
+    onSuccess: invalidate,
+  });
   const installMutation = useMutation({
     mutationFn: (vars: { serverId: string; protocol: VpnProtocol; listenPort: number; networkCidr: string }) =>
       installProtocol(vars.serverId, vars),
@@ -202,6 +208,13 @@ export function ServersPage() {
           onRename={(name) => renameMutation.mutate({ id: server.id, name })}
           onTest={() => testMutation.mutate(server.id)}
           onReboot={() => setRebootConfirmId(server.id)}
+          onUpdateCredentials={(input) => credentialsMutation.mutate({ id: server.id, input })}
+          credentialsSaving={credentialsMutation.isPending && credentialsMutation.variables?.id === server.id}
+          credentialsError={
+            credentialsMutation.isError && credentialsMutation.variables?.id === server.id
+              ? getErrorMessage(credentialsMutation.error, 'Не удалось сохранить учётные данные')
+              : null
+          }
           onInstall={(protocol, listenPort, networkCidr) =>
             installMutation.mutate({ serverId: server.id, protocol, listenPort, networkCidr })
           }
@@ -248,6 +261,9 @@ function ServerCard({
   installError,
   onScan,
   onDetected,
+  onUpdateCredentials,
+  credentialsSaving,
+  credentialsError,
 }: {
   server: ServerEntity;
   online?: boolean;
@@ -260,6 +276,9 @@ function ServerCard({
   installError: string | null;
   onScan: (serverProtocolId: string) => void;
   onDetected: () => void;
+  onUpdateCredentials: (input: UpdateServerCredentialsInput) => void;
+  credentialsSaving: boolean;
+  credentialsError: string | null;
 }) {
   const [protocol, setProtocol] = useState<VpnProtocol>('wireguard');
   const [listenPort, setListenPort] = useState(51820);
@@ -267,6 +286,9 @@ function ServerCard({
   const [detectResult, setDetectResult] = useState<DetectionResult[] | null>(null);
   const [isEditingName, setIsEditingName] = useState(false);
   const [editName, setEditName] = useState(server.name);
+  const [isEditingCredentials, setIsEditingCredentials] = useState(false);
+  const [credAuthType, setCredAuthType] = useState<SshAuthType>('password');
+  const [credSecret, setCredSecret] = useState('');
 
   const detectMutation = useMutation({
     mutationFn: () => detectExistingInstallations(server.id),
@@ -310,6 +332,9 @@ function ServerCard({
                 variant="outlined"
                 sx={{ ml: 1 }}
               />
+              {server.needsCredentials && (
+                <Chip size="small" label="нужны новые SSH-данные" color="warning" sx={{ ml: 1 }} />
+              )}
             </Typography>
           )}
           <Typography variant="body2" color="text.secondary">
@@ -355,6 +380,68 @@ function ServerCard({
               ? `${protocolLabels[r.protocol]}: найдена установка, импортировано peers: ${r.importedCount}. `
               : `${protocolLabels[r.protocol]}: не найдено. `,
           )}
+        </Alert>
+      )}
+
+      {server.needsCredentials && (
+        <Alert
+          severity="warning"
+          sx={{ mt: 2 }}
+          action={
+            !isEditingCredentials && (
+              <Button color="inherit" size="small" onClick={() => setIsEditingCredentials(true)}>
+                Ввести заново
+              </Button>
+            )
+          }
+        >
+          Сохранённый SSH-пароль/ключ не расшифровывается текущим ключом шифрования панели
+          (обычно после восстановления БД на другом сервере) — введите учётные данные заново,
+          чтобы снова управлять этим сервером.
+        </Alert>
+      )}
+      {isEditingCredentials && (
+        <Stack direction="row" spacing={2} alignItems="flex-start" mt={2}>
+          <TextField
+            select
+            size="small"
+            label="Тип авторизации"
+            value={credAuthType}
+            onChange={(e) => setCredAuthType(e.target.value as SshAuthType)}
+            sx={{ minWidth: 180 }}
+          >
+            <MenuItem value="password">Пароль</MenuItem>
+            <MenuItem value="private_key">Приватный ключ</MenuItem>
+          </TextField>
+          <TextField
+            size="small"
+            label={credAuthType === 'password' ? 'Пароль' : 'Приватный ключ (PEM)'}
+            type={credAuthType === 'password' ? 'password' : 'text'}
+            multiline={credAuthType === 'private_key'}
+            value={credSecret}
+            onChange={(e) => setCredSecret(e.target.value)}
+            sx={{ minWidth: 240 }}
+          />
+          <Button
+            size="small"
+            variant="contained"
+            disabled={!credSecret || credentialsSaving}
+            onClick={() => {
+              onUpdateCredentials({ sshAuthType: credAuthType, secret: credSecret });
+              setIsEditingCredentials(false);
+              setCredSecret('');
+            }}
+          >
+            Сохранить
+          </Button>
+          <Button size="small" onClick={() => setIsEditingCredentials(false)}>
+            Отмена
+          </Button>
+        </Stack>
+      )}
+      {credentialsError && (
+        <Alert severity="error" sx={{ mt: 2 }}>
+          {credentialsError}
         </Alert>
       )}
 

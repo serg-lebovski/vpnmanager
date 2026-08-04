@@ -5,6 +5,7 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { CreateServerDto } from './dto/create-server.dto';
 import { InstallProtocolDto } from './dto/install-protocol.dto';
+import { UpdateServerCredentialsDto } from './dto/update-server-credentials.dto';
 import { UpdateServerDto } from './dto/update-server.dto';
 import { ServersService } from './servers.service';
 
@@ -27,6 +28,11 @@ export class ServersController {
   @Patch(':id')
   update(@Param('id') id: string, @Body() dto: UpdateServerDto) {
     return this.serversService.update(id, dto);
+  }
+
+  @Patch(':id/credentials')
+  updateCredentials(@Param('id') id: string, @Body() dto: UpdateServerCredentialsDto) {
+    return this.serversService.updateCredentials(id, dto);
   }
 
   @Post()

@@ -1,5 +1,8 @@
-import { Body, Controller, Get, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
+import * as os from 'os';
+import { BadRequestException, Body, Controller, Get, Patch, Post, Query, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
+import { diskStorage } from 'multer';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/enums';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
@@ -7,9 +10,13 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { BackupService } from './backup.service';
 import { LogsService } from './logs.service';
 import { RenewCertificateDto } from './dto/renew-certificate.dto';
+import { RestoreDatabaseDto } from './dto/restore-database.dto';
 import { UpdateSettingsDto } from './dto/update-settings.dto';
+import { RestoreService } from './restore.service';
 import { SettingsService } from './settings.service';
 import { UpdateService } from './update.service';
+
+const MAX_RESTORE_UPLOAD_BYTES = 500 * 1024 * 1024;
 
 @Controller('system')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -20,6 +27,7 @@ export class SystemController {
     private readonly updateService: UpdateService,
     private readonly logsService: LogsService,
     private readonly settingsService: SettingsService,
+    private readonly restoreService: RestoreService,
   ) {}
 
   @Get('backup')
@@ -65,5 +73,25 @@ export class SystemController {
   @Post('certificate/renew')
   renewCertificate(@Body() dto: RenewCertificateDto) {
     return this.settingsService.renewCertificateNow(Boolean(dto.force));
+  }
+
+  // Дамп сохраняется во временный файл (os.tmpdir() — тот же контейнер, что и psql,
+  // который его потом прочитает, переживать пересоздание контейнера файлу не нужно).
+  // RestoreDatabaseDto.confirmationPhrase проверяется ValidationPipe ДО того, как
+  // контроллер вообще получит управление — так что даже сохранённый файл не запустит
+  // восстановление без точной фразы.
+  @Post('restore')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: diskStorage({ destination: os.tmpdir() }),
+      limits: { fileSize: MAX_RESTORE_UPLOAD_BYTES },
+    }),
+  )
+  restoreDatabase(@UploadedFile() file: Express.Multer.File, @Body() _dto: RestoreDatabaseDto) {
+    if (!file) {
+      throw new BadRequestException('Файл дампа не передан');
+    }
+    this.restoreService.triggerRestore(file.path);
+    return { message: 'Восстановление запущено — приложение перезапустится через несколько минут' };
   }
 }

@@ -10,11 +10,15 @@ import { SshService } from '../ssh/ssh.service';
 import { VpnProvisioningService } from '../vpn/vpn-provisioning.service';
 import { CreateServerDto } from './dto/create-server.dto';
 import { InstallProtocolDto } from './dto/install-protocol.dto';
+import { UpdateServerCredentialsDto } from './dto/update-server-credentials.dto';
 import { UpdateServerDto } from './dto/update-server.dto';
 import { ServerProtocol } from './server-protocol.entity';
 import { Server } from './server.entity';
 
-export type ServerListItem = Omit<Server, 'protocols'> & { protocols: Array<ServerProtocol & { bridgeName: string | null }> };
+export type ServerListItem = Omit<Server, 'protocols'> & {
+  protocols: Array<ServerProtocol & { bridgeName: string | null }>;
+  needsCredentials: boolean;
+};
 
 @Injectable()
 export class ServersService {
@@ -49,8 +53,24 @@ export class ServersService {
 
     return servers.map((server) => ({
       ...server,
+      // Расшифровывается ключом APP_ENCRYPTION_KEY из .env — если сервер (и вся БД)
+      // восстановлен на деплое с ДРУГИМ ключом (см. system/restore.service.ts, disaster
+      // recovery), sshSecretEnc становится нечитаемым мусором (несовпадение GCM auth
+      // tag). Единая точка обнаружения на чтение — работает для любой причины
+      // нерасшифровываемости, не только restore; PATCH /servers/:id/credentials снимает
+      // флаг после ввода новых учётных данных.
+      needsCredentials: !this.canDecryptSecret(server.sshSecretEnc),
       protocols: server.protocols.map((sp) => ({ ...sp, bridgeName: protocolBridgeNames.get(sp.id) ?? null })),
     }));
+  }
+
+  private canDecryptSecret(sshSecretEnc: string): boolean {
+    try {
+      decryptSecret(sshSecretEnc);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async findOneOrFail(id: string): Promise<Server> {
@@ -80,6 +100,25 @@ export class ServersService {
     if (dto.name !== undefined) {
       server.name = dto.name;
     }
+    return this.serversRepository.save(server);
+  }
+
+  // Переввод SSH-учётных данных — узкий эндпоинт (тот же паттерн, что /test-connection,
+  // /reboot, /detect), нужен когда sshSecretEnc не расшифровывается текущим
+  // APP_ENCRYPTION_KEY (см. needsCredentials в findAll()). secret обязателен — в этом и
+  // весь смысл вызова.
+  async updateCredentials(id: string, dto: UpdateServerCredentialsDto): Promise<Server> {
+    const server = await this.findOneOrFail(id);
+    if (dto.sshUsername !== undefined) {
+      server.sshUsername = dto.sshUsername;
+    }
+    if (dto.sshPort !== undefined) {
+      server.sshPort = dto.sshPort;
+    }
+    if (dto.sshAuthType !== undefined) {
+      server.sshAuthType = dto.sshAuthType;
+    }
+    server.sshSecretEnc = encryptSecret(dto.secret);
     return this.serversRepository.save(server);
   }
 

@@ -6,6 +6,7 @@ import { BackupService } from './backup.service';
 import { CertbotService } from './certbot.service';
 import { LogsService } from './logs.service';
 import { NginxConfigService } from './nginx-config.service';
+import { RestoreService } from './restore.service';
 import { SettingsService } from './settings.service';
 import { SystemController } from './system.controller';
 import { SystemGateway } from './system.gateway';
@@ -24,6 +25,6 @@ import { UpdateService } from './update.service';
     }),
   ],
   controllers: [SystemController],
-  providers: [BackupService, UpdateService, SystemGateway, LogsService, CertbotService, NginxConfigService, SettingsService],
+  providers: [BackupService, UpdateService, SystemGateway, LogsService, CertbotService, NginxConfigService, SettingsService, RestoreService],
 })
 export class SystemModule {}

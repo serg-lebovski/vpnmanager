@@ -20,15 +20,20 @@ import { useEffect, useState } from 'react';
 import { getErrorMessage } from '../api/errors';
 import { fetchSettings, renewCertificate, updateSettings } from '../api/settings';
 import {
+  connectRestoreProgressSocket,
   connectUpdateProgressSocket,
   downloadDatabaseBackup,
   downloadLogs,
   fetchLogs,
   fetchVersion,
   LogService,
+  restoreDatabase,
   triggerUpdate,
   UpdateProgress,
 } from '../api/system';
+
+// Должно совпадать с RESTORE_CONFIRMATION_PHRASE в backend/src/system/dto/restore-database.dto.ts.
+const RESTORE_CONFIRMATION_PHRASE = 'ВОССТАНОВИТЬ';
 
 export function SettingsPage() {
   const { data: version, isLoading, refetch, isFetching } = useQuery({ queryKey: ['system', 'version'], queryFn: fetchVersion });
@@ -94,6 +99,56 @@ export function SettingsPage() {
   const backupMutation = useMutation({
     mutationFn: downloadDatabaseBackup,
     onError: (err) => setBackupError(getErrorMessage(err, 'Не удалось скачать бэкап')),
+  });
+
+  const [restoreFile, setRestoreFile] = useState<File | null>(null);
+  const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false);
+  const [restoreConfirmText, setRestoreConfirmText] = useState('');
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+  const [restoreProgress, setRestoreProgress] = useState<UpdateProgress | null>(null);
+  const [restoreWaitingForBackend, setRestoreWaitingForBackend] = useState(false);
+
+  // Тот же "реконнект после активного действия = скорее всего готово" паттерн, что и у
+  // прогресса обновления выше — RestoreService тоже намеренно рвёт это соединение в конце
+  // (process.exit()).
+  useEffect(() => {
+    let isFirstConnect = true;
+    const socket = connectRestoreProgressSocket((p) => {
+      setRestoreProgress(p);
+      setRestoreWaitingForBackend(false);
+      if (p.done) {
+        setTimeout(() => setRestoreProgress(null), 2500);
+      }
+    });
+    socket.on('connect', () => {
+      if (!isFirstConnect) {
+        setRestoreWaitingForBackend(false);
+        setRestoreProgress((prev) => (prev && !prev.done ? { percent: 100, step: 'Готово', done: true } : prev));
+        setTimeout(() => setRestoreProgress(null), 2500);
+      }
+      isFirstConnect = false;
+    });
+    socket.on('disconnect', () => {
+      setRestoreProgress((prev) => {
+        if (prev && !prev.done) {
+          setRestoreWaitingForBackend(true);
+        }
+        return prev;
+      });
+    });
+    return () => {
+      socket.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const restoreMutation = useMutation({
+    mutationFn: () => restoreDatabase(restoreFile!, restoreConfirmText),
+    onSuccess: () => {
+      setRestoreConfirmOpen(false);
+      setRestoreError(null);
+    },
+    onError: (err) => setRestoreError(getErrorMessage(err, 'Не удалось запустить восстановление')),
   });
 
   const { data: settings, refetch: refetchSettings } = useQuery({ queryKey: ['system', 'settings'], queryFn: fetchSettings });
@@ -305,7 +360,89 @@ export function SettingsPage() {
             {backupError}
           </Alert>
         )}
+
+        <Typography variant="subtitle1" mt={3} mb={1}>
+          Восстановление из бэкапа
+        </Typography>
+        <Typography variant="body2" color="text.secondary" mb={2}>
+          Полностью заменяет текущую базу данных содержимым загруженного файла —
+          необратимо. Восстанавливает только данные (пиры, серверы, организации и т.д.), не
+          сам проект — на новом сервере сначала разверните приложение обычным способом, а
+          затем загрузите этот файл здесь. SSH-пароли/ключи серверов зашифрованы ключом
+          ТЕКУЩЕГО деплоя — если он отличается от исходного (другой сервер), после
+          восстановления серверы будут отмечены как требующие ввода пароля заново (страница
+          «Серверы»).
+        </Typography>
+        <Stack direction="row" spacing={2} alignItems="center">
+          <Button component="label" variant="outlined" disabled={!!(restoreProgress && !restoreProgress.done)}>
+            Выбрать файл
+            <input type="file" accept=".sql" hidden onChange={(e) => setRestoreFile(e.target.files?.[0] ?? null)} />
+          </Button>
+          {restoreFile && <Typography variant="body2">{restoreFile.name}</Typography>}
+          <Button
+            color="error"
+            variant="contained"
+            disabled={!restoreFile || !!(restoreProgress && !restoreProgress.done)}
+            onClick={() => {
+              setRestoreConfirmText('');
+              setRestoreConfirmOpen(true);
+            }}
+          >
+            Восстановить
+          </Button>
+        </Stack>
+        {restoreProgress && !restoreProgress.done ? (
+          <Stack direction="row" spacing={2} alignItems="center" mt={2}>
+            <CircularProgress variant={restoreWaitingForBackend ? 'indeterminate' : 'determinate'} value={restoreProgress.percent} size={32} />
+            <Typography variant="body2">
+              {restoreWaitingForBackend
+                ? 'Backend перезапускается, ждём восстановления соединения…'
+                : `${restoreProgress.percent}% — ${restoreProgress.step}`}
+            </Typography>
+          </Stack>
+        ) : (
+          restoreProgress?.done && (
+            <Alert severity={restoreProgress.error ? 'error' : 'success'} sx={{ mt: 2 }}>
+              {restoreProgress.error ?? 'Восстановление завершено'}
+            </Alert>
+          )
+        )}
+        {restoreError && (
+          <Alert severity="error" sx={{ mt: 2 }}>
+            {restoreError}
+          </Alert>
+        )}
       </Paper>
+
+      <Dialog open={restoreConfirmOpen} onClose={() => setRestoreConfirmOpen(false)}>
+        <DialogTitle>Восстановить базу данных?</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Это НЕОБРАТИМО заменит ВСЮ текущую базу данных содержимым файла «{restoreFile?.name}
+            ». Все текущие данные (пиры, серверы, организации, пользователи) будут потеряны.
+            Чтобы подтвердить, введите слово «{RESTORE_CONFIRMATION_PHRASE}»:
+          </DialogContentText>
+          <TextField
+            fullWidth
+            sx={{ mt: 2 }}
+            value={restoreConfirmText}
+            onChange={(e) => setRestoreConfirmText(e.target.value)}
+            placeholder={RESTORE_CONFIRMATION_PHRASE}
+            autoFocus
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setRestoreConfirmOpen(false)}>Отмена</Button>
+          <Button
+            variant="contained"
+            color="error"
+            disabled={restoreConfirmText !== RESTORE_CONFIRMATION_PHRASE || restoreMutation.isPending}
+            onClick={() => restoreMutation.mutate()}
+          >
+            Восстановить
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Paper sx={{ p: 2 }}>
         <Typography variant="subtitle1" mb={2}>

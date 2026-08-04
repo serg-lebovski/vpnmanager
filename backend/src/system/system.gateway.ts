@@ -52,4 +52,11 @@ export class SystemGateway implements OnGatewayConnection {
   broadcastUpdateProgress(progress: UpdateProgress): void {
     this.server?.emit('update-progress', progress);
   }
+
+  // Восстановление БД (RestoreService) в конце тоже обрывает это же соединение
+  // (process.exit() — свежий пул TypeORM и чистое in-memory состояние поллеров) — тот же
+  // "реконнект после активного действия = скорее всего готово" паттерн, что у обновления.
+  broadcastRestoreProgress(progress: UpdateProgress): void {
+    this.server?.emit('restore-progress', progress);
+  }
 }

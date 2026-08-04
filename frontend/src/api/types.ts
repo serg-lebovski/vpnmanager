@@ -56,6 +56,7 @@ export interface ServerEntity {
   isSelf: boolean;
   lastCheckedAt: string | null;
   lastError: string | null;
+  needsCredentials: boolean;
   createdAt: string;
   protocols: ServerProtocolEntity[];
 }
