@@ -460,7 +460,7 @@ function ServerCard({
       <Stack spacing={1}>
         {server.protocols.map((sp) => (
           <Box key={sp.id}>
-            <Stack direction="row" spacing={2} alignItems="center">
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap rowGap={1}>
               <Chip label={sp.protocol} size="small" />
               <Chip label={sp.status} size="small" color={statusColor[sp.status]} />
               <Typography variant="body2">
