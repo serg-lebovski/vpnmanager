@@ -32,6 +32,7 @@ export class AmneziaWgDriver extends BaseWireGuardLikeDriver {
     if (check.code === 0) {
       return;
     }
+    await this.ensureIpv4NetworkPreferred(ssh);
     await this.sshService.execOrThrow(
       ssh,
       [

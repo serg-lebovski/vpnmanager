@@ -88,6 +88,22 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
     return output.trim() || 'eth0';
   }
 
+  // Пойманный вживую инцидент: на части VPS-провайдеров IPv6 "полусломан" — интерфейсу не
+  // назначен глобальный адрес и нет default-маршрута (только автоматический link-local),
+  // но резолвинг внешних доменов (PPA-зеркала, GPG-keyserver'ы) всё равно возвращает
+  // AAAA-записи. apt-get/add-apt-repository пытаются подключиться по IPv6, пакеты уходят
+  // в никуда, и команда виснет на много минут вместо быстрой ошибки или fallback на IPv4
+  // (сам таймаут в SshService.exec это со временем обрывает, но впустую тратит 8 минут при
+  // КАЖДОЙ попытке установки на таком хосте). Проверяем наличие default-маршрута IPv6
+  // перед сетевыми операциями; если его нет — отключаем IPv6 на хосте (безопасно: он и
+  // так нерабочий), tools дальше резолвят и используют только IPv4.
+  protected async ensureIpv4NetworkPreferred(ssh: NodeSSH): Promise<void> {
+    await this.sshService.exec(
+      ssh,
+      'ip -6 route show default | grep -q . || sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true',
+    );
+  }
+
   async install(ctx: VpnDriverContext, options: InstallOptions): Promise<InstallResult> {
     await this.ensureClientToolsInstalled(ctx.ssh);
 

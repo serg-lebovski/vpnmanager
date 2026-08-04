@@ -27,6 +27,7 @@ export class WireGuardDriver extends BaseWireGuardLikeDriver {
     if (check.code === 0) {
       return;
     }
+    await this.ensureIpv4NetworkPreferred(ssh);
     await this.sshService.execOrThrow(
       ssh,
       'export DEBIAN_FRONTEND=noninteractive && apt-get update -y && apt-get install -y wireguard wireguard-tools iptables',
