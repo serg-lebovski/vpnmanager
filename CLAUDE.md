@@ -109,13 +109,48 @@ forwarding между клиентскими интерфейсами моста
 `VpnProvisioningService.setupBridgeNat` (iptables-правила ссылаются на имена интерфейсов, которые не
 меняются при последующих переключениях upstream — поэтому не нужно их пересоздавать при auto-switch).
 Апстрим-peer моста имеет `PeerSource.BRIDGE_UPSTREAM` и не показывается в обычных списках peers.
-Self-серверы скрыты из списка «Серверы (VPS)» на фронтенде (`Server.isSelf`, фильтр в
-`ServersPage.tsx`) — ими управляют только через вкладку «Мост». Удаление backend-сервера сначала
-вызывает `BridgesService.reassignUpstreamAwayFrom` (переключает зависящие от него мосты на другой
-ACTIVE сервер того же протокола, best-effort по каждому мосту), иначе после `ON DELETE SET NULL`
-мост завис бы без upstream без возможности починки кроме как вручную; удаление самого моста
-(`BridgesService.remove`) отзывает системный upstream-peer и удаляет клиентские `ServerProtocol`
-моста.
+Self-серверы **не** скрыты из списка «Серверы (VPS)» на фронтенде (раньше были скрыты через
+`Server.isSelf`, но от этого отказались — сервер всегда виден, только конкретные протоколы,
+занятые мостом, помечаются чипом «мост «Имя»» в `ServersPage.tsx`). Удаление backend-сервера
+сначала вызывает `BridgesService.reassignUpstreamAwayFrom` (переключает зависящие от него мосты
+на другой ACTIVE сервер того же протокола, best-effort по каждому мосту), иначе после
+`ON DELETE SET NULL` мост завис бы без upstream без возможности починки кроме как вручную;
+удаление самого моста (`BridgesService.remove`) отзывает и удаляет (не только отзывает) системный
+upstream-peer и удаляет клиентские `ServerProtocol` моста.
+
+**Доменное имя моста** (`Bridge.domainName`, nullable) — если задано, `PeersService.
+getDownloadableConfig` подставляет его вместо `server.host` в `Endpoint =` генерируемого
+клиентского конфига (копия существующего запроса ServerProtocol→Bridge из
+`findActiveServerProtocolByServer`, `config-generator.util.ts` не меняется — использует из
+переданного объекта только `.host`). Не путать с доменом самой панели (`system/settings.
+service.ts`, см. ниже) — это про VPN-эндпоинт клиентов моста, задаётся ради disaster recovery:
+self-сервер можно перенести на другой хост/IP, просто переставив DNS, без переустановки уже
+выданных клиентских конфигов.
+
+**Failover upstream** (`BridgeUpstreamMode.FAILOVER`, `bridge-failover.service.ts`,
+`bridge-upstream-candidate.entity.ts`) — альтернатива load-based `AUTO`: приоритетный список
+кандидатов (`bridge_upstream_candidates`, join-таблица `bridgeId`+`serverProtocolId`+`priority`,
+0 = основной; `ON DELETE CASCADE` на обе FK, отдельно чистить при удалении Server/ServerProtocol
+не нужно) вместо одного заранее выбранного upstream. `AUTO` и `FAILOVER` — значения одного и
+того же поля `upstreamMode`, взаимоисключающие (оба дёргают `setUpstream` из своего интервала,
+одновременно на одном мосту работать не должны); `BridgesService.setMode` требует хотя бы
+одного кандидата для входа в `FAILOVER`. Отдельный сервис `BridgeFailoverService` (не метод
+`BridgesService` — своё приватное mutable-состояние per-server, зависимость только в одну
+сторону: `BridgeFailoverService` → `BridgesService.setUpstream`, без обратной, иначе DI-цикл)
+каждые 20с (`FAILOVER_CHECK_INTERVAL_MS`) TCP-пингует (`common/tcp-probe.util.ts#probeTcpPort`,
+обычный `net.Socket`, без новых зависимостей) SSH-порт каждого физического сервера-кандидата
+(дедуплицированного по `serverId`, не по кандидату — один сервер может быть кандидатом сразу у
+нескольких мостов) — **не** VPN-порт: WireGuard/AmneziaWG на UDP и намеренно не отвечают на
+произвольные пакеты (анти-фингерпринтинг), так что TCP-пинг VPN-порта был бы бессмысленным.
+Флап-защита (`FLAP_PROTECTION_CONSECUTIVE = 3`): сервер меняет статус доступности только после
+3 подряд одинаковых результатов проверки, и в первые проверки после старта/включения режима
+статус остаётся `null` (неизвестно), а не сразу "недоступен". На каждый тик — для каждого моста
+в режиме `FAILOVER` берётся первый ДОСТУПНЫЙ кандидат по приоритету; если он отличается от
+текущего активного upstream и мост не в `CONFIGURING` — вызывается `setUpstream` (та же функция,
+что и ручное/AUTO-переключение, весь NAT/peer/progress-код переиспользуется как есть). Если ни
+один кандидат не доступен — активный upstream не трогается (лучше рабочий, чем никакой).
+`GET /bridges/:id/candidate-status` (снимок доступности по serverId) собирается на уровне
+контроллера, не сервиса — тоже чтобы не создавать DI-цикл.
 
 **База данных**: TypeORM работает в режиме `synchronize: true` (`app.module.ts`) — миграций нет,
 схема выводится из entity-декораторов автоматически при старте. `database/seed.service.ts` создаёт
