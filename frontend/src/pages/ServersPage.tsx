@@ -116,8 +116,11 @@ export function ServersPage() {
     onSuccess: invalidate,
   });
   const installMutation = useMutation({
+    // Только {protocol, listenPort, networkCidr} в теле запроса — InstallProtocolDto не
+    // объявляет serverId (он и так уже в URL, /servers/:id/protocols), а глобальный
+    // ValidationPipe с forbidNonWhitelisted:true отклоняет лишние поля.
     mutationFn: (vars: { serverId: string; protocol: VpnProtocol; listenPort: number; networkCidr: string }) =>
-      installProtocol(vars.serverId, vars),
+      installProtocol(vars.serverId, { protocol: vars.protocol, listenPort: vars.listenPort, networkCidr: vars.networkCidr }),
     onSuccess: invalidate,
   });
   const installError =
