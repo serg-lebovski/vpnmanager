@@ -14,7 +14,7 @@ import {
   MinLength,
   ValidateNested,
 } from 'class-validator';
-import { VpnProtocol } from '../../common/enums';
+import { SshAuthType, VpnProtocol } from '../../common/enums';
 
 export class BridgeClientProtocolInput {
   @IsEnum(VpnProtocol)
@@ -31,16 +31,43 @@ export class BridgeClientProtocolInput {
   networkCidr: string;
 }
 
+// SSH-доступ к хосту, на котором развёрнута сама панель — нужен только при создании
+// САМОГО ПЕРВОГО моста в системе (см. BridgesService.create: дальше self-сервер уже
+// существует и переиспользуется для всех следующих мостов, эти поля игнорируются).
+export class SelfServerCredentialsInput {
+  @IsString()
+  @MinLength(1)
+  host: string;
+
+  @IsInt()
+  @Min(1)
+  @Max(65535)
+  @IsOptional()
+  sshPort?: number = 22;
+
+  @IsString()
+  @MinLength(1)
+  @IsOptional()
+  sshUsername?: string = 'root';
+
+  @IsEnum(SshAuthType)
+  sshAuthType: SshAuthType;
+
+  @IsString()
+  @MinLength(1)
+  secret: string;
+}
+
 export class CreateBridgeDto {
   @IsString()
   @MinLength(1)
   name: string;
 
-  // Существующий Server (уже добавленный на вкладке «Серверы»), указывающий на хост, где
-  // крутится сама панель — на нём будет поднят локальный клиентский интерфейс(ы) моста.
-  // На одном self-сервере может быть несколько мостов (разные порты/сети).
-  @IsUUID()
-  selfServerId: string;
+  // См. SelfServerCredentialsInput — обязателен только если self-сервера ещё нет вообще.
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => SelfServerCredentialsInput)
+  selfServerCredentials?: SelfServerCredentialsInput;
 
   // Организация, для которой этот мост — если не указана, мост общий/суперадминский.
   @IsUUID()

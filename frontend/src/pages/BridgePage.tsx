@@ -33,7 +33,7 @@ import { BridgeSwitchProgress, connectBridgeProgressSocket } from '../api/bridge
 import { getErrorMessage } from '../api/errors';
 import { fetchOrganizations } from '../api/organizations';
 import { fetchServers } from '../api/servers';
-import { BridgeEntity, BridgeUpstreamMode, Organization, ServerEntity, VpnProtocol } from '../api/types';
+import { BridgeEntity, BridgeUpstreamMode, Organization, ServerEntity, SshAuthType, VpnProtocol } from '../api/types';
 
 const statusColor: Record<string, 'default' | 'success' | 'error' | 'warning'> = {
   not_configured: 'default',
@@ -82,17 +82,27 @@ export function BridgePage() {
   }, []);
 
   const [name, setName] = useState('Мост');
-  const [selfServerId, setSelfServerId] = useState('');
   const [organizationId, setOrganizationId] = useState('');
   const [wireguard, setWireguard] = useState<ProtocolRowState>({ enabled: true, listenPort: 51820, networkCidr: '10.9.0.0/24' });
   const [amneziawg, setAmneziawg] = useState<ProtocolRowState>({ enabled: false, listenPort: 51821, networkCidr: '10.9.1.0/24' });
   const [createError, setCreateError] = useState<string | null>(null);
+
+  // Self-сервер (хост панели) переиспользуется для всех мостов автоматически — форма
+  // просит SSH-доступ к нему только при создании самого первого моста в системе, когда
+  // такого сервера ещё нет вообще (см. BridgesService.create).
+  const hasSelfServer = servers?.some((s) => s.isSelf) ?? false;
+  const [selfHost, setSelfHost] = useState('');
+  const [selfSshPort, setSelfSshPort] = useState(22);
+  const [selfSshUsername, setSelfSshUsername] = useState('root');
+  const [selfSshAuthType, setSelfSshAuthType] = useState<SshAuthType>('password');
+  const [selfSecret, setSelfSecret] = useState('');
 
   const createMutation = useMutation({
     mutationFn: createBridge,
     onSuccess: () => {
       invalidate();
       setCreateError(null);
+      setSelfSecret('');
     },
     onError: (err) => setCreateError(getErrorMessage(err, 'Не удалось создать мост')),
   });
@@ -110,9 +120,22 @@ export function BridgePage() {
       setCreateError('Выберите хотя бы один протокол для клиентов моста');
       return;
     }
-    const input: CreateBridgeInput = { name, selfServerId, clientProtocols };
+    const input: CreateBridgeInput = { name, clientProtocols };
     if (organizationId) {
       input.organizationId = organizationId;
+    }
+    if (!hasSelfServer) {
+      if (!selfHost || !selfSecret) {
+        setCreateError('Укажите SSH-доступ к серверу, на котором развёрнута панель');
+        return;
+      }
+      input.selfServerCredentials = {
+        host: selfHost,
+        sshPort: selfSshPort,
+        sshUsername: selfSshUsername,
+        sshAuthType: selfSshAuthType,
+        secret: selfSecret,
+      };
     }
     createMutation.mutate(input);
   }
@@ -138,21 +161,6 @@ export function BridgePage() {
             <TextField label="Название" value={name} onChange={(e) => setName(e.target.value)} required />
             <TextField
               select
-              label="Сервер панели (self)"
-              value={selfServerId}
-              onChange={(e) => setSelfServerId(e.target.value)}
-              sx={{ minWidth: 220 }}
-              helperText="Сервер, добавленный на вкладке «Серверы», указывающий на хост самой панели"
-              required
-            >
-              {servers?.map((s) => (
-                <MenuItem key={s.id} value={s.id}>
-                  {s.name} ({s.host})
-                </MenuItem>
-              ))}
-            </TextField>
-            <TextField
-              select
               label="Организация"
               value={organizationId}
               onChange={(e) => setOrganizationId(e.target.value)}
@@ -169,8 +177,8 @@ export function BridgePage() {
           </Stack>
 
           <Typography variant="body2" color="text.secondary" mt={2} mb={1}>
-            Протоколы для клиентов моста (можно оба сразу — peers по каждому пойдут через
-            один и тот же upstream):
+            Протоколы, которые панель установит у себя для клиентов моста (можно оба сразу
+            — peers по каждому пойдут через один и тот же upstream):
           </Typography>
           <Stack spacing={1}>
             <ProtocolRow
@@ -186,6 +194,58 @@ export function BridgePage() {
               helperText="Обфусцированный — нужен там, где обычный WireGuard блокируется/детектится"
             />
           </Stack>
+
+          {!hasSelfServer && (
+            <>
+              <Typography variant="body2" color="text.secondary" mt={2} mb={1}>
+                Мостов пока нет — укажите SSH-доступ к серверу, на котором развёрнута сама
+                панель, чтобы поставить на нём выбранные протоколы. Нужно только один раз:
+                следующие мосты переиспользуют этот же сервер (появится на вкладке
+                «Серверы» под именем «Этот сервер»).
+              </Typography>
+              <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="flex-start">
+                <TextField
+                  label="Хост / IP панели"
+                  value={selfHost}
+                  onChange={(e) => setSelfHost(e.target.value)}
+                  sx={{ minWidth: 200 }}
+                  required
+                />
+                <TextField
+                  label="SSH порт"
+                  type="number"
+                  value={selfSshPort}
+                  onChange={(e) => setSelfSshPort(Number(e.target.value))}
+                  sx={{ width: 120 }}
+                />
+                <TextField
+                  label="SSH пользователь"
+                  value={selfSshUsername}
+                  onChange={(e) => setSelfSshUsername(e.target.value)}
+                  sx={{ minWidth: 140 }}
+                />
+                <TextField
+                  select
+                  label="Тип авторизации"
+                  value={selfSshAuthType}
+                  onChange={(e) => setSelfSshAuthType(e.target.value as SshAuthType)}
+                  sx={{ minWidth: 180 }}
+                >
+                  <MenuItem value="password">Пароль</MenuItem>
+                  <MenuItem value="private_key">Приватный ключ</MenuItem>
+                </TextField>
+                <TextField
+                  label={selfSshAuthType === 'password' ? 'Пароль' : 'Приватный ключ (PEM)'}
+                  type={selfSshAuthType === 'password' ? 'password' : 'text'}
+                  multiline={selfSshAuthType === 'private_key'}
+                  value={selfSecret}
+                  onChange={(e) => setSelfSecret(e.target.value)}
+                  sx={{ minWidth: 220 }}
+                  required
+                />
+              </Stack>
+            </>
+          )}
 
           <Button type="submit" variant="contained" disabled={createMutation.isPending} sx={{ mt: 2 }}>
             Создать

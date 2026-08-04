@@ -1,5 +1,5 @@
 import { apiClient } from './client';
-import { BridgeEntity, BridgeUpstreamMode, VpnProtocol } from './types';
+import { BridgeEntity, BridgeUpstreamMode, SshAuthType, VpnProtocol } from './types';
 
 export async function fetchBridges(): Promise<BridgeEntity[]> {
   const { data } = await apiClient.get<BridgeEntity[]>('/bridges');
@@ -12,9 +12,19 @@ export interface BridgeClientProtocolInput {
   networkCidr: string;
 }
 
+export interface SelfServerCredentialsInput {
+  host: string;
+  sshPort?: number;
+  sshUsername?: string;
+  sshAuthType: SshAuthType;
+  secret: string;
+}
+
 export interface CreateBridgeInput {
   name: string;
-  selfServerId: string;
+  // Нужен только для самого первого моста в системе — дальше self-сервер уже существует
+  // и переиспользуется автоматически, поле игнорируется.
+  selfServerCredentials?: SelfServerCredentialsInput;
   organizationId?: string;
   clientProtocols: BridgeClientProtocolInput[];
 }

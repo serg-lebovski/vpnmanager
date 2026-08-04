@@ -4,7 +4,7 @@ import { Interval } from '@nestjs/schedule';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, Not, Repository } from 'typeorm';
 import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
-import { decryptSecret } from '../common/encryption.util';
+import { decryptSecret, encryptSecret } from '../common/encryption.util';
 import { BridgeStatus, BridgeUpstreamMode, PeerStatus, Role, ServerProtocolStatus, VpnProtocol } from '../common/enums';
 import { Organization } from '../organizations/organization.entity';
 import { Peer } from '../peers/peer.entity';
@@ -122,9 +122,31 @@ export class BridgesService {
       throw new BadRequestException('Протокол клиентского интерфейса моста нельзя указывать дважды');
     }
 
-    const selfServer = await this.serversRepository.findOne({ where: { id: dto.selfServerId } });
+    // Self-сервер — один и тот же физический хост для ВСЕХ мостов (тот, на котором
+    // развёрнута сама панель): переиспользуем уже существующий, если он есть (isSelf=true
+    // означает "уже используется как клиентский интерфейс какого-то моста", см.
+    // getSelfServerContext/ServersService.findAll), вместо того чтобы просить выбрать его
+    // из списка при создании каждого нового моста — пользователю больше не нужно заранее
+    // вручную добавлять свой же хост на вкладке «Серверы». SSH-доступ (selfServerCredentials)
+    // нужен и используется только при создании самого первого моста в системе.
+    let selfServer = await this.serversRepository.findOne({ where: { isSelf: true } });
     if (!selfServer) {
-      throw new NotFoundException('Сервер не найден');
+      if (!dto.selfServerCredentials) {
+        throw new BadRequestException(
+          'Сервер панели ещё не настроен — укажите SSH-доступ к серверу, на котором развёрнуто приложение (это нужно только для самого первого моста)',
+        );
+      }
+      selfServer = await this.serversRepository.save(
+        this.serversRepository.create({
+          name: 'Этот сервер',
+          host: dto.selfServerCredentials.host,
+          sshPort: dto.selfServerCredentials.sshPort ?? 22,
+          sshUsername: dto.selfServerCredentials.sshUsername ?? 'root',
+          sshAuthType: dto.selfServerCredentials.sshAuthType,
+          sshSecretEnc: encryptSecret(dto.selfServerCredentials.secret),
+          isSelf: true,
+        }),
+      );
     }
 
     // На одном self-сервере может быть несколько мостов — порт занят, если уже
@@ -138,9 +160,6 @@ export class BridgesService {
         throw new BadRequestException(`Порт ${clientProtocol.listenPort} уже занят на этом сервере другим протоколом`);
       }
     }
-
-    selfServer.isSelf = true;
-    await this.serversRepository.save(selfServer);
 
     // Клиентские интерфейсы моста — переиспользуем обычную установку протокола, как для
     // любого другого сервера, по одному вызову на каждый выбранный протокол. Там, где
