@@ -325,19 +325,42 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
     return names.find((name) => this.containerNameHints.some((hint) => name.toLowerCase().includes(hint))) || null;
   }
 
+  // На сервере может остаться несколько .conf-файлов от предыдущих попыток установки —
+  // ни неудачная установка, ни удаление протокола/моста через панель не чистят файлы на
+  // диске (сам wg-quick/awg-quick интерфейс на хосте не снимается, см. README). `ls
+  // *.conf` перечисляет их все по алфавиту — раньше просто брался первый файл из списка,
+  // и если "мёртвый" конфиг от давно заброшенной попытки сортировался раньше реально
+  // поднятого интерфейса, detectExisting путал их и затирал рабочую запись в БД чужими
+  // ключами/именем интерфейса (пойманный вживую инцидент: активный мост перестал
+  // принимать пиров без единой ошибки в логах). Теперь предпочитаем файл, чей интерфейс
+  // РЕАЛЬНО поднят (`ip link show`); если ни один не поднят — откатываемся к первому по
+  // алфавиту, как и раньше (единственный разумный вариант при полностью погашенной
+  // установке, когда нечего сверять).
+  private async pickLikelyActiveConfPath(ssh: NodeSSH, execContainer: string | null, confPaths: string[]): Promise<string> {
+    for (const confPath of confPaths) {
+      const interfaceName = confPath.split('/').pop()?.replace(/\.conf$/, '') ?? '';
+      const linkResult = await this.sshService.exec(ssh, this.buildCommand(`ip link show ${interfaceName} 2>/dev/null`, execContainer));
+      if (linkResult.code === 0 && linkResult.stdout.trim()) {
+        return confPath;
+      }
+    }
+    return confPaths[0];
+  }
+
   private async detectAt(
     ssh: NodeSSH,
     execContainer: string | null,
     listCommand: string,
   ): Promise<DetectedInstallation | null> {
     const listResult = await this.sshService.exec(ssh, this.buildCommand(listCommand, execContainer));
-    const confPath = listResult.stdout
+    const confPaths = listResult.stdout
       .split('\n')
       .map((line) => line.trim())
-      .filter(Boolean)[0];
-    if (listResult.code !== 0 || !confPath) {
+      .filter(Boolean);
+    if (listResult.code !== 0 || confPaths.length === 0) {
       return null;
     }
+    const confPath = await this.pickLikelyActiveConfPath(ssh, execContainer, confPaths);
 
     const catResult = await this.sshService.exec(ssh, this.buildCommand(`cat ${confPath}`, execContainer));
     if (catResult.code !== 0) {
