@@ -93,4 +93,7 @@ export interface PeerEntity {
   status: PeerStatus;
   createdAt: string;
   serverProtocol?: ServerProtocolEntity & { server?: ServerEntity };
+  // Ключ(и) есть, но не расшифровываются текущим ключом шифрования панели (обычно после
+  // восстановления БД на другом деплое) — peer нерабочий, нужно отозвать и создать заново.
+  needsRecreation: boolean;
 }

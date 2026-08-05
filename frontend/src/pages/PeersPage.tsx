@@ -409,7 +409,17 @@ export function PeersPage() {
                   <TableCell>{peer.allowedIp}</TableCell>
                   <TableCell>{serverLabel(peer, bridges)}</TableCell>
                   <TableCell>
-                    <Chip size="small" label={peer.status} color={statusColor[peer.status]} />
+                    <Stack direction="row" spacing={0.5} alignItems="center">
+                      <Chip size="small" label={peer.status} color={statusColor[peer.status]} />
+                      {peer.needsRecreation && (
+                        <Chip
+                          size="small"
+                          color="warning"
+                          label="нужно пересоздать"
+                          title="Ключ не расшифровывается текущим ключом шифрования панели (обычно после восстановления БД на другом сервере) — отзовите и создайте заново"
+                        />
+                      )}
+                    </Stack>
                   </TableCell>
                   <TableCell align="right">
                     <Stack direction="row" spacing={1} justifyContent="flex-end" flexWrap="wrap" useFlexGap>

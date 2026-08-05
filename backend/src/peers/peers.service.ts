@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, IsNull, Not, Repository } from 'typeorm';
 import { Bridge } from '../bridges/bridge.entity';
@@ -19,10 +19,21 @@ import { generatePresharedKey, generateWgKeyPair } from './wg-keypair.util';
 import { hostAddress } from '../vpn/network.util';
 
 type SafeServerProtocol = Omit<ServerProtocol, 'server' | 'peers'> & { server: Omit<Server, 'sshSecretEnc'> };
-export type PeerListItem = Omit<Peer, 'privateKeyEnc' | 'presharedKeyEnc' | 'serverProtocol'> & { serverProtocol: SafeServerProtocol };
+export type PeerListItem = Omit<Peer, 'privateKeyEnc' | 'presharedKeyEnc' | 'serverProtocol'> & {
+  serverProtocol: SafeServerProtocol;
+  // true — ключ(и) peer'а есть, но не расшифровываются текущим APP_ENCRYPTION_KEY (обычно
+  // после восстановления БД на деплое с другим ключом, см. system/restore.service.ts) —
+  // peer нерабочий и невосстановимый (в отличие от Server.sshSecretEnc, ключ клиента нельзя
+  // "ввести заново" — его никто, кроме уже потерянного сервера, не знал), нужно отозвать и
+  // создать заново. false для импортированных peers (privateKeyEnc всегда null — это не
+  // поломка, а ожидаемое состояние, см. importScannedPeers).
+  needsRecreation: boolean;
+};
 
 @Injectable()
 export class PeersService {
+  private readonly logger = new Logger(PeersService.name);
+
   constructor(
     @InjectRepository(Peer) private readonly peersRepository: Repository<Peer>,
     @InjectRepository(ServerProtocol) private readonly serverProtocolsRepository: Repository<ServerProtocol>,
@@ -57,7 +68,20 @@ export class PeersService {
     const { privateKeyEnc, presharedKeyEnc, serverProtocol, ...rest } = peer;
     const { server, ...serverProtocolRest } = serverProtocol;
     const { sshSecretEnc, ...safeServer } = server;
-    return { ...rest, serverProtocol: { ...serverProtocolRest, server: safeServer } };
+    const needsRecreation = !this.canDecrypt(privateKeyEnc) || !this.canDecrypt(presharedKeyEnc);
+    return { ...rest, needsRecreation, serverProtocol: { ...serverProtocolRest, server: safeServer } };
+  }
+
+  private canDecrypt(secretEnc: string | null): boolean {
+    if (!secretEnc) {
+      return true;
+    }
+    try {
+      decryptSecret(secretEnc);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async create(requester: AuthenticatedUser, dto: CreatePeerDto): Promise<Peer> {
@@ -389,12 +413,28 @@ export class PeersService {
     const activePeers = await this.peersRepository.find({
       where: { serverProtocolId, status: PeerStatus.ACTIVE },
     });
-    const specs: PeerSpec[] = activePeers.map((peer) => ({
-      publicKey: peer.publicKey,
-      presharedKey: peer.presharedKeyEnc ? decryptSecret(peer.presharedKeyEnc) : undefined,
-      allowedIp: peer.allowedIp,
-      name: peer.name,
-    }));
+    // presharedKeyEnc может оказаться нерасшифровываемым — например, после восстановления
+    // БД на деплое с ДРУГИМ APP_ENCRYPTION_KEY (см. system/restore.service.ts). Раньше
+    // decryptSecret, брошенный ВНУТРИ .map(), обрывал сборку specs целиком — один такой
+    // "мёртвый" peer навсегда блокировал синхронизацию ВСЕХ остальных (в т.ч. живых) peers
+    // этого протокола, включая попытку отозвать сам сломанный peer. Пропускаем такой peer
+    // (не отправляем на сервер — он всё равно нерабочий без preshared-ключа) вместо того,
+    // чтобы валить весь sync.
+    const specs: PeerSpec[] = [];
+    for (const peer of activePeers) {
+      try {
+        specs.push({
+          publicKey: peer.publicKey,
+          presharedKey: peer.presharedKeyEnc ? decryptSecret(peer.presharedKeyEnc) : undefined,
+          allowedIp: peer.allowedIp,
+          name: peer.name,
+        });
+      } catch (error) {
+        this.logger.warn(
+          `Peer "${peer.name}" (${peer.id}) исключён из синхронизации — не расшифровался preshared-ключ: ${(error as Error).message}`,
+        );
+      }
+    }
     await this.vpnProvisioningService.applyPeers(serverProtocol, server, specs);
   }
 }
