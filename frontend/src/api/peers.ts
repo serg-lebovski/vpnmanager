@@ -23,6 +23,17 @@ export async function createPeer(input: CreatePeerInput): Promise<PeerEntity> {
   return data;
 }
 
+export interface UpdatePeerInput {
+  name?: string;
+  // Смена организации — только для super_admin (проверяется на бэкенде).
+  organizationId?: string | null;
+}
+
+export async function updatePeer(id: string, input: UpdatePeerInput): Promise<PeerEntity> {
+  const { data } = await apiClient.patch<PeerEntity>(`/peers/${id}`, input);
+  return data;
+}
+
 export async function revokePeer(id: string): Promise<void> {
   await apiClient.delete(`/peers/${id}`);
 }

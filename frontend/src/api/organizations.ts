@@ -8,8 +8,6 @@ export async function fetchOrganizations(): Promise<Organization[]> {
 
 export interface CreateOrganizationInput {
   name: string;
-  adminEmail: string;
-  adminPassword: string;
 }
 
 export async function createOrganization(input: CreateOrganizationInput): Promise<Organization> {

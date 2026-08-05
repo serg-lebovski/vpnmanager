@@ -1,10 +1,11 @@
-import { Body, Controller, Delete, Get, Param, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
 import { Response } from 'express';
 import * as QRCode from 'qrcode';
 import { AuthenticatedUser, CurrentUser } from '../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { CreatePeerDto } from './dto/create-peer.dto';
+import { UpdatePeerDto } from './dto/update-peer.dto';
 import { PeersService } from './peers.service';
 
 @Controller('peers')
@@ -20,6 +21,11 @@ export class PeersController {
   @Post()
   create(@CurrentUser() user: AuthenticatedUser, @Body() dto: CreatePeerDto) {
     return this.peersService.create(user, dto);
+  }
+
+  @Patch(':id')
+  update(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Body() dto: UpdatePeerDto) {
+    return this.peersService.update(user, id, dto);
   }
 
   @Delete(':id')

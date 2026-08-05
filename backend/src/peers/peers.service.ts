@@ -6,12 +6,14 @@ import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { decryptSecret, encryptSecret } from '../common/encryption.util';
 import { PeerSource, PeerStatus, Role, ServerProtocolStatus } from '../common/enums';
 import { LoadBalancerService } from '../load-balancer/load-balancer.service';
+import { Organization } from '../organizations/organization.entity';
 import { ServerProtocol } from '../servers/server-protocol.entity';
 import { Server } from '../servers/server.entity';
 import { PeerSpec } from '../vpn/vpn-driver.interface';
 import { VpnProvisioningService } from '../vpn/vpn-provisioning.service';
 import { buildClientConfig } from './config-generator.util';
 import { CreatePeerDto } from './dto/create-peer.dto';
+import { UpdatePeerDto } from './dto/update-peer.dto';
 import { Peer } from './peer.entity';
 import { generatePresharedKey, generateWgKeyPair } from './wg-keypair.util';
 import { hostAddress } from '../vpn/network.util';
@@ -26,6 +28,7 @@ export class PeersService {
     @InjectRepository(ServerProtocol) private readonly serverProtocolsRepository: Repository<ServerProtocol>,
     @InjectRepository(Server) private readonly serversRepository: Repository<Server>,
     @InjectRepository(Bridge) private readonly bridgesRepository: Repository<Bridge>,
+    @InjectRepository(Organization) private readonly organizationsRepository: Repository<Organization>,
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly loadBalancerService: LoadBalancerService,
     private readonly vpnProvisioningService: VpnProvisioningService,
@@ -72,6 +75,41 @@ export class PeersService {
       source: PeerSource.CREATED,
       createdByUserId: requester.userId,
     });
+  }
+
+  // Переименование доступно всем, у кого есть доступ к peer'у (см. findOneScoped); смена
+  // организации — только суперадмину. Не трогаем реальный конфиг на сервере (имя пира —
+  // чисто конфигурационное поле в этой панели, а не то, что участвует в handshake) —
+  // единственное место, где имя peer'а попадает в сам wg/awg-конфиг (комментарий "# name:
+  // ..." в syncServerPeers), намеренно не пересобираем ради простого переименования: это
+  // означало бы обрывать туннели ВСЕМ peers этого протокола (down;up всего интерфейса)
+  // ради косметического изменения одной строки, которую всё равно никто не читает вручную.
+  async update(requester: AuthenticatedUser, id: string, dto: UpdatePeerDto): Promise<PeerListItem> {
+    const peer = await this.findOneScoped(requester, id);
+
+    if (dto.organizationId !== undefined) {
+      if (requester.role !== Role.SUPER_ADMIN) {
+        throw new ForbiddenException('Только суперадмин может сменить организацию peer’а');
+      }
+      if (dto.organizationId !== null) {
+        const organization = await this.organizationsRepository.findOne({ where: { id: dto.organizationId } });
+        if (!organization) {
+          throw new NotFoundException('Организация не найдена');
+        }
+      }
+      peer.organizationId = dto.organizationId;
+    }
+
+    if (dto.name !== undefined) {
+      peer.name = dto.name;
+    }
+
+    const saved = await this.peersRepository.save(peer);
+    const withRelations = await this.peersRepository.findOneOrFail({
+      where: { id: saved.id },
+      relations: ['serverProtocol', 'serverProtocol.server'],
+    });
+    return this.toListItem(withRelations);
   }
 
   // Системный upstream-peer моста на backend-сервере — не привязан к организации, не

@@ -23,8 +23,6 @@ export function OrganizationsPage() {
   const { data: organizations, isLoading } = useQuery({ queryKey: ['organizations'], queryFn: fetchOrganizations });
 
   const [name, setName] = useState('');
-  const [adminEmail, setAdminEmail] = useState('');
-  const [adminPassword, setAdminPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const createMutation = useMutation({
@@ -32,8 +30,6 @@ export function OrganizationsPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['organizations'] });
       setName('');
-      setAdminEmail('');
-      setAdminPassword('');
       setError(null);
     },
     onError: (err) => setError(getErrorMessage(err, 'Не удалось создать организацию')),
@@ -46,7 +42,7 @@ export function OrganizationsPage() {
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    createMutation.mutate({ name, adminEmail, adminPassword });
+    createMutation.mutate({ name });
   }
 
   return (
@@ -60,25 +56,15 @@ export function OrganizationsPage() {
         <form onSubmit={handleSubmit}>
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems="flex-start">
             <TextField label="Название" value={name} onChange={(e) => setName(e.target.value)} required />
-            <TextField
-              label="Email администратора"
-              type="email"
-              value={adminEmail}
-              onChange={(e) => setAdminEmail(e.target.value)}
-              required
-            />
-            <TextField
-              label="Пароль администратора"
-              type="password"
-              value={adminPassword}
-              onChange={(e) => setAdminPassword(e.target.value)}
-              required
-            />
             <Button type="submit" variant="contained" disabled={createMutation.isPending}>
               Создать
             </Button>
           </Stack>
         </form>
+        <Typography variant="body2" color="text.secondary" mt={1}>
+          Пользователей (администраторов и сотрудников) для этой организации добавьте отдельно
+          на вкладке «Пользователи».
+        </Typography>
         {error && (
           <Alert severity="error" sx={{ mt: 2 }}>
             {error}

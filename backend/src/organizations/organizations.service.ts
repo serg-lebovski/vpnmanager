@@ -1,20 +1,13 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import * as bcrypt from 'bcryptjs';
-import { DataSource, Repository } from 'typeorm';
-import { Role } from '../common/enums';
-import { User } from '../users/user.entity';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import { CreateOrganizationDto } from './dto/create-organization.dto';
 import { UpdateOrganizationDto } from './dto/update-organization.dto';
 import { Organization } from './organization.entity';
 
 @Injectable()
 export class OrganizationsService {
-  constructor(
-    @InjectRepository(Organization) private readonly organizationsRepository: Repository<Organization>,
-    @InjectRepository(User) private readonly usersRepository: Repository<User>,
-    @InjectDataSource() private readonly dataSource: DataSource,
-  ) {}
+  constructor(@InjectRepository(Organization) private readonly organizationsRepository: Repository<Organization>) {}
 
   findAll(): Promise<Organization[]> {
     return this.organizationsRepository.find({ order: { createdAt: 'DESC' } });
@@ -28,29 +21,16 @@ export class OrganizationsService {
     return organization;
   }
 
+  // Организация создаётся сама по себе, без пользователя — администраторов/пользователей
+  // для неё создают отдельно на вкладке «Пользователи» (суперадмин указывает организацию
+  // явно, org_admin, создавая org_user, привязывает его к своей же организации автоматически
+  // — см. UsersService.createForRequester).
   async create(dto: CreateOrganizationDto): Promise<Organization> {
     const existingOrg = await this.organizationsRepository.findOne({ where: { name: dto.name } });
     if (existingOrg) {
       throw new ConflictException('Организация с таким именем уже существует');
     }
-    const existingUser = await this.usersRepository.findOne({ where: { email: dto.adminEmail } });
-    if (existingUser) {
-      throw new ConflictException('Пользователь с таким email уже существует');
-    }
-
-    return this.dataSource.transaction(async (manager) => {
-      const organization = await manager.save(manager.create(Organization, { name: dto.name }));
-      const passwordHash = await bcrypt.hash(dto.adminPassword, 10);
-      await manager.save(
-        manager.create(User, {
-          email: dto.adminEmail,
-          passwordHash,
-          role: Role.ORG_ADMIN,
-          organizationId: organization.id,
-        }),
-      );
-      return organization;
-    });
+    return this.organizationsRepository.save(this.organizationsRepository.create({ name: dto.name }));
   }
 
   async update(id: string, dto: UpdateOrganizationDto): Promise<Organization> {

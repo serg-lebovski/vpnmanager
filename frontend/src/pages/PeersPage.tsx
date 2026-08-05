@@ -4,6 +4,7 @@ import {
   Checkbox,
   Chip,
   Dialog,
+  DialogActions,
   DialogContent,
   DialogTitle,
   FormControlLabel,
@@ -24,7 +25,16 @@ import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { fetchBridges } from '../api/bridges';
 import { getErrorMessage } from '../api/errors';
 import { fetchOrganizations } from '../api/organizations';
-import { CreatePeerInput, createPeer, downloadPeerConfig, fetchPeerQrCodeUrl, fetchPeers, purgePeer, revokePeer } from '../api/peers';
+import {
+  CreatePeerInput,
+  createPeer,
+  downloadPeerConfig,
+  fetchPeerQrCodeUrl,
+  fetchPeers,
+  purgePeer,
+  revokePeer,
+  updatePeer,
+} from '../api/peers';
 import { fetchServers } from '../api/servers';
 import { BridgeEntity, PeerEntity, VpnProtocol } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
@@ -111,6 +121,31 @@ export function PeersPage() {
     mutationFn: purgePeer,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['peers'] }),
   });
+
+  const [editingPeer, setEditingPeer] = useState<PeerEntity | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editOrgId, setEditOrgId] = useState('');
+  const [editError, setEditError] = useState<string | null>(null);
+
+  const updateMutation = useMutation({
+    mutationFn: () =>
+      updatePeer(editingPeer!.id, {
+        name: editName,
+        organizationId: isSuperAdmin ? (editOrgId === NO_CLIENT ? null : editOrgId) : undefined,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['peers'] });
+      setEditingPeer(null);
+    },
+    onError: (err) => setEditError(getErrorMessage(err, 'Не удалось сохранить изменения')),
+  });
+
+  function openEdit(peer: PeerEntity) {
+    setEditingPeer(peer);
+    setEditName(peer.name);
+    setEditOrgId(peer.organizationId ?? NO_CLIENT);
+    setEditError(null);
+  }
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -378,6 +413,9 @@ export function PeersPage() {
                   </TableCell>
                   <TableCell align="right">
                     <Stack direction="row" spacing={1} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
+                      <Button size="small" variant="outlined" onClick={() => openEdit(peer)}>
+                        Изменить
+                      </Button>
                       <Button
                         size="small"
                         variant="outlined"
@@ -416,6 +454,38 @@ export function PeersPage() {
       <Dialog open={!!qrPeer} onClose={() => setQrPeer(null)}>
         <DialogTitle>QR-код: {qrPeer?.name}</DialogTitle>
         <DialogContent>{qrUrl && <img src={qrUrl} alt="QR-код конфигурации" width={320} height={320} />}</DialogContent>
+      </Dialog>
+
+      <Dialog open={!!editingPeer} onClose={() => setEditingPeer(null)} fullWidth maxWidth="xs">
+        <DialogTitle>Изменить peer</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} mt={1}>
+            <TextField label="Название" value={editName} onChange={(e) => setEditName(e.target.value)} required autoFocus />
+            {isSuperAdmin && (
+              <TextField
+                select
+                label="Клиент"
+                value={editOrgId}
+                onChange={(e) => setEditOrgId(e.target.value)}
+                helperText="Организация, к которой привязан peer"
+              >
+                <MenuItem value={NO_CLIENT}>Без клиента</MenuItem>
+                {organizations?.map((org) => (
+                  <MenuItem key={org.id} value={org.id}>
+                    {org.name}
+                  </MenuItem>
+                ))}
+              </TextField>
+            )}
+            {editError && <Alert severity="error">{editError}</Alert>}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEditingPeer(null)}>Отмена</Button>
+          <Button variant="contained" disabled={updateMutation.isPending || !editName} onClick={() => updateMutation.mutate()}>
+            Сохранить
+          </Button>
+        </DialogActions>
       </Dialog>
     </Stack>
   );
