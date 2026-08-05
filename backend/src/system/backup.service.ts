@@ -54,4 +54,32 @@ export class BackupService {
       }
     });
   }
+
+  // Отдельный от самого дампа файл (осознанно НЕ упаковываем вместе в один архив) — по
+  // просьбе пользователя: бэкап и ключ шифрования нужны для переноса на новый сервер
+  // (disaster recovery), но должны оставаться раздельными секретами, чтобы утечка одного
+  // файла бэкапа сама по себе была бесполезна без второго. Без этого ключа (или с другим
+  // его значением на новом деплое) SSH-пароли серверов и приватные/preshared-ключи peers
+  // из дампа не расшифруются (см. common/encryption.util.ts — вывод ключа полностью
+  // детерминирован от APP_ENCRYPTION_KEY).
+  downloadEncryptionKey(res: Response): void {
+    const key = this.configService.getOrThrow<string>('APP_ENCRYPTION_KEY');
+    const filename = `vpnmanager-encryption-key-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
+    const content = [
+      '# Ключ шифрования VPN Manager (APP_ENCRYPTION_KEY)',
+      '#',
+      '# Храните этот файл ОТДЕЛЬНО от бэкапа БД (.sql) — не в одном архиве, не в одном',
+      '# облачном хранилище. Он нужен только при восстановлении бэкапа на НОВОМ сервере:',
+      '# укажите это же значение в переменной APP_ENCRYPTION_KEY в .env нового деплоя ДО',
+      '# восстановления — иначе SSH-пароли серверов и ключи VPN-пиров из бэкапа не',
+      '# расшифруются и станут непригодны для использования.',
+      '',
+      key,
+      '',
+    ].join('\n');
+
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(content);
+  }
 }

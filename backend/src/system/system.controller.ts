@@ -35,6 +35,13 @@ export class SystemController {
     this.backupService.streamDatabaseDump(res);
   }
 
+  // Отдельный эндпоинт, а не часть /backup — см. BackupService.downloadEncryptionKey:
+  // ключ и дамп нарочно остаются разными файлами.
+  @Get('backup/encryption-key')
+  downloadEncryptionKey(@Res() res: Response) {
+    this.backupService.downloadEncryptionKey(res);
+  }
+
   @Get('version')
   getVersion() {
     return this.updateService.getVersion();

@@ -23,6 +23,7 @@ import {
   connectRestoreProgressSocket,
   connectUpdateProgressSocket,
   downloadDatabaseBackup,
+  downloadEncryptionKey,
   downloadLogs,
   fetchLogs,
   fetchVersion,
@@ -99,6 +100,11 @@ export function SettingsPage() {
   const backupMutation = useMutation({
     mutationFn: downloadDatabaseBackup,
     onError: (err) => setBackupError(getErrorMessage(err, 'Не удалось скачать бэкап')),
+  });
+
+  const encryptionKeyMutation = useMutation({
+    mutationFn: downloadEncryptionKey,
+    onError: (err) => setBackupError(getErrorMessage(err, 'Не удалось скачать ключ шифрования')),
   });
 
   const [restoreFile, setRestoreFile] = useState<File | null>(null);
@@ -352,9 +358,20 @@ export function SettingsPage() {
         <Typography variant="subtitle1" mb={2}>
           Резервная копия базы данных
         </Typography>
-        <Button variant="outlined" disabled={backupMutation.isPending} onClick={() => backupMutation.mutate()}>
-          Скачать бэкап (.sql)
-        </Button>
+        <Stack direction="row" spacing={2} alignItems="flex-start" flexWrap="wrap" useFlexGap>
+          <Button variant="outlined" disabled={backupMutation.isPending} onClick={() => backupMutation.mutate()}>
+            Скачать бэкап (.sql)
+          </Button>
+          <Button variant="outlined" color="warning" disabled={encryptionKeyMutation.isPending} onClick={() => encryptionKeyMutation.mutate()}>
+            Скачать ключ шифрования
+          </Button>
+        </Stack>
+        <Typography variant="body2" color="text.secondary" mt={1}>
+          Ключ шифрования — отдельный секрет, специально не входит в сам файл бэкапа. Он
+          нужен только при восстановлении на НОВОМ сервере: без него (или с другим его
+          значением) SSH-пароли серверов и ключи VPN-пиров из бэкапа не расшифруются.
+          Храните оба файла раздельно.
+        </Typography>
         {backupError && (
           <Alert severity="error" sx={{ mt: 2 }}>
             {backupError}

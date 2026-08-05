@@ -90,3 +90,16 @@ export async function downloadDatabaseBackup(): Promise<void> {
   link.click();
   URL.revokeObjectURL(url);
 }
+
+// Отдельный файл, не часть бэкапа — см. backend/backup.service.ts#downloadEncryptionKey.
+export async function downloadEncryptionKey(): Promise<void> {
+  const response = await apiClient.get('/system/backup/encryption-key', { responseType: 'blob' });
+  const url = URL.createObjectURL(response.data);
+  const link = document.createElement('a');
+  link.href = url;
+  const disposition = (response.headers as Record<string, string>)['content-disposition'];
+  const match = disposition?.match(/filename="(.+)"/);
+  link.download = match?.[1] ?? 'encryption-key.txt';
+  link.click();
+  URL.revokeObjectURL(url);
+}
