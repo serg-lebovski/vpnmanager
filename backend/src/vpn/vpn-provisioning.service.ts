@@ -130,53 +130,61 @@ export class VpnProvisioningService {
     );
   }
 
-  // Для дашборда (см. dashboard/) — живая статистика трафика по peer'ам конкретного
-  // ServerProtocol, без похода в БД.
-  async getTransferStats(serverProtocol: ServerProtocol, server: Server): Promise<Map<string, PeerTransferStats>> {
-    const driver = this.driverFor(serverProtocol.protocol);
-    const connection = this.connectionParams(server);
-    return this.sshService.withConnection(connection, (ssh) => driver.getTransferStats({ ssh, server, serverProtocol }));
-  }
-
-  // Для дашборда — общая (не привязанная к протоколу) нагрузка хоста: 1-минутный
-  // loadavg, число ядер (для перевода loadavg в примерный % CPU — точного % без отдельных
-  // /proc/stat замеров с интервалом нет, loadavg/ядра — принятое приближение), память и
-  // диск (корневой раздел). null-поля — команда не удалась (сервер недоступен и т.п.), не
-  // бросаем.
-  async getServerLoad(server: Server): Promise<{
-    loadAvg1: number | null;
-    cpuCores: number | null;
-    memTotalMb: number | null;
-    memUsedMb: number | null;
-    diskTotalMb: number | null;
-    diskUsedMb: number | null;
+  // Для дашборда (см. dashboard/) — общая нагрузка хоста (1-минутный loadavg, число ядер
+  // для перевода loadavg в примерный % CPU, память, диск корневого раздела) И живая
+  // статистика трафика по peer'ам КАЖДОГО активного протокола сервера — всё за ОДНО SSH-
+  // подключение. Раньше это были отдельные getServerLoad()/getTransferStats() с отдельным
+  // withConnection() на каждый вызов: 1 (loadavg) + N (по числу активных протоколов)
+  // независимых SSH-хендшейков на сервер каждые 7с опроса дашборда навсегда — Diffie-
+  // Hellman + подпись при каждом коннекте не бесплатны что для backend, что для самого VPS.
+  // Если подключиться не удалось вообще — бросаем (как раньше бросал getTransferStats),
+  // buildSnapshot() в dashboard.service.ts уже ловит это через Promise.allSettled и рисует
+  // сервер офлайн.
+  async getServerSnapshot(
+    server: Server,
+    activeProtocols: ServerProtocol[],
+  ): Promise<{
+    load: {
+      loadAvg1: number | null;
+      cpuCores: number | null;
+      memTotalMb: number | null;
+      memUsedMb: number | null;
+      diskTotalMb: number | null;
+      diskUsedMb: number | null;
+    };
+    transferStatsByProtocolId: Map<string, Map<string, PeerTransferStats>>;
   }> {
     const connection = this.connectionParams(server);
-    try {
-      return await this.sshService.withConnection(connection, async (ssh) => {
-        const loadResult = await this.sshService.exec(ssh, `cat /proc/loadavg`);
-        const cpuResult = await this.sshService.exec(ssh, `nproc`);
-        const memResult = await this.sshService.exec(ssh, `free -m | awk '/Mem:/ {print $2, $3}'`);
-        const diskResult = await this.sshService.exec(ssh, `df -k / | tail -1 | awk '{print $2, $3}'`);
+    const transferStatsByProtocolId = new Map<string, Map<string, PeerTransferStats>>();
 
-        const loadAvg1 = loadResult.code === 0 ? parseFloat(loadResult.stdout.trim().split(/\s+/)[0]) : null;
-        const cpuCores = cpuResult.code === 0 ? parseInt(cpuResult.stdout.trim(), 10) : null;
-        const [memTotal, memUsed] = memResult.code === 0 ? memResult.stdout.trim().split(/\s+/) : [];
-        // df -k выводит в 1024-байтных блоках — переводим в МБ тем же способом, что и free -m.
-        const [diskTotalKb, diskUsedKb] = diskResult.code === 0 ? diskResult.stdout.trim().split(/\s+/) : [];
+    const load = await this.sshService.withConnection(connection, async (ssh) => {
+      const loadResult = await this.sshService.exec(ssh, `cat /proc/loadavg`);
+      const cpuResult = await this.sshService.exec(ssh, `nproc`);
+      const memResult = await this.sshService.exec(ssh, `free -m | awk '/Mem:/ {print $2, $3}'`);
+      const diskResult = await this.sshService.exec(ssh, `df -k / | tail -1 | awk '{print $2, $3}'`);
 
-        return {
-          loadAvg1: Number.isFinite(loadAvg1) ? loadAvg1 : null,
-          cpuCores: cpuCores !== null && Number.isFinite(cpuCores) && cpuCores > 0 ? cpuCores : null,
-          memTotalMb: memTotal !== undefined ? Number(memTotal) : null,
-          memUsedMb: memUsed !== undefined ? Number(memUsed) : null,
-          diskTotalMb: diskTotalKb !== undefined ? Math.round(Number(diskTotalKb) / 1024) : null,
-          diskUsedMb: diskUsedKb !== undefined ? Math.round(Number(diskUsedKb) / 1024) : null,
-        };
-      });
-    } catch {
-      return { loadAvg1: null, cpuCores: null, memTotalMb: null, memUsedMb: null, diskTotalMb: null, diskUsedMb: null };
-    }
+      const loadAvg1 = loadResult.code === 0 ? parseFloat(loadResult.stdout.trim().split(/\s+/)[0]) : null;
+      const cpuCores = cpuResult.code === 0 ? parseInt(cpuResult.stdout.trim(), 10) : null;
+      const [memTotal, memUsed] = memResult.code === 0 ? memResult.stdout.trim().split(/\s+/) : [];
+      // df -k выводит в 1024-байтных блоках — переводим в МБ тем же способом, что и free -m.
+      const [diskTotalKb, diskUsedKb] = diskResult.code === 0 ? diskResult.stdout.trim().split(/\s+/) : [];
+
+      for (const serverProtocol of activeProtocols) {
+        const driver = this.driverFor(serverProtocol.protocol);
+        transferStatsByProtocolId.set(serverProtocol.id, await driver.getTransferStats({ ssh, server, serverProtocol }));
+      }
+
+      return {
+        loadAvg1: Number.isFinite(loadAvg1) ? loadAvg1 : null,
+        cpuCores: cpuCores !== null && Number.isFinite(cpuCores) && cpuCores > 0 ? cpuCores : null,
+        memTotalMb: memTotal !== undefined ? Number(memTotal) : null,
+        memUsedMb: memUsed !== undefined ? Number(memUsed) : null,
+        diskTotalMb: diskTotalKb !== undefined ? Math.round(Number(diskTotalKb) / 1024) : null,
+        diskUsedMb: diskUsedKb !== undefined ? Math.round(Number(diskUsedKb) / 1024) : null,
+      };
+    });
+
+    return { load, transferStatsByProtocolId };
   }
 
   // Ищет на сервере уже настроенный (не через наш сервис) VPN по стандартным путям

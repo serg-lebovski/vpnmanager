@@ -1,7 +1,21 @@
+# Лимит на размер логов контейнера — по умолчанию у Docker (json-file драйвер) он
+# ничем не ограничен, и логи (особенно backend, куда пишет и опрос дашборда раз в 7с, и
+# самообновление, и certbot) могли бы неограниченно копить место на диске годами работы.
+# Штатный просмотр логов (GET /system/logs, LogsService.getLogs) читает только "tail" (не
+# больше 5000 строк за раз) — 10m×3 хранит на порядки больше этого, так что урезание
+# истории функцию не задевает.
+x-logging: &default-logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    <<: *default-logging
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -18,6 +32,7 @@ services:
     build:
       context: ./backend
     restart: unless-stopped
+    <<: *default-logging
     depends_on:
       postgres:
         condition: service_healthy
@@ -56,12 +71,14 @@ services:
     build:
       context: ./frontend
     restart: unless-stopped
+    <<: *default-logging
     depends_on:
       - backend
 
   nginx:
     image: nginx:1.27-alpine
     restart: unless-stopped
+    <<: *default-logging
     depends_on:
       - backend
       - frontend

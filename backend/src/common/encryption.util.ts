@@ -3,12 +3,25 @@ import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'crypt
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 12;
 
+// scryptSync — намеренно CPU-тяжёлая KDF (это её смысл для паролей), но здесь она всего
+// лишь выводит один и тот же ключ из статичного APP_ENCRYPTION_KEY, который не меняется в
+// течение жизни процесса. Раньше пересчитывался заново на КАЖДЫЙ encrypt/decrypt — при
+// опросе дашборда (расшифровка SSH-секрета на каждое подключение к каждому серверу) и
+// списках peers/servers (needsRecreation/needsCredentials перебирают все секреты) это
+// давало заметную постоянную нагрузку на CPU. Кэш безопасен: значение детерминировано и не
+// зависит ни от чего, кроме уже проверенного APP_ENCRYPTION_KEY.
+let cachedKey: Buffer | null = null;
+
 function deriveKey(): Buffer {
+  if (cachedKey) {
+    return cachedKey;
+  }
   const secret = process.env.APP_ENCRYPTION_KEY;
   if (!secret || secret.length < 16) {
     throw new Error('APP_ENCRYPTION_KEY is not set or too short');
   }
-  return scryptSync(secret, 'vpnmanager-static-salt', 32);
+  cachedKey = scryptSync(secret, 'vpnmanager-static-salt', 32);
+  return cachedKey;
 }
 
 export function encryptSecret(plainText: string): string {

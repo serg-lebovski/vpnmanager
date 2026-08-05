@@ -6,6 +6,7 @@ import { PeerStatus, ServerProtocolStatus, VpnProtocol } from '../common/enums';
 import { Peer } from '../peers/peer.entity';
 import { ServerProtocol } from '../servers/server-protocol.entity';
 import { Server } from '../servers/server.entity';
+import { PeerTransferStats } from '../vpn/vpn-driver.interface';
 import { VpnProvisioningService } from '../vpn/vpn-provisioning.service';
 import { DashboardGateway } from './dashboard.gateway';
 
@@ -119,11 +120,28 @@ export class DashboardService {
   }
 
   private async pollServer(server: Server): Promise<{ server: DashboardServerStats; peers: DashboardPeerStats[] }> {
-    const load = await this.vpnProvisioningService.getServerLoad(server);
     const activeProtocols = server.protocols.filter((sp) => sp.status === ServerProtocolStatus.ACTIVE);
 
-    const peersNested = await Promise.all(activeProtocols.map((serverProtocol) => this.pollProtocol(server, serverProtocol)));
-    const peers = peersNested.flat();
+    // Один SSH-коннект на сервер (loadavg + трафик по всем активным протоколам разом) —
+    // см. комментарий у getServerSnapshot в vpn-provisioning.service.ts. Список peers по
+    // каждому протоколу — обычный запрос в БД, идёт параллельно, SSH тут ни при чём.
+    const [{ load, transferStatsByProtocolId }, peersByProtocol] = await Promise.all([
+      this.vpnProvisioningService.getServerSnapshot(server, activeProtocols),
+      Promise.all(
+        activeProtocols.map((serverProtocol) =>
+          this.peersRepository.find({ where: { serverProtocolId: serverProtocol.id, status: PeerStatus.ACTIVE } }),
+        ),
+      ),
+    ]);
+
+    const peers = activeProtocols.flatMap((serverProtocol, index) =>
+      this.buildPeerStats(
+        server,
+        serverProtocol,
+        peersByProtocol[index],
+        transferStatsByProtocolId.get(serverProtocol.id) ?? new Map(),
+      ),
+    );
     const networkBps = peers.reduce((sum, peer) => sum + peer.rxBps + peer.txBps, 0);
 
     return {
@@ -131,9 +149,9 @@ export class DashboardService {
         serverId: server.id,
         serverName: server.name,
         isSelf: server.isSelf,
-        // getServerLoad возвращает null-поля при недоступности сервера (см. её реализацию
-        // в vpn-provisioning.service.ts) — используем это как признак "не в сети", не
-        // трогая Server.status (его меняет только явная "Проверить подключение").
+        // loadAvg1 === null означает "сервер недоступен" (см. getServerSnapshot) —
+        // используем это как признак "не в сети", не трогая Server.status (его меняет
+        // только явная "Проверить подключение").
         online: load.loadAvg1 !== null,
         loadAvg1: load.loadAvg1,
         cpuCores: load.cpuCores,
@@ -149,12 +167,12 @@ export class DashboardService {
     };
   }
 
-  private async pollProtocol(server: Server, serverProtocol: ServerProtocol): Promise<DashboardPeerStats[]> {
-    const [transferStats, peers] = await Promise.all([
-      this.vpnProvisioningService.getTransferStats(serverProtocol, server),
-      this.peersRepository.find({ where: { serverProtocolId: serverProtocol.id, status: PeerStatus.ACTIVE } }),
-    ]);
-
+  private buildPeerStats(
+    server: Server,
+    serverProtocol: ServerProtocol,
+    peers: Peer[],
+    transferStats: Map<string, PeerTransferStats>,
+  ): DashboardPeerStats[] {
     const now = Date.now();
     return peers.map((peer) => {
       const sample = transferStats.get(peer.publicKey);
