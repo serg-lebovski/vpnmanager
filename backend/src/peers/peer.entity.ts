@@ -52,6 +52,14 @@ export class Peer {
   @Column({ name: 'created_by_user_id', type: 'uuid', nullable: true })
   createdByUserId: string | null;
 
+  // "Подписка" без оплат: null — бессрочно (по умолчанию, как раньше). Если задано и
+  // срок прошёл — peer НЕ удаляется и не отзывается (status остаётся ACTIVE), просто
+  // перестаёт попадать в конфиг, применяемый на сервере (см. PeersService.syncServerPeers) —
+  // то есть просто перестаёт давать интернет. Управляет только SUPER_ADMIN (см.
+  // PeersService.update).
+  @Column({ name: 'expires_at', type: 'timestamptz', nullable: true })
+  expiresAt: Date | null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 }

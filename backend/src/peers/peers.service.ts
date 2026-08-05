@@ -1,6 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Interval } from '@nestjs/schedule';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { DataSource, IsNull, Not, Repository } from 'typeorm';
+import { DataSource, IsNull, LessThanOrEqual, MoreThan, Not, Repository } from 'typeorm';
 import { Bridge } from '../bridges/bridge.entity';
 import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { decryptSecret, encryptSecret } from '../common/encryption.util';
@@ -28,11 +29,24 @@ export type PeerListItem = Omit<Peer, 'privateKeyEnc' | 'presharedKeyEnc' | 'ser
   // создать заново. false для импортированных peers (privateKeyEnc всегда null — это не
   // поломка, а ожидаемое состояние, см. importScannedPeers).
   needsRecreation: boolean;
+  // Срок действия прошёл (expiresAt задан и уже в прошлом) — peer при этом остаётся
+  // status ACTIVE, не удаляется и не отзывается, просто исключён из конфига на сервере.
+  isExpired: boolean;
 };
+
+// Как часто проверять, не истёк ли у кого-то срок действия, если это НЕ произошло само
+// по себе через другое действие (revoke/create/update другого peer на том же протоколе).
+// Срок — точка во времени, а не событие: без отдельной периодической проверки peer так и
+// остался бы применённым на сервере навсегда, пока что-то ещё не дёрнет syncServerPeers.
+const EXPIRY_CHECK_INTERVAL_MS = 60 * 1000;
 
 @Injectable()
 export class PeersService {
   private readonly logger = new Logger(PeersService.name);
+  // peerId -> expiresAt.getTime(), для которого уже выполнен syncServerPeers — не даёт
+  // дёргать down;up всего протокола на каждый тик, пока peer остаётся в истёкшем
+  // состоянии, и не путает повторное истечение после продления с уже обработанным.
+  private readonly appliedExpiry = new Map<string, number>();
 
   constructor(
     @InjectRepository(Peer) private readonly peersRepository: Repository<Peer>,
@@ -69,7 +83,8 @@ export class PeersService {
     const { server, ...serverProtocolRest } = serverProtocol;
     const { sshSecretEnc, ...safeServer } = server;
     const needsRecreation = !this.canDecrypt(privateKeyEnc) || !this.canDecrypt(presharedKeyEnc);
-    return { ...rest, needsRecreation, serverProtocol: { ...serverProtocolRest, server: safeServer } };
+    const isExpired = peer.expiresAt !== null && peer.expiresAt.getTime() <= Date.now();
+    return { ...rest, needsRecreation, isExpired, serverProtocol: { ...serverProtocolRest, server: safeServer } };
   }
 
   private canDecrypt(secretEnc: string | null): boolean {
@@ -128,7 +143,31 @@ export class PeersService {
       peer.name = dto.name;
     }
 
+    let previousExpiresAt: Date | null | undefined;
+    if (dto.expiresAt !== undefined) {
+      if (requester.role !== Role.SUPER_ADMIN) {
+        throw new ForbiddenException('Только суперадмин может менять срок действия peer’а');
+      }
+      previousExpiresAt = peer.expiresAt;
+      peer.expiresAt = dto.expiresAt === null ? null : new Date(dto.expiresAt);
+    }
+
     const saved = await this.peersRepository.save(peer);
+
+    // Срок действия влияет на то, применён ли peer на сервере ПРЯМО СЕЙЧАС (см.
+    // syncServerPeers) — в отличие от имени/организации (чистая косметика в этой панели),
+    // поэтому продление/установку срока нужно применить немедленно, а не ждать, пока это
+    // подхватит случайный другой sync или периодическая проверка (см. checkExpiredPeers).
+    if (dto.expiresAt !== undefined) {
+      try {
+        await this.syncServerPeers(saved.serverProtocolId);
+      } catch (error) {
+        saved.expiresAt = previousExpiresAt ?? null;
+        await this.peersRepository.save(saved);
+        throw error;
+      }
+    }
+
     const withRelations = await this.peersRepository.findOneOrFail({
       where: { id: saved.id },
       relations: ['serverProtocol', 'serverProtocol.server'],
@@ -410,8 +449,14 @@ export class PeersService {
   private async syncServerPeers(serverProtocolId: string): Promise<void> {
     const serverProtocol = await this.serverProtocolsRepository.findOneOrFail({ where: { id: serverProtocolId } });
     const server = await this.serversRepository.findOneOrFail({ where: { id: serverProtocol.serverId } });
+    // Массив условий в TypeORM = OR: берём ACTIVE-peers без срока ИЛИ со сроком, который
+    // ещё не прошёл — истёкшие (но не отозванные, см. Peer.expiresAt) молча выпадают из
+    // конфига, применяемого на сервере, без изменения их status.
     const activePeers = await this.peersRepository.find({
-      where: { serverProtocolId, status: PeerStatus.ACTIVE },
+      where: [
+        { serverProtocolId, status: PeerStatus.ACTIVE, expiresAt: IsNull() },
+        { serverProtocolId, status: PeerStatus.ACTIVE, expiresAt: MoreThan(new Date()) },
+      ],
     });
     // presharedKeyEnc может оказаться нерасшифровываемым — например, после восстановления
     // БД на деплое с ДРУГИМ APP_ENCRYPTION_KEY (см. system/restore.service.ts). Раньше
@@ -436,5 +481,44 @@ export class PeersService {
       }
     }
     await this.vpnProvisioningService.applyPeers(serverProtocol, server, specs);
+  }
+
+  // Подхватывает истечение срока действия, если его НЕ подхватило что-то другое (revoke/
+  // update/create другого peer на том же протоколе, которые и так вызывают
+  // syncServerPeers). Синхронизирует протокол только один раз на каждое конкретное
+  // значение expiresAt — если peer потом продлить и он истечёт заново с НОВОЙ датой, это
+  // снова будет расценено как "впервые" (см. appliedExpiry).
+  @Interval(EXPIRY_CHECK_INTERVAL_MS)
+  private async checkExpiredPeers(): Promise<void> {
+    const now = new Date();
+    const expiredPeers = await this.peersRepository.find({
+      where: { status: PeerStatus.ACTIVE, expiresAt: LessThanOrEqual(now) },
+    });
+
+    const currentIds = new Set<string>();
+    const affectedProtocolIds = new Set<string>();
+    for (const peer of expiredPeers) {
+      currentIds.add(peer.id);
+      const expiryTimestamp = peer.expiresAt!.getTime();
+      if (this.appliedExpiry.get(peer.id) !== expiryTimestamp) {
+        this.appliedExpiry.set(peer.id, expiryTimestamp);
+        affectedProtocolIds.add(peer.serverProtocolId);
+      }
+    }
+    // Peer'ы, продлённые с прошлого тика (больше не в числе истёкших), больше не нужно
+    // помнить — иначе следующее истечение с новой датой не будет замечено.
+    for (const peerId of this.appliedExpiry.keys()) {
+      if (!currentIds.has(peerId)) {
+        this.appliedExpiry.delete(peerId);
+      }
+    }
+
+    for (const serverProtocolId of affectedProtocolIds) {
+      try {
+        await this.syncServerPeers(serverProtocolId);
+      } catch (error) {
+        this.logger.warn(`Не удалось отключить истёкшие peers на протоколе ${serverProtocolId}: ${(error as Error).message}`);
+      }
+    }
   }
 }

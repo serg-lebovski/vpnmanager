@@ -1,4 +1,4 @@
-import { IsOptional, IsString, IsUUID, MinLength, ValidateIf } from 'class-validator';
+import { IsISO8601, IsOptional, IsString, IsUUID, MinLength, ValidateIf } from 'class-validator';
 
 export class UpdatePeerDto {
   @IsString()
@@ -12,4 +12,11 @@ export class UpdatePeerDto {
   @ValidateIf((_, value) => value !== null)
   @IsOptional()
   organizationId?: string | null;
+
+  // Срок действия ("подписка" без оплат) — тоже только для SUPER_ADMIN. Явный null —
+  // сделать бессрочным; отсутствие поля — не менять срок.
+  @IsISO8601()
+  @ValidateIf((_, value) => value !== null)
+  @IsOptional()
+  expiresAt?: string | null;
 }

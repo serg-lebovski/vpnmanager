@@ -27,6 +27,8 @@ export interface UpdatePeerInput {
   name?: string;
   // Смена организации — только для super_admin (проверяется на бэкенде).
   organizationId?: string | null;
+  // Срок действия ("подписка") — тоже только для super_admin. null — сделать бессрочным.
+  expiresAt?: string | null;
 }
 
 export async function updatePeer(id: string, input: UpdatePeerInput): Promise<PeerEntity> {

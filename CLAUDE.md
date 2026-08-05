@@ -80,6 +80,20 @@ enum `Role`) → `Peer`. Скоуп по организации применяе
 (`requester.organizationId`). При добавлении новых сущностей с organization-scoping следуй тому же
 паттерну, а не полагайся на guard'ы для фильтрации данных.
 
+**Срок действия peer'а** (`Peer.expiresAt`, nullable — "подписка" без интеграции с оплатами) —
+управляет только `SUPER_ADMIN` (`PeersService.update`, `org_admin`/`org_user` поле не видят и не
+меняют). Когда срок проходит, peer НЕ отзывается и НЕ удаляется (`status` остаётся `ACTIVE`,
+конфиг остаётся скачиваемым) — он просто перестаёт попадать в выборку `syncServerPeers` (условие
+`expiresAt IS NULL OR expiresAt > now`), а значит не применяется в `wg`/`awg`-конфиге на сервере при
+следующей синхронизации — то есть просто перестаёт давать интернет. Поскольку истечение срока — это
+точка во времени, а не событие, и может не совпасть ни с одним другим действием над этим же
+`ServerProtocol` (revoke/create/update другого peer, которые и так вызывают `syncServerPeers`),
+`PeersService.checkExpiredPeers` (`@Interval`, раз в минуту) сам находит свежеистёкшие peers и
+досинхронизирует их протоколы; `appliedExpiry` (peerId → `expiresAt.getTime()`, in-memory) не даёт
+пересинхронизировать один и тот же протокол на каждый тик, пока peer остаётся в истёкшем состоянии,
+но корректно реагирует на повторное истечение после продления (новое значение `expiresAt` не
+совпадает с уже обработанным).
+
 **Авторизация**: JWT (`@nestjs/passport` + `passport-jwt`, `auth/jwt.strategy.ts`) с access+refresh
 токенами (`JWT_ACCESS_TTL`/`JWT_REFRESH_TTL`). `common/guards/jwt-auth.guard.ts` проверяет токен,
 `common/guards/roles.guard.ts` + `@Roles(...)` декоратор (`common/decorators/roles.decorator.ts`)

@@ -125,6 +125,10 @@ export function PeersPage() {
   const [editingPeer, setEditingPeer] = useState<PeerEntity | null>(null);
   const [editName, setEditName] = useState('');
   const [editOrgId, setEditOrgId] = useState('');
+  // Дата в формате input[type=date] (YYYY-MM-DD) — интерпретируется как «действует
+  // включительно по конец этого дня» (см. updateMutation ниже).
+  const [editExpiresAt, setEditExpiresAt] = useState('');
+  const [editUnlimited, setEditUnlimited] = useState(true);
   const [editError, setEditError] = useState<string | null>(null);
 
   const updateMutation = useMutation({
@@ -132,6 +136,11 @@ export function PeersPage() {
       updatePeer(editingPeer!.id, {
         name: editName,
         organizationId: isSuperAdmin ? (editOrgId === NO_CLIENT ? null : editOrgId) : undefined,
+        expiresAt: isSuperAdmin
+          ? editUnlimited
+            ? null
+            : new Date(`${editExpiresAt}T23:59:59`).toISOString()
+          : undefined,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['peers'] });
@@ -144,6 +153,8 @@ export function PeersPage() {
     setEditingPeer(peer);
     setEditName(peer.name);
     setEditOrgId(peer.organizationId ?? NO_CLIENT);
+    setEditExpiresAt(peer.expiresAt ? peer.expiresAt.slice(0, 10) : '');
+    setEditUnlimited(!peer.expiresAt);
     setEditError(null);
   }
 
@@ -419,6 +430,17 @@ export function PeersPage() {
                           title="Ключ не расшифровывается текущим ключом шифрования панели (обычно после восстановления БД на другом сервере) — отзовите и создайте заново"
                         />
                       )}
+                      {isSuperAdmin && peer.isExpired && (
+                        <Chip
+                          size="small"
+                          color="error"
+                          label="истёк"
+                          title={`Срок действия истёк ${new Date(peer.expiresAt!).toLocaleDateString()} — peer не отозван, но не применяется на сервере (интернета нет)`}
+                        />
+                      )}
+                      {isSuperAdmin && !peer.isExpired && peer.expiresAt && (
+                        <Chip size="small" variant="outlined" label={`до ${new Date(peer.expiresAt).toLocaleDateString()}`} />
+                      )}
                     </Stack>
                   </TableCell>
                   <TableCell align="right">
@@ -487,12 +509,34 @@ export function PeersPage() {
                 ))}
               </TextField>
             )}
+            {isSuperAdmin && (
+              <>
+                <FormControlLabel
+                  control={<Checkbox checked={editUnlimited} onChange={(e) => setEditUnlimited(e.target.checked)} />}
+                  label="Бессрочно"
+                />
+                {!editUnlimited && (
+                  <TextField
+                    label="Действует до"
+                    type="date"
+                    value={editExpiresAt}
+                    onChange={(e) => setEditExpiresAt(e.target.value)}
+                    InputLabelProps={{ shrink: true }}
+                    helperText="После этой даты peer не удаляется и не отзывается — просто перестаёт давать интернет"
+                  />
+                )}
+              </>
+            )}
             {editError && <Alert severity="error">{editError}</Alert>}
           </Stack>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setEditingPeer(null)}>Отмена</Button>
-          <Button variant="contained" disabled={updateMutation.isPending || !editName} onClick={() => updateMutation.mutate()}>
+          <Button
+            variant="contained"
+            disabled={updateMutation.isPending || !editName || (isSuperAdmin && !editUnlimited && !editExpiresAt)}
+            onClick={() => updateMutation.mutate()}
+          >
             Сохранить
           </Button>
         </DialogActions>
