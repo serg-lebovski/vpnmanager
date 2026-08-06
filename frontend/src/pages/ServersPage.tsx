@@ -36,7 +36,37 @@ import {
   updateServer,
   updateServerCredentials,
 } from '../api/servers';
-import { ServerEntity, SshAuthType, VpnProtocol } from '../api/types';
+import { ServerEntity, ServerProtocolEntity, SshAuthType, VpnProtocol } from '../api/types';
+
+// Порт/сеть по умолчанию в форме установки одинаковы для любого протокола — если на
+// сервере уже что-то активно занимает их (например, AmneziaWG уже установлен на 51820/
+// 10.8.0.0/24), подставлять их же для второго протокола бессмысленно: установка упадёт с
+// "Address already in use" на SSH-уровне (бэкенд теперь тоже отдельно это проверяет и
+// отклоняет ДО SSH — см. VpnProvisioningService.installProtocol — это только про удобный
+// дефолт в форме, не про саму защиту от конфликта).
+function suggestPort(existing: ServerProtocolEntity[], base = 51820): number {
+  const used = new Set(existing.filter((sp) => sp.status !== 'error').map((sp) => sp.listenPort));
+  let port = base;
+  while (used.has(port)) {
+    port += 1;
+  }
+  return port;
+}
+
+function suggestNetworkCidr(existing: ServerProtocolEntity[], base = '10.8.0.0/24'): string {
+  const used = new Set(existing.filter((sp) => sp.status !== 'error').map((sp) => sp.networkCidr));
+  const match = base.match(/^(\d+)\.(\d+)\.(\d+)\.0\/24$/);
+  if (!match) {
+    return base;
+  }
+  let thirdOctet = Number(match[3]);
+  let candidate = base;
+  while (used.has(candidate)) {
+    thirdOctet += 1;
+    candidate = `${match[1]}.${match[2]}.${thirdOctet}.0/24`;
+  }
+  return candidate;
+}
 
 const statusColor: Record<string, 'default' | 'success' | 'error' | 'warning'> = {
   unknown: 'default',
@@ -288,9 +318,23 @@ function ServerCard({
   credentialsError: string | null;
 }) {
   const [protocol, setProtocol] = useState<VpnProtocol>('wireguard');
-  const [listenPort, setListenPort] = useState(51820);
-  const [networkCidr, setNetworkCidr] = useState('10.8.0.0/24');
+  const [listenPort, setListenPort] = useState(() => suggestPort(server.protocols));
+  const [networkCidr, setNetworkCidr] = useState(() => suggestNetworkCidr(server.protocols));
   const [detectResult, setDetectResult] = useState<DetectionResult[] | null>(null);
+
+  // Если список протоколов сервера изменился (например, только что установили первый
+  // протокол) и текущее значение в форме теперь реально с чем-то конфликтует — молча
+  // подставляем свободный порт/сеть. Не трогаем поля, если конфликта нет (не затираем
+  // осознанный ручной выбор администратора).
+  useEffect(() => {
+    if (server.protocols.some((sp) => sp.status === 'active' && sp.listenPort === listenPort)) {
+      setListenPort(suggestPort(server.protocols));
+    }
+    if (server.protocols.some((sp) => sp.status === 'active' && sp.networkCidr === networkCidr)) {
+      setNetworkCidr(suggestNetworkCidr(server.protocols));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [server.protocols]);
   const [isEditingName, setIsEditingName] = useState(false);
   const [editName, setEditName] = useState(server.name);
   const [isEditingCredentials, setIsEditingCredentials] = useState(false);

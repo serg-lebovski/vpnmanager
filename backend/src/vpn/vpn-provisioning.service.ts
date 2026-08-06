@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Not, Repository } from 'typeorm';
 import { decryptSecret } from '../common/encryption.util';
 import { ServerProtocolStatus, VpnProtocol } from '../common/enums';
 import { ServerProtocol } from '../servers/server-protocol.entity';
@@ -63,6 +63,28 @@ export class VpnProvisioningService {
     const existing = await this.serverProtocolsRepository.findOne({ where: { serverId, protocol, listenPort } });
     if (existing && existing.status === ServerProtocolStatus.ACTIVE) {
       throw new BadRequestException('Этот протокол уже установлен на сервере');
+    }
+
+    // Порт/сеть должны быть уникальны в пределах сервера НЕЗАВИСИМО от протокола — иначе
+    // второй протокол на том же порту/сети ловит малопонятную ошибку прямо на SSH-уровне
+    // ("RTNETLINK answers: Address already in use" от ip/wg-quick) вместо явной ошибки
+    // здесь, ДО того как что-либо тронули на сервере (поймано вживую: форма установки
+    // протокола на сервере подставляет одинаковые порт/сеть по умолчанию для любого
+    // протокола, легко не заметить при добавлении второго протокола на тот же сервер).
+    // Смотрим только ACTIVE/INSTALLING других протоколов — ERROR уже откатил себя при
+    // неудачной установке (см. driver.install) и ничего реально не занимает на сервере.
+    const others = await this.serverProtocolsRepository.find({
+      where: { serverId, protocol: Not(protocol), status: In([ServerProtocolStatus.ACTIVE, ServerProtocolStatus.INSTALLING]) },
+    });
+    const portConflict = others.find((sp) => sp.listenPort === listenPort);
+    if (portConflict) {
+      throw new BadRequestException(`Порт ${listenPort} на этом сервере уже занят протоколом ${portConflict.protocol} — выберите другой порт`);
+    }
+    const cidrConflict = others.find((sp) => sp.networkCidr === networkCidr);
+    if (cidrConflict) {
+      throw new BadRequestException(
+        `Сеть ${networkCidr} на этом сервере уже используется протоколом ${cidrConflict.protocol} — выберите другую сеть клиентов`,
+      );
     }
 
     let serverProtocol =
