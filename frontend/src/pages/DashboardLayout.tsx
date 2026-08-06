@@ -1,7 +1,10 @@
-import { AppBar, Box, Button, Container, Divider, Menu, MenuItem, Toolbar, Typography } from '@mui/material';
+import { AppBar, Box, Button, Container, Divider, IconButton, Menu, MenuItem, Toolbar, Tooltip, Typography } from '@mui/material';
+import Brightness4Icon from '@mui/icons-material/Brightness4';
+import Brightness7Icon from '@mui/icons-material/Brightness7';
 import { useState } from 'react';
 import { Link as RouterLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
+import { useThemeMode } from '../theme/ThemeModeContext';
 
 const roleLabels: Record<string, string> = {
   super_admin: 'Суперадмин',
@@ -11,6 +14,7 @@ const roleLabels: Record<string, string> = {
 
 export function DashboardLayout() {
   const { user, logout } = useAuth();
+  const { mode, toggleMode } = useThemeMode();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -64,6 +68,11 @@ export function DashboardLayout() {
             </Button>
           )}
           <Box sx={{ flexGrow: 1 }} />
+          <Tooltip title={mode === 'dark' ? 'Светлая тема' : 'Тёмная тема'}>
+            <IconButton color="inherit" onClick={toggleMode}>
+              {mode === 'dark' ? <Brightness7Icon /> : <Brightness4Icon />}
+            </IconButton>
+          </Tooltip>
           <Button color="inherit" onClick={(e) => setMenuAnchor(e.currentTarget)} sx={{ textTransform: 'none' }}>
             <Box sx={{ textAlign: 'left', lineHeight: 1.2 }}>
               <Typography variant="body2" component="div">
