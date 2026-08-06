@@ -17,10 +17,19 @@ import { FormEvent, useState } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import { getErrorMessage } from '../api/errors';
 import { createOrganization, deleteOrganization, fetchOrganizations } from '../api/organizations';
+import { fetchPeers } from '../api/peers';
 
 export function OrganizationsPage() {
   const queryClient = useQueryClient();
   const { data: organizations, isLoading } = useQuery({ queryKey: ['organizations'], queryFn: fetchOrganizations });
+  // Без org-фильтра — суперадмину отдаёт peers всех клиентов разом, этого достаточно для
+  // подсчёта количества по каждому (см. ниже) без отдельного агрегирующего эндпоинта.
+  const { data: allPeers } = useQuery({ queryKey: ['peers'], queryFn: () => fetchPeers() });
+  const peerCountByOrgId = new Map<string | null, number>();
+  allPeers?.forEach((peer) => {
+    peerCountByOrgId.set(peer.organizationId, (peerCountByOrgId.get(peer.organizationId) ?? 0) + 1);
+  });
+  const peersWithoutClient = peerCountByOrgId.get(null) ?? 0;
 
   const [name, setName] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -78,6 +87,7 @@ export function OrganizationsPage() {
             <TableRow>
               <TableCell>Название</TableCell>
               <TableCell>Создана</TableCell>
+              <TableCell align="right">Peers</TableCell>
               <TableCell align="right">Действия</TableCell>
             </TableRow>
           </TableHead>
@@ -90,6 +100,7 @@ export function OrganizationsPage() {
                   </Link>
                 </TableCell>
                 <TableCell>{new Date(org.createdAt).toLocaleString()}</TableCell>
+                <TableCell align="right">{peerCountByOrgId.get(org.id) ?? 0}</TableCell>
                 <TableCell align="right">
                   <Button size="small" color="error" onClick={() => deleteMutation.mutate(org.id)}>
                     Удалить
@@ -99,7 +110,18 @@ export function OrganizationsPage() {
             ))}
             {!isLoading && organizations?.length === 0 && (
               <TableRow>
-                <TableCell colSpan={3}>Клиентов пока нет</TableCell>
+                <TableCell colSpan={4}>Клиентов пока нет</TableCell>
+              </TableRow>
+            )}
+            {!isLoading && (
+              <TableRow>
+                <TableCell sx={{ fontStyle: 'italic' }} colSpan={2}>
+                  Без клиента
+                </TableCell>
+                <TableCell align="right" sx={{ fontStyle: 'italic' }}>
+                  {peersWithoutClient}
+                </TableCell>
+                <TableCell />
               </TableRow>
             )}
           </TableBody>

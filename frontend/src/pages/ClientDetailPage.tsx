@@ -21,7 +21,7 @@ import { getErrorMessage } from '../api/errors';
 import { deleteOrganization, fetchOrganization, updateOrganization } from '../api/organizations';
 import { fetchPeers } from '../api/peers';
 import { Role } from '../api/types';
-import { createUser, deleteUser, fetchUsers } from '../api/users';
+import { createUser, deleteUser, fetchUsers, updateUser } from '../api/users';
 
 const statusColor: Record<string, 'success' | 'default'> = {
   active: 'success',
@@ -94,6 +94,19 @@ export function ClientDetailPage() {
     createUserMutation.mutate();
   }
 
+  // Пользователи, которых можно ПЕРЕНЕСТИ в этого клиента, а не заводить с нуля — все,
+  // кто сейчас не привязан к этой же организации (включая "без клиента" и чужих клиентов).
+  const [existingUserId, setExistingUserId] = useState('');
+  const assignableUsers = allUsers?.filter((u) => u.organizationId !== id);
+
+  const assignUserMutation = useMutation({
+    mutationFn: () => updateUser(existingUserId, { organizationId: id }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['users'] });
+      setExistingUserId('');
+    },
+  });
+
   if (isLoading || !organization) {
     return <Typography>Загрузка...</Typography>;
   }
@@ -156,6 +169,33 @@ export function ClientDetailPage() {
           <Alert severity="error" sx={{ mb: 2 }}>
             {userError}
           </Alert>
+        )}
+        {assignableUsers && assignableUsers.length > 0 && (
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems="flex-start" mb={2}>
+            <TextField
+              select
+              label="Добавить имеющегося пользователя"
+              size="small"
+              value={existingUserId}
+              onChange={(e) => setExistingUserId(e.target.value)}
+              sx={{ minWidth: 260 }}
+              helperText="Перенести уже существующего пользователя (с другого клиента или без клиента) сюда"
+            >
+              {assignableUsers.map((u) => (
+                <MenuItem key={u.id} value={u.id}>
+                  {u.email} {u.organizationId ? '' : '(без клиента)'}
+                </MenuItem>
+              ))}
+            </TextField>
+            <Button
+              size="small"
+              variant="outlined"
+              disabled={!existingUserId || assignUserMutation.isPending}
+              onClick={() => assignUserMutation.mutate()}
+            >
+              Добавить
+            </Button>
+          </Stack>
         )}
         <Table size="small">
           <TableHead>
