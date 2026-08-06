@@ -84,4 +84,9 @@ export class ServersController {
   detectExistingInstallations(@Param('id') id: string) {
     return this.serversService.detectExistingInstallations(id);
   }
+
+  @Post(':id/fail2ban')
+  ensureFail2ban(@Param('id') id: string) {
+    return this.serversService.ensureFail2banFor(id);
+  }
 }

@@ -21,7 +21,7 @@ export async function createServer(input: CreateServerInput): Promise<ServerEnti
   return data;
 }
 
-export async function updateServer(id: string, input: { name: string }): Promise<ServerEntity> {
+export async function updateServer(id: string, input: { name?: string; maxPeers?: number }): Promise<ServerEntity> {
   const { data } = await apiClient.patch<ServerEntity>(`/servers/${id}`, input);
   return data;
 }
@@ -92,5 +92,19 @@ export interface DetectionResult {
 
 export async function detectExistingInstallations(serverId: string): Promise<DetectionResult[]> {
   const { data } = await apiClient.post(`/servers/${serverId}/detect`);
+  return data;
+}
+
+export interface Fail2banStatus {
+  installed: boolean;
+  bannedCount: number;
+}
+
+// Проверяет/устанавливает fail2ban на сервере и заносит IP self-сервера панели в
+// whitelist — тот же вызов, что автоматически (best-effort) срабатывает при добавлении
+// сервера; кнопка нужна, чтобы повторить, если тогда не получилось, или просто
+// освежить счётчик забаненных IP.
+export async function ensureFail2ban(serverId: string): Promise<Fail2banStatus> {
+  const { data } = await apiClient.post<Fail2banStatus>(`/servers/${serverId}/fail2ban`);
   return data;
 }

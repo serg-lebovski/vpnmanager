@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { NodeSSH } from 'node-ssh';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Not, Repository } from 'typeorm';
 import { decryptSecret } from '../common/encryption.util';
@@ -10,6 +11,11 @@ import { AmneziaWgDriver } from './amnezia-wg.driver';
 import { assertSupportedCidr } from './network.util';
 import { PeerSpec, PeerTransferStats, ScannedPeer, UpstreamPeerConfig, VpnDriver } from './vpn-driver.interface';
 import { WireGuardDriver } from './wireguard.driver';
+
+export interface Fail2banStatus {
+  installed: boolean;
+  bannedCount: number;
+}
 
 @Injectable()
 export class VpnProvisioningService {
@@ -476,5 +482,64 @@ export class VpnProvisioningService {
         );
       }
     });
+  }
+
+  // Устанавливает и настраивает fail2ban на клиентском VPS — вызывается при добавлении
+  // сервера (ServersService.create) и при бутстрапе self-сервера (BridgesService.create).
+  // whitelistIps — IP, которые НЕЛЬЗЯ банить на этом сервере (обычно — публичный IP
+  // self-сервера панели): без этого сама панель рано или поздно забанила бы себя на
+  // управляемом сервере (например, из-за временного сетевого сбоя при SSH-подключении) и
+  // потеряла бы возможность им управлять — цена восстановления намного выше, чем просто
+  // не банить заведомо доверенный IP. jail.local переписывается целиком (не мержится) —
+  // это НАШ файл, конфиг пакета (jail.conf) не трогаем; сервер уже дедикейтед под VPN, а
+  // не общего назначения хост с чужими fail2ban-настройками поверх.
+  async ensureFail2ban(server: Server, whitelistIps: string[]): Promise<Fail2banStatus> {
+    const connection = this.connectionParams(server);
+    return this.sshService.withConnection(connection, async (ssh) => {
+      const check = await this.sshService.exec(ssh, 'command -v fail2ban-client');
+      if (check.code !== 0) {
+        await this.sshService.execOrThrow(
+          ssh,
+          'export DEBIAN_FRONTEND=noninteractive && apt-get update -y && apt-get install -y fail2ban',
+        );
+      }
+
+      const uniqueIps = Array.from(new Set(whitelistIps.filter(Boolean)));
+      const jailLocal = [
+        '[DEFAULT]',
+        `ignoreip = 127.0.0.1/8 ::1${uniqueIps.length > 0 ? ' ' + uniqueIps.join(' ') : ''}`,
+        '',
+        '[sshd]',
+        'enabled = true',
+        '',
+      ].join('\n');
+      const encoded = Buffer.from(jailLocal, 'utf8').toString('base64');
+      await this.sshService.execOrThrow(
+        ssh,
+        `mkdir -p /etc/fail2ban && echo ${encoded} | base64 -d > /etc/fail2ban/jail.local && ` +
+          `systemctl enable --now fail2ban && systemctl restart fail2ban && sleep 1`,
+      );
+      return this.readFail2banStatus(ssh);
+    });
+  }
+
+  // Только чтение состояния, без установки/изменения конфига — для кнопки "обновить" на
+  // карточке сервера, когда fail2ban уже настроен и нужно просто освежить счётчик банов.
+  async getFail2banStatus(server: Server): Promise<Fail2banStatus> {
+    const connection = this.connectionParams(server);
+    return this.sshService.withConnection(connection, (ssh) => this.readFail2banStatus(ssh));
+  }
+
+  private async readFail2banStatus(ssh: NodeSSH): Promise<Fail2banStatus> {
+    const check = await this.sshService.exec(ssh, 'command -v fail2ban-client');
+    if (check.code !== 0) {
+      return { installed: false, bannedCount: 0 };
+    }
+    const result = await this.sshService.exec(
+      ssh,
+      `fail2ban-client status sshd 2>/dev/null | awk -F: '/Currently banned/ {gsub(/[ \\t]/,"",$2); print $2}'`,
+    );
+    const bannedCount = Number(result.stdout.trim());
+    return { installed: true, bannedCount: Number.isFinite(bannedCount) ? bannedCount : 0 };
   }
 }

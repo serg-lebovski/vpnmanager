@@ -148,6 +148,13 @@ export class BridgesService {
           isSelf: true,
         }),
       );
+      // Best-effort, не блокирует создание моста — свой же IP в whitelist на всякий
+      // случай (см. ServersService.ensureFail2banFor — там это актуальнее для ЧУЖИХ
+      // серверов, но и себе не повредит).
+      const bootstrappedSelfServer = selfServer;
+      this.vpnProvisioningService.ensureFail2ban(bootstrappedSelfServer, [bootstrappedSelfServer.host]).catch((error) => {
+        this.logger.warn(`Не удалось настроить fail2ban на self-сервере: ${(error as Error).message}`);
+      });
     }
 
     // На одном self-сервере может быть несколько мостов — порт занят, если уже

@@ -26,6 +26,7 @@ import EditIcon from '@mui/icons-material/Edit';
 import NetworkCheckIcon from '@mui/icons-material/NetworkCheck';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
+import SecurityIcon from '@mui/icons-material/Security';
 import SyncIcon from '@mui/icons-material/Sync';
 import SystemUpdateAltIcon from '@mui/icons-material/SystemUpdateAlt';
 import TravelExploreIcon from '@mui/icons-material/TravelExplore';
@@ -36,12 +37,14 @@ import { getErrorMessage } from '../api/errors';
 import {
   CreateServerInput,
   DetectionResult,
+  Fail2banStatus,
   UpdateServerCredentialsInput,
   checkProtocolVersion,
   createServer,
   deleteProtocol,
   deleteServer,
   detectExistingInstallations,
+  ensureFail2ban,
   fetchServers,
   installProtocol,
   rebootServer,
@@ -153,9 +156,11 @@ export function ServersPage() {
 
   const deleteMutation = useMutation({ mutationFn: deleteServer, onSuccess: invalidate });
   const renameMutation = useMutation({
-    mutationFn: (vars: { id: string; name: string }) => updateServer(vars.id, { name: vars.name }),
+    mutationFn: (vars: { id: string; name: string; maxPeers: number }) =>
+      updateServer(vars.id, { name: vars.name, maxPeers: vars.maxPeers }),
     onSuccess: invalidate,
   });
+  const fail2banMutation = useMutation({ mutationFn: ensureFail2ban });
   const testMutation = useMutation({ mutationFn: testServerConnection, onSuccess: invalidate });
   const credentialsMutation = useMutation({
     mutationFn: (vars: { id: string; input: UpdateServerCredentialsInput }) => updateServerCredentials(vars.id, vars.input),
@@ -257,8 +262,16 @@ export function ServersPage() {
             server={server}
             online={onlineByServer[server.id]}
             onDelete={() => deleteMutation.mutate(server.id)}
-            onRename={(name) => renameMutation.mutate({ id: server.id, name })}
+            onRename={(name, maxPeers) => renameMutation.mutate({ id: server.id, name, maxPeers })}
             onTest={() => testMutation.mutate(server.id)}
+            onEnsureFail2ban={() => fail2banMutation.mutate(server.id)}
+            fail2banPending={fail2banMutation.isPending && fail2banMutation.variables === server.id}
+            fail2banResult={fail2banMutation.variables === server.id ? fail2banMutation.data : undefined}
+            fail2banErrorMessage={
+              fail2banMutation.isError && fail2banMutation.variables === server.id
+                ? getErrorMessage(fail2banMutation.error, 'Не удалось настроить fail2ban')
+                : undefined
+            }
             isTesting={testMutation.isPending && testMutation.variables === server.id}
             onReboot={() => setRebootConfirmId(server.id)}
             onUpdateCredentials={(input) => credentialsMutation.mutate({ id: server.id, input })}
@@ -319,11 +332,15 @@ function ServerCard({
   onUpdateCredentials,
   credentialsSaving,
   credentialsError,
+  onEnsureFail2ban,
+  fail2banPending,
+  fail2banResult,
+  fail2banErrorMessage,
 }: {
   server: ServerEntity;
   online?: boolean;
   onDelete: () => void;
-  onRename: (name: string) => void;
+  onRename: (name: string, maxPeers: number) => void;
   onTest: () => void;
   isTesting: boolean;
   onReboot: () => void;
@@ -335,6 +352,10 @@ function ServerCard({
   onUpdateCredentials: (input: UpdateServerCredentialsInput) => void;
   credentialsSaving: boolean;
   credentialsError: string | null;
+  onEnsureFail2ban: () => void;
+  fail2banPending: boolean;
+  fail2banResult: Fail2banStatus | undefined;
+  fail2banErrorMessage: string | undefined;
 }) {
   const [protocol, setProtocol] = useState<VpnProtocol>('wireguard');
   const [listenPort, setListenPort] = useState(() => suggestPort(server.protocols));
@@ -356,6 +377,7 @@ function ServerCard({
   }, [server.protocols]);
   const [isEditingName, setIsEditingName] = useState(false);
   const [editName, setEditName] = useState(server.name);
+  const [editMaxPeers, setEditMaxPeers] = useState(server.maxPeers);
   const [isEditingCredentials, setIsEditingCredentials] = useState(false);
   const [credAuthType, setCredAuthType] = useState<SshAuthType>('password');
   const [credSecret, setCredSecret] = useState('');
@@ -380,13 +402,21 @@ function ServerCard({
         <Box>
           {isEditingName ? (
             <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap mb={1}>
-              <TextField size="small" value={editName} onChange={(e) => setEditName(e.target.value)} autoFocus />
+              <TextField size="small" label="Название" value={editName} onChange={(e) => setEditName(e.target.value)} autoFocus />
+              <TextField
+                size="small"
+                label="Лимит peers"
+                type="number"
+                value={editMaxPeers}
+                onChange={(e) => setEditMaxPeers(Number(e.target.value))}
+                sx={{ width: 120 }}
+              />
               <Tooltip title="Сохранить">
                 <IconButton
                   size="small"
                   color="primary"
                   onClick={() => {
-                    onRename(editName);
+                    onRename(editName, editMaxPeers);
                     setIsEditingName(false);
                   }}
                 >
@@ -442,12 +472,20 @@ function ServerCard({
               <RestartAltIcon fontSize="small" />
             </IconButton>
           </Tooltip>
+          <Tooltip title={fail2banPending ? 'Проверяем/устанавливаем…' : 'Проверить и установить fail2ban'}>
+            <span>
+              <IconButton size="small" onClick={onEnsureFail2ban} disabled={fail2banPending}>
+                {fail2banPending ? <CircularProgress size={16} /> : <SecurityIcon fontSize="small" />}
+              </IconButton>
+            </span>
+          </Tooltip>
           {!isEditingName && (
             <Tooltip title="Переименовать">
               <IconButton
                 size="small"
                 onClick={() => {
                   setEditName(server.name);
+                  setEditMaxPeers(server.maxPeers);
                   setIsEditingName(true);
                 }}
               >
@@ -470,6 +508,19 @@ function ServerCard({
               ? `${protocolLabels[r.protocol]}: найдена установка, импортировано peers: ${r.importedCount}. `
               : `${protocolLabels[r.protocol]}: не найдено. `,
           )}
+        </Alert>
+      )}
+
+      {fail2banResult && !fail2banPending && (
+        <Alert severity={fail2banResult.installed ? 'success' : 'warning'} sx={{ mt: 2 }}>
+          {fail2banResult.installed
+            ? `fail2ban установлен, забанено IP: ${fail2banResult.bannedCount}`
+            : 'Не удалось подтвердить установку fail2ban на сервере'}
+        </Alert>
+      )}
+      {fail2banErrorMessage && !fail2banPending && (
+        <Alert severity="error" sx={{ mt: 2 }}>
+          {fail2banErrorMessage}
         </Alert>
       )}
 

@@ -92,13 +92,37 @@ export class ServersService {
       maxPeers: dto.maxPeers ?? 100,
       status: ServerStatus.UNKNOWN,
     });
-    return this.serversRepository.save(server);
+    const saved = await this.serversRepository.save(server);
+    // Best-effort, не блокирует добавление сервера — сеть до нового сервера может быть
+    // нестабильна прямо в момент добавления, а fail2ban всегда можно поставить/повторить
+    // вручную кнопкой на карточке (см. ensureFail2banFor).
+    this.ensureFail2banBestEffort(saved);
+    return saved;
+  }
+
+  // Устанавливает/настраивает fail2ban и заносит IP self-сервера панели в whitelist —
+  // иначе сама панель рано или поздно забанила бы себя на управляемом сервере. Вызывается
+  // при добавлении сервера (best-effort, см. create()) и по кнопке на карточке сервера
+  // (не best-effort — тут ошибка должна дойти до пользователя).
+  async ensureFail2banFor(id: string): Promise<{ installed: boolean; bannedCount: number }> {
+    const server = await this.findOneOrFail(id);
+    const selfServer = await this.serversRepository.findOne({ where: { isSelf: true } });
+    return this.vpnProvisioningService.ensureFail2ban(server, selfServer ? [selfServer.host] : []);
+  }
+
+  private ensureFail2banBestEffort(server: Server): void {
+    this.ensureFail2banFor(server.id).catch((error) => {
+      this.logger.warn(`Не удалось настроить fail2ban на сервере "${server.name}": ${(error as Error).message}`);
+    });
   }
 
   async update(id: string, dto: UpdateServerDto): Promise<Server> {
     const server = await this.findOneOrFail(id);
     if (dto.name !== undefined) {
       server.name = dto.name;
+    }
+    if (dto.maxPeers !== undefined) {
+      server.maxPeers = dto.maxPeers;
     }
     return this.serversRepository.save(server);
   }
