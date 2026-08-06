@@ -10,6 +10,26 @@ import { SystemSettings } from './system-settings.entity';
 
 type RenderSettings = Pick<SystemSettings, 'domain' | 'httpEnabled' | 'httpsEnabled'>;
 
+// limit_req_zone — директива уровня http{}, поэтому не может жить в nginx.conf.template
+// (его содержимое вставляется ВНУТРЬ server{}, см. render() ниже) — этот файл целиком
+// попадает в http{} (через стандартный `include /etc/nginx/conf.d/*.conf` базового
+// образа nginx), но верхнеуровневые директивы конкретно ВНУТРИ него всё ещё должны идти
+// ДО открывающей server{}, а не внутри. api_login — под строгий лимит логина в
+// AuthController (@Throttle) — вторая линия защиты от перебора пароля, ДО того как
+// запрос вообще дойдёт до backend; api_general — общий, мягче, на весь остальной /api/.
+const LIMIT_REQ_ZONES =
+  'limit_req_zone $binary_remote_addr zone=api_login:10m rate=10r/m;\n' +
+  'limit_req_zone $binary_remote_addr zone=api_general:10m rate=20r/s;\n\n';
+
+// add_header — валиден на уровне server{} (не только location{}) — добавляем один раз на
+// весь сервер, а не в каждую location по отдельности. HSTS сюда намеренно НЕ включён:
+// он кэшируется браузером надолго и должен появляться только когда HTTPS гарантированно
+// стабильно работает — ошибиться здесь означало бы надолго отрезать пользователей с HTTP.
+const SECURITY_HEADERS =
+  '    add_header X-Content-Type-Options nosniff always;\n' +
+  '    add_header X-Frame-Options DENY always;\n' +
+  "    add_header Referrer-Policy strict-origin-when-cross-origin always;\n\n";
+
 // Собирает nginx/generated/default.conf (git-tracked один раз с безопасным HTTP-only
 // дефолтом, дальше НИКОГДА не редактируется вручную и не трогается будущими коммитами —
 // поэтому перезаписанный здесь локальный вариант никогда не конфликтует с `git pull`, см.
@@ -80,7 +100,7 @@ export class NginxConfigService implements OnModuleInit {
         `${port80Body}}\n\n` +
         `server {\n    listen 443 ssl;\n    server_name ${resolved.domain};\n\n` +
         `    ssl_certificate ${fullchain};\n    ssl_certificate_key ${privkey};\n\n` +
-        `${sharedLocations}}\n`;
+        `${SECURITY_HEADERS}${sharedLocations}}\n`;
     } else {
       // Домен задан, но сертификата ещё нет — это либо первый выпуск (certbot вот-вот
       // запросит challenge через ЭТОТ же location), либо HTTPS выключен вовсе; в обоих
@@ -88,10 +108,10 @@ export class NginxConfigService implements OnModuleInit {
       const acmeLocation = resolved.domain
         ? `    location /.well-known/acme-challenge/ {\n        root /var/www/certbot;\n    }\n\n`
         : '';
-      config = `server {\n    listen 80;\n    server_name _;\n\n${acmeLocation}${sharedLocations}}\n`;
+      config = `server {\n    listen 80;\n    server_name _;\n\n${acmeLocation}${SECURITY_HEADERS}${sharedLocations}}\n`;
     }
 
-    fs.writeFileSync(path.join(repoPath, 'nginx', 'generated', 'default.conf'), config);
+    fs.writeFileSync(path.join(repoPath, 'nginx', 'generated', 'default.conf'), LIMIT_REQ_ZONES + config);
     await reloadNginx();
   }
 

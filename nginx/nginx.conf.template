@@ -26,7 +26,26 @@
     # rewrite осталось в $uri.
     resolver 127.0.0.11 valid=10s;
 
+    # Точное совпадение (=) имеет приоритет над префиксным /api/ ниже независимо от
+    # порядка объявления — отдельный, более строгий лимит именно на логин (вторая линия
+    # защиты поверх @Throttle в AuthController — здесь запрос отсекается ДО того, как
+    # вообще дойдёт до backend). burst=5 — не блокирует один случайный двойной клик.
+    location = /api/auth/login {
+        limit_req zone=api_login burst=5 nodelay;
+        set $backend_upstream backend:3000;
+        rewrite ^/api/(.*)$ /$1 break;
+        proxy_pass http://$backend_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
     location /api/ {
+        # Общий, более мягкий лимит на весь остальной /api/ — базовая защита от
+        # скрейпинга/потока запросов, независимо от лимита конкретно на логин выше.
+        limit_req zone=api_general burst=40 nodelay;
         # set ДО rewrite ... break — break останавливает выполнение остальных директив
         # rewrite-модуля (включая set) в этом location, если поставить его раньше:
         # переменная осталась бы неинициализированной ("uninitialized variable", поймано
