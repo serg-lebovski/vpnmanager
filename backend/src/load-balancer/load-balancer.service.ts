@@ -14,7 +14,11 @@ export class LoadBalancerService {
     @InjectRepository(Bridge) private readonly bridgesRepository: Repository<Bridge>,
   ) {}
 
-  async pickServerProtocol(protocol: VpnProtocol): Promise<ServerProtocol> {
+  // allowedServerIds — если передан (не undefined), ограничивает выбор ТОЛЬКО этими
+  // серверами (см. Organization.allowedServerIds/PeersService) — используется для
+  // org_admin/org_user с ограниченным доступом; undefined — без ограничения (суперадмин,
+  // либо системные вызовы вроде createSystemPeer моста).
+  async pickServerProtocol(protocol: VpnProtocol, allowedServerIds?: string[]): Promise<ServerProtocol> {
     const allCandidates = await this.serverProtocolsRepository.find({
       where: { protocol, status: ServerProtocolStatus.ACTIVE },
       relations: ['server'],
@@ -28,7 +32,11 @@ export class LoadBalancerService {
     const bridgeClientProtocolIds = new Set(
       bridges.flatMap((bridge) => [bridge.wireguardClientProtocolId, bridge.amneziawgClientProtocolId]).filter(Boolean),
     );
-    const candidates = allCandidates.filter((sp) => !bridgeClientProtocolIds.has(sp.id));
+    let candidates = allCandidates.filter((sp) => !bridgeClientProtocolIds.has(sp.id));
+    if (allowedServerIds) {
+      const allowedSet = new Set(allowedServerIds);
+      candidates = candidates.filter((sp) => allowedSet.has(sp.serverId));
+    }
     if (candidates.length === 0) {
       throw new BadRequestException(`Нет активных серверов с установленным протоколом ${protocol}`);
     }

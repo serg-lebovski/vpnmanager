@@ -18,6 +18,12 @@ export interface AuthUser {
 export interface Organization {
   id: string;
   name: string;
+  // Какие обычные серверы можно выбрать напрямую (в обход моста) при создании peer'а —
+  // allow-list, пусто по умолчанию (нет доступа, кроме моста).
+  allowedServerIds: string[];
+  // Какие мосты (из видимых организации — общие + свои) недоступны — block-list, пусто
+  // по умолчанию (доступны все видимые).
+  blockedBridgeIds: string[];
   createdAt: string;
 }
 

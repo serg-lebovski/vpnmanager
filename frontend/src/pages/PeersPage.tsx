@@ -36,6 +36,7 @@ import {
   CreatePeerInput,
   createPeer,
   downloadPeerConfig,
+  fetchAllowedServers,
   fetchPeerQrCodeUrl,
   fetchPeers,
   purgePeer,
@@ -82,21 +83,50 @@ export function PeersPage() {
     enabled: isSuperAdmin,
   });
   const { data: servers } = useQuery({ queryKey: ['servers'], queryFn: fetchServers, enabled: isSuperAdmin });
-  // Мосты доступны всем ролям (бэкенд сам скоупит по организации) — org_admin/org_user
-  // должны иметь возможность создать peer для моста своей организации.
+  // Мосты доступны всем ролям (бэкенд сам скоупит по организации, включая
+  // Organization.blockedBridgeIds) — org_admin/org_user должны иметь возможность создать
+  // peer для моста своей организации.
   const { data: bridges } = useQuery({ queryKey: ['bridges'], queryFn: fetchBridges });
-
+  // Обычные серверы, доступные НАПРЯМУЮ (в обход моста) — для super_admin используется
+  // полный /servers (там же protocols для авто-подстановки протокола), для остальных —
+  // Organization.allowedServerIds (см. fetchAllowedServers).
+  const { data: allowedServers } = useQuery({
+    queryKey: ['peers-allowed-servers'],
+    queryFn: fetchAllowedServers,
+    enabled: !isSuperAdmin,
+  });
   const { data: peers, isLoading } = useQuery({
     queryKey: ['peers', organizationFilter],
     queryFn: () => fetchPeers(organizationFilter || undefined),
   });
 
   const [form, setForm] = useState<CreatePeerInput>({ protocol: 'wireguard', name: '' });
-  const [useBridge, setUseBridge] = useState(false);
   const [clientOrgId, setClientOrgId] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [qrPeer, setQrPeer] = useState<PeerEntity | null>(null);
   const [qrUrl, setQrUrl] = useState<string | null>(null);
+
+  // Если мост доступен и пользователь не выбрал сервер явно — создаём через мост по
+  // умолчанию (это и есть весь смысл моста — обычные серверы прямым выбором не должны
+  // требоваться). Срабатывает один раз при загрузке списка мостов и повторно после
+  // каждого успешного создания peer (см. createMutation.onSuccess) — не трогает форму,
+  // если пользователь уже выбрал мост или сервер сам.
+  function applyDefaultBridgeSelection(base: CreatePeerInput): CreatePeerInput {
+    if (base.bridgeId || base.serverId || !bridges || bridges.length === 0) {
+      return base;
+    }
+    const bridge = bridges[0];
+    const availableProtocols: VpnProtocol[] = [
+      bridge.wireguardClientProtocolId && 'wireguard',
+      bridge.amneziawgClientProtocolId && 'amneziawg',
+    ].filter(Boolean) as VpnProtocol[];
+    return { ...base, bridgeId: bridge.id, protocol: availableProtocols[0] ?? base.protocol };
+  }
+
+  useEffect(() => {
+    setForm((prev) => applyDefaultBridgeSelection(prev));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bridges]);
 
   // По умолчанию — организация "main", если она есть; иначе явное «без клиента». Ставим
   // только один раз при первой загрузке списка организаций, не мешая последующему
@@ -112,8 +142,7 @@ export function PeersPage() {
     mutationFn: createPeer,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['peers'] });
-      setForm({ protocol: 'wireguard', name: '' });
-      setUseBridge(false);
+      setForm(applyDefaultBridgeSelection({ protocol: 'wireguard', name: '' }));
       setError(null);
     },
     onError: (err) => setError(getErrorMessage(err, 'Не удалось создать peer')),
@@ -260,43 +289,18 @@ export function PeersPage() {
                 <MenuItem value="amneziawg">AmneziaWG</MenuItem>
               </TextField>
               {bridges && bridges.length > 0 && (
-                <FormControlLabel
-                  control={
-                    <Checkbox
-                      size="small"
-                      checked={useBridge}
-                      onChange={(e) => {
-                        const checked = e.target.checked;
-                        setUseBridge(checked);
-                        if (!checked) {
-                          setForm({ ...form, bridgeId: undefined });
-                          return;
-                        }
-                        // Если мост ровно один — сразу подставляем его, иначе оставляем
-                        // выбор пользователю (см. поле «Мост» ниже).
-                        const bridgeId = bridges.length === 1 ? bridges[0].id : undefined;
-                        const selected = bridges.find((b) => b.id === bridgeId);
-                        const availableProtocols: VpnProtocol[] = selected
-                          ? ([selected.wireguardClientProtocolId && 'wireguard', selected.amneziawgClientProtocolId && 'amneziawg'].filter(
-                              Boolean,
-                            ) as VpnProtocol[])
-                          : [];
-                        const protocol = availableProtocols.includes(form.protocol) ? form.protocol : availableProtocols[0] ?? form.protocol;
-                        setForm({ ...form, bridgeId, serverId: undefined, protocol });
-                      }}
-                    />
-                  }
-                  label="Мост"
-                />
-              )}
-              {useBridge && (
                 <TextField
                   select
-                  label="Какой мост"
+                  label="Мост"
                   value={form.bridgeId || ''}
                   onChange={(e) => {
                     const bridgeId = e.target.value || undefined;
-                    const selected = bridges?.find((b) => b.id === bridgeId);
+                    if (!bridgeId) {
+                      // Явный отказ от моста — выбор конкретного сервера ниже (если доступен).
+                      setForm({ ...form, bridgeId: undefined });
+                      return;
+                    }
+                    const selected = bridges.find((b) => b.id === bridgeId);
                     // Мост может выдавать peers по одному или обоим протоколам сразу —
                     // подставляем тот, что реально доступен, чтобы не наткнуться на ошибку
                     // "протокол не установлен".
@@ -306,24 +310,24 @@ export function PeersPage() {
                         ) as VpnProtocol[])
                       : [];
                     const protocol = availableProtocols.includes(form.protocol) ? form.protocol : availableProtocols[0] ?? form.protocol;
-                    setForm({ ...form, bridgeId, protocol });
+                    setForm({ ...form, bridgeId, serverId: undefined, protocol });
                   }}
                   size="small"
                   fullWidth
                   helperText="Peer станет клиентом этого моста"
-                  required
                 >
-                  {bridges?.map((b) => (
+                  <MenuItem value="">— без моста —</MenuItem>
+                  {bridges.map((b) => (
                     <MenuItem key={b.id} value={b.id}>
                       {b.name}
                     </MenuItem>
                   ))}
                 </TextField>
               )}
-              {isSuperAdmin && !useBridge && (
+              {!form.bridgeId && (isSuperAdmin ? (servers?.length ?? 0) > 0 : (allowedServers?.length ?? 0) > 0) && (
                 <TextField
                   select
-                  label="Сервер (авто, если не выбран)"
+                  label={isSuperAdmin ? 'Сервер (авто, если не выбран)' : 'Сервер'}
                   value={form.serverId || ''}
                   onChange={(e) => {
                     const serverId = e.target.value || undefined;
@@ -331,21 +335,34 @@ export function PeersPage() {
                     // У self-сервера обычно только один установленный протокол (тот, что
                     // выбрали при создании моста — WireGuard или AmneziaWG). Подставляем его
                     // автоматически, иначе комбинация протокол+сервер может не найтись.
+                    // Есть только для super_admin — у остальных ролей allowedServers не
+                    // содержит protocols, оставляем протокол как есть.
                     const activeProtocol = selected?.protocols.find((p) => p.status === 'active')?.protocol;
                     setForm({ ...form, serverId, protocol: activeProtocol ?? form.protocol });
                   }}
                   size="small"
                   fullWidth
-                  helperText="Обычный сервер — не мост"
+                  helperText="Обычный сервер — в обход моста"
                 >
-                  <MenuItem value="">Автоматически (балансировка)</MenuItem>
-                  {servers?.map((s) => (
-                    <MenuItem key={s.id} value={s.id}>
-                      {s.name}
-                      {s.isSelf && ' (используется мостом)'}
-                    </MenuItem>
-                  ))}
+                  {isSuperAdmin && <MenuItem value="">Автоматически (балансировка)</MenuItem>}
+                  {isSuperAdmin
+                    ? servers?.map((s) => (
+                        <MenuItem key={s.id} value={s.id}>
+                          {s.name}
+                          {s.isSelf && ' (используется мостом)'}
+                        </MenuItem>
+                      ))
+                    : allowedServers?.map((s) => (
+                        <MenuItem key={s.id} value={s.id}>
+                          {s.name}
+                        </MenuItem>
+                      ))}
                 </TextField>
+              )}
+              {!isSuperAdmin && (!bridges || bridges.length === 0) && (!allowedServers || allowedServers.length === 0) && (
+                <Alert severity="warning">
+                  Администратор ещё не выдал вашей организации доступ ни к одному серверу или мосту — создание peer недоступно.
+                </Alert>
               )}
               {isSuperAdmin && (
                 <TextField
@@ -369,7 +386,11 @@ export function PeersPage() {
                 type="submit"
                 variant="contained"
                 fullWidth
-                disabled={createMutation.isPending || (isSuperAdmin && !clientOrgId)}
+                disabled={
+                  createMutation.isPending ||
+                  (isSuperAdmin && !clientOrgId) ||
+                  (!isSuperAdmin && (!bridges || bridges.length === 0) && (!allowedServers || allowedServers.length === 0))
+                }
               >
                 Создать
               </Button>

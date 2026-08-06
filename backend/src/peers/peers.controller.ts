@@ -18,6 +18,14 @@ export class PeersController {
     return this.peersService.findAllForRequester(user, organizationId);
   }
 
+  // Для формы создания peer — какие обычные серверы можно выбрать напрямую (см.
+  // Organization.allowedServerIds). Доступно всем ролям (не только super_admin, в
+  // отличие от /servers) — сервис сам скоупит по организации требующего.
+  @Get('allowed-servers')
+  getAllowedServers(@CurrentUser() user: AuthenticatedUser) {
+    return this.peersService.getAllowedServersForRequester(user);
+  }
+
   @Post()
   create(@CurrentUser() user: AuthenticatedUser, @Body() dto: CreatePeerDto) {
     return this.peersService.create(user, dto);

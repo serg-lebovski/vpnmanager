@@ -8,6 +8,13 @@ export async function fetchPeers(organizationId?: string): Promise<PeerEntity[]>
   return data;
 }
 
+// Для формы создания peer — доступные напрямую (в обход моста) серверы; в отличие от
+// /servers (super_admin-only), доступен всем ролям, сервис сам скоупит по организации.
+export async function fetchAllowedServers(): Promise<Array<{ id: string; name: string }>> {
+  const { data } = await apiClient.get<Array<{ id: string; name: string }>>('/peers/allowed-servers');
+  return data;
+}
+
 export interface CreatePeerInput {
   protocol: VpnProtocol;
   name: string;

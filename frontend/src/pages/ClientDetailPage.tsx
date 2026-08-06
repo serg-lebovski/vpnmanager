@@ -2,7 +2,9 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
+  FormControlLabel,
   MenuItem,
   Paper,
   Stack,
@@ -17,9 +19,11 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, useEffect, useState } from 'react';
 import { Link as RouterLink, useNavigate, useParams } from 'react-router-dom';
+import { fetchBridges } from '../api/bridges';
 import { getErrorMessage } from '../api/errors';
 import { deleteOrganization, fetchOrganization, updateOrganization } from '../api/organizations';
 import { fetchPeers } from '../api/peers';
+import { fetchServers } from '../api/servers';
 import { Role } from '../api/types';
 import { createUser, deleteUser, fetchUsers, updateUser } from '../api/users';
 
@@ -40,13 +44,23 @@ export function ClientDetailPage() {
   });
   const { data: allUsers } = useQuery({ queryKey: ['users'], queryFn: fetchUsers });
   const { data: peers } = useQuery({ queryKey: ['peers', id], queryFn: () => fetchPeers(id) });
+  const { data: servers } = useQuery({ queryKey: ['servers'], queryFn: fetchServers });
+  const { data: bridges } = useQuery({ queryKey: ['bridges'], queryFn: fetchBridges });
 
   const users = allUsers?.filter((u) => u.organizationId === id);
+  // Self-серверы отдельно не выбираются — доступ к ним даётся через мост (см. ниже), а не
+  // напрямую (это и есть весь смысл моста — клиенты не подключаются к backend-серверам
+  // напрямую).
+  const selectableServers = servers?.filter((s) => !s.isSelf);
 
   const [name, setName] = useState('');
+  const [allowedServerIds, setAllowedServerIds] = useState<string[]>([]);
+  const [blockedBridgeIds, setBlockedBridgeIds] = useState<string[]>([]);
   useEffect(() => {
     if (organization) {
       setName(organization.name);
+      setAllowedServerIds(organization.allowedServerIds);
+      setBlockedBridgeIds(organization.blockedBridgeIds);
     }
   }, [organization]);
 
@@ -59,6 +73,25 @@ export function ClientDetailPage() {
     onError: (err) => setRenameError(getErrorMessage(err, 'Не удалось переименовать клиента')),
   });
   const [renameError, setRenameError] = useState<string | null>(null);
+
+  const accessMutation = useMutation({
+    mutationFn: () => updateOrganization(id!, { allowedServerIds, blockedBridgeIds }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['organizations'] });
+      setAccessError(null);
+    },
+    onError: (err) => setAccessError(getErrorMessage(err, 'Не удалось сохранить доступ')),
+  });
+  const [accessError, setAccessError] = useState<string | null>(null);
+
+  function toggleAllowedServer(serverId: string, checked: boolean) {
+    setAllowedServerIds((prev) => (checked ? [...prev, serverId] : prev.filter((sid) => sid !== serverId)));
+  }
+
+  function toggleBridgeAllowed(bridgeId: string, allowed: boolean) {
+    // Чекбокс на экране означает "разрешён" — в blockedBridgeIds храним обратное.
+    setBlockedBridgeIds((prev) => (allowed ? prev.filter((bid) => bid !== bridgeId) : [...prev, bridgeId]));
+  }
 
   const deleteOrgMutation = useMutation({
     mutationFn: () => deleteOrganization(id!),
@@ -138,6 +171,74 @@ export function ClientDetailPage() {
         {renameError && (
           <Alert severity="error" sx={{ mt: 2 }}>
             {renameError}
+          </Alert>
+        )}
+      </Paper>
+
+      <Paper sx={{ p: 2 }}>
+        <Typography variant="subtitle1" mb={1}>
+          Доступ к серверам и мостам
+        </Typography>
+        <Typography variant="body2" color="text.secondary" mb={2}>
+          Мосты — по умолчанию доступны все видимые этому клиенту (общие + его собственные),
+          снимите галочку, чтобы забрать доступ. Обычные серверы — по умолчанию недоступны
+          напрямую (в обход моста), доступ выдаётся явно.
+        </Typography>
+
+        <Typography variant="body2" fontWeight="bold" mb={0.5}>
+          Мосты
+        </Typography>
+        <Stack direction="row" flexWrap="wrap" useFlexGap mb={2}>
+          {bridges?.map((bridge) => (
+            <FormControlLabel
+              key={bridge.id}
+              sx={{ minWidth: 220 }}
+              control={
+                <Checkbox
+                  checked={!blockedBridgeIds.includes(bridge.id)}
+                  onChange={(e) => toggleBridgeAllowed(bridge.id, e.target.checked)}
+                />
+              }
+              label={bridge.name}
+            />
+          ))}
+          {bridges?.length === 0 && (
+            <Typography variant="body2" color="text.secondary">
+              Мостов пока нет
+            </Typography>
+          )}
+        </Stack>
+
+        <Typography variant="body2" fontWeight="bold" mb={0.5}>
+          Обычные серверы (в обход моста)
+        </Typography>
+        <Stack direction="row" flexWrap="wrap" useFlexGap mb={2}>
+          {selectableServers?.map((server) => (
+            <FormControlLabel
+              key={server.id}
+              sx={{ minWidth: 220 }}
+              control={
+                <Checkbox
+                  checked={allowedServerIds.includes(server.id)}
+                  onChange={(e) => toggleAllowedServer(server.id, e.target.checked)}
+                />
+              }
+              label={server.name}
+            />
+          ))}
+          {selectableServers?.length === 0 && (
+            <Typography variant="body2" color="text.secondary">
+              Обычных серверов пока нет
+            </Typography>
+          )}
+        </Stack>
+
+        <Button variant="contained" disabled={accessMutation.isPending} onClick={() => accessMutation.mutate()}>
+          Сохранить доступ
+        </Button>
+        {accessError && (
+          <Alert severity="error" sx={{ mt: 2 }}>
+            {accessError}
           </Alert>
         )}
       </Paper>

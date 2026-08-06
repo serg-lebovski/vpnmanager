@@ -79,13 +79,25 @@ export class BridgesService {
       relations: BRIDGE_RELATIONS,
       order: { createdAt: 'DESC' },
     });
-    const visible =
+    let visible =
       requester.role === Role.SUPER_ADMIN
         ? bridges
         : // org_admin/org_user видят только мосты своей организации плюс общие (organizationId
           // = null) — по тому же принципу, что видимость peers (см. findAllForRequester в
           // peers.service.ts).
           bridges.filter((bridge) => bridge.organizationId === null || bridge.organizationId === requester.organizationId);
+
+    // Организация может явно забрать доступ к отдельным (в т.ч. общим) мостам — см.
+    // Organization.blockedBridgeIds. Суперадмина это не касается — та же логика, что и у
+    // allowedServerIds в PeersService.create.
+    if (requester.role !== Role.SUPER_ADMIN && requester.organizationId) {
+      const organization = await this.organizationsRepository.findOne({ where: { id: requester.organizationId } });
+      if (organization && organization.blockedBridgeIds.length > 0) {
+        const blocked = new Set(organization.blockedBridgeIds);
+        visible = visible.filter((bridge) => !blocked.has(bridge.id));
+      }
+    }
+
     return visible.map((bridge) => this.toSafeBridge(bridge));
   }
 

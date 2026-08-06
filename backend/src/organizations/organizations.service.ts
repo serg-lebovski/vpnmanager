@@ -42,6 +42,12 @@ export class OrganizationsService {
       }
       organization.name = dto.name;
     }
+    if (dto.allowedServerIds !== undefined) {
+      organization.allowedServerIds = dto.allowedServerIds;
+    }
+    if (dto.blockedBridgeIds !== undefined) {
+      organization.blockedBridgeIds = dto.blockedBridgeIds;
+    }
     return this.organizationsRepository.save(organization);
   }
 

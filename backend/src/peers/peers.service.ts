@@ -1,7 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { DataSource, IsNull, LessThanOrEqual, MoreThan, Not, Repository } from 'typeorm';
+import { DataSource, In, IsNull, LessThanOrEqual, MoreThan, Not, Repository } from 'typeorm';
 import { Bridge } from '../bridges/bridge.entity';
 import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { decryptSecret, encryptSecret } from '../common/encryption.util';
@@ -75,6 +75,26 @@ export class PeersService {
     return peers.map((peer) => this.toListItem(peer));
   }
 
+  // Для формы создания peer — org_admin/org_user не видят /servers вообще (он
+  // super_admin-only, там же SSH-секреты), но должны знать, из каких обычных серверов
+  // (не self-, не мостовых) им можно выбирать напрямую (см. Organization.allowedServerIds)
+  // — только имя и id, без остальных полей сервера.
+  async getAllowedServersForRequester(requester: AuthenticatedUser): Promise<Array<{ id: string; name: string }>> {
+    if (requester.role === Role.SUPER_ADMIN) {
+      const servers = await this.serversRepository.find({ order: { name: 'ASC' } });
+      return servers.map((s) => ({ id: s.id, name: s.name }));
+    }
+    if (!requester.organizationId) {
+      return [];
+    }
+    const organization = await this.organizationsRepository.findOneOrFail({ where: { id: requester.organizationId } });
+    if (organization.allowedServerIds.length === 0) {
+      return [];
+    }
+    const servers = await this.serversRepository.find({ where: { id: In(organization.allowedServerIds) }, order: { name: 'ASC' } });
+    return servers.map((s) => ({ id: s.id, name: s.name }));
+  }
+
   // Убирает секреты перед отдачей на фронтенд: приватный/preshared ключ peer'а и
   // зашифрованный SSH-секрет сервера (иначе он попал бы в ответ /peers даже org_admin/
   // org_user — сервер должен оставаться видимым только по имени, не как полная сущность).
@@ -102,11 +122,35 @@ export class PeersService {
   async create(requester: AuthenticatedUser, dto: CreatePeerDto): Promise<Peer> {
     const organizationId = this.resolveOrganizationId(requester, dto.organizationId);
 
+    // Суперадмин не ограничен allowedServerIds/blockedBridgeIds организации — эти
+    // ограничения существуют для self-service org_admin/org_user, не для управления
+    // инфраструктурой в целом (суперадмин и так явно выбирает организацию каждого peer'а).
+    let allowedServerIds: string[] | undefined;
+    if (requester.role !== Role.SUPER_ADMIN && organizationId) {
+      const organization = await this.organizationsRepository.findOneOrFail({ where: { id: organizationId } });
+      if (dto.bridgeId) {
+        if (organization.blockedBridgeIds.includes(dto.bridgeId)) {
+          throw new ForbiddenException('Этот мост недоступен для вашей организации');
+        }
+      } else if (dto.serverId) {
+        if (!organization.allowedServerIds.includes(dto.serverId)) {
+          throw new ForbiddenException('Этот сервер недоступен для вашей организации');
+        }
+      } else if (organization.allowedServerIds.length === 0) {
+        // Ни мост, ни сервер не выбраны явно — авто-балансировка обычно перебирает ВСЕ
+        // активные серверы протокола; без явно разрешённых серверов у организации это
+        // означало бы попасть на сервер, который ей не выдавали.
+        throw new ForbiddenException('Для вашей организации не настроены доступные серверы — выберите мост');
+      } else {
+        allowedServerIds = organization.allowedServerIds;
+      }
+    }
+
     const serverProtocol = dto.bridgeId
       ? await this.findBridgeClientProtocol(requester, dto.bridgeId, dto.protocol)
       : dto.serverId
         ? await this.findActiveServerProtocolByServer(dto.serverId, dto.protocol)
-        : await this.loadBalancerService.pickServerProtocol(dto.protocol);
+        : await this.loadBalancerService.pickServerProtocol(dto.protocol, allowedServerIds);
 
     return this.createInternal(serverProtocol, {
       organizationId,

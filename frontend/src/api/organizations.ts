@@ -20,7 +20,13 @@ export async function fetchOrganization(id: string): Promise<Organization> {
   return data;
 }
 
-export async function updateOrganization(id: string, input: { name: string }): Promise<Organization> {
+export interface UpdateOrganizationInput {
+  name?: string;
+  allowedServerIds?: string[];
+  blockedBridgeIds?: string[];
+}
+
+export async function updateOrganization(id: string, input: UpdateOrganizationInput): Promise<Organization> {
   const { data } = await apiClient.patch<Organization>(`/organizations/${id}`, input);
   return data;
 }
