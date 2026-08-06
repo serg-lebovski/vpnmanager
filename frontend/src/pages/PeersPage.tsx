@@ -8,6 +8,7 @@ import {
   DialogContent,
   DialogTitle,
   FormControlLabel,
+  IconButton,
   MenuItem,
   Paper,
   Stack,
@@ -18,8 +19,14 @@ import {
   TableRow,
   TableSortLabel,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material';
+import BlockIcon from '@mui/icons-material/Block';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
+import DownloadIcon from '@mui/icons-material/Download';
+import EditIcon from '@mui/icons-material/Edit';
+import QrCode2Icon from '@mui/icons-material/QrCode2';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { fetchBridges } from '../api/bridges';
@@ -444,30 +451,43 @@ export function PeersPage() {
                     </Stack>
                   </TableCell>
                   <TableCell align="right">
-                    <Stack direction="row" spacing={1} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
-                      <Button size="small" variant="outlined" onClick={() => openEdit(peer)}>
-                        Изменить
-                      </Button>
-                      <Button
-                        size="small"
-                        variant="outlined"
-                        disabled={peer.source === 'imported'}
-                        onClick={() => downloadPeerConfig(peer.id, peer.name)}
-                      >
-                        Скачать
-                      </Button>
-                      <Button size="small" variant="outlined" disabled={peer.source === 'imported'} onClick={() => handleShowQr(peer)}>
-                        QR
-                      </Button>
+                    <Stack direction="row" spacing={0.25} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
+                      <Tooltip title="Изменить">
+                        <IconButton size="small" onClick={() => openEdit(peer)}>
+                          <EditIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                      <Tooltip title="Скачать конфиг">
+                        <span>
+                          <IconButton
+                            size="small"
+                            disabled={peer.source === 'imported'}
+                            onClick={() => downloadPeerConfig(peer.id, peer.name)}
+                          >
+                            <DownloadIcon fontSize="small" />
+                          </IconButton>
+                        </span>
+                      </Tooltip>
+                      <Tooltip title="QR-код">
+                        <span>
+                          <IconButton size="small" disabled={peer.source === 'imported'} onClick={() => handleShowQr(peer)}>
+                            <QrCode2Icon fontSize="small" />
+                          </IconButton>
+                        </span>
+                      </Tooltip>
                       {peer.status === 'active' && (
-                        <Button size="small" variant="outlined" color="warning" onClick={() => revokeMutation.mutate(peer.id)}>
-                          Отозвать
-                        </Button>
+                        <Tooltip title="Отозвать">
+                          <IconButton size="small" color="warning" onClick={() => revokeMutation.mutate(peer.id)}>
+                            <BlockIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
                       )}
                       {peer.status === 'revoked' && (
-                        <Button size="small" variant="contained" color="error" onClick={() => purgeMutation.mutate(peer.id)}>
-                          Удалить
-                        </Button>
+                        <Tooltip title="Удалить">
+                          <IconButton size="small" color="error" onClick={() => purgeMutation.mutate(peer.id)}>
+                            <DeleteOutlineIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
                       )}
                     </Stack>
                   </TableCell>
