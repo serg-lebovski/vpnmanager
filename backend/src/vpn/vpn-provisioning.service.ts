@@ -111,13 +111,18 @@ export class VpnProvisioningService {
     // этот лог (Настройки → «Логи» → backend).
     this.logger.log(`Установка ${protocol} на сервере "${server.name}" (${server.host}:${listenPort})…`);
     try {
-      const result = await this.sshService.withConnection(connection, (ssh) =>
-        driver.install({ ssh, server, serverProtocol }, { listenPort, networkCidr, mtu, interfaceName }),
-      );
+      // Версию забираем в ТОЙ ЖЕ SSH-сессии, что и саму установку — не открываем отдельное
+      // подключение только ради неё.
+      const result = await this.sshService.withConnection(connection, async (ssh) => {
+        const installResult = await driver.install({ ssh, server, serverProtocol }, { listenPort, networkCidr, mtu, interfaceName });
+        const packageVersion = await driver.getInstalledVersion({ ssh, server, serverProtocol });
+        return { ...installResult, packageVersion };
+      });
       serverProtocol.interfaceName = result.interfaceName;
       serverProtocol.serverPublicKey = result.serverPublicKey;
       serverProtocol.obfuscationParams = result.obfuscationParams || null;
       serverProtocol.mtu = result.mtu || null;
+      serverProtocol.packageVersion = result.packageVersion;
       serverProtocol.status = ServerProtocolStatus.ACTIVE;
       this.logger.log(`${protocol} успешно установлен на сервере "${server.name}" (интерфейс ${result.interfaceName})`);
     } catch (error) {
@@ -127,6 +132,28 @@ export class VpnProvisioningService {
     }
 
     return this.serverProtocolsRepository.save(serverProtocol);
+  }
+
+  async getInstalledVersion(serverProtocol: ServerProtocol, server: Server): Promise<string | null> {
+    const driver = this.driverFor(serverProtocol.protocol);
+    const connection = this.connectionParams(server);
+    return this.sshService.withConnection(connection, (ssh) => driver.getInstalledVersion({ ssh, server, serverProtocol }));
+  }
+
+  async updateProtocolPackage(serverProtocol: ServerProtocol, server: Server): Promise<string | null> {
+    const driver = this.driverFor(serverProtocol.protocol);
+    const connection = this.connectionParams(server);
+    return this.sshService.withConnection(connection, (ssh) => driver.updatePackage({ ssh, server, serverProtocol }));
+  }
+
+  // Реально снимает протокол с сервера (down, автозапуск, конфиг/ключи) — используется при
+  // удалении протокола из панели (см. ServersService.removeProtocol), в отличие от
+  // удаления самого СЕРВЕРА (ServersService.remove), которое SSH намеренно не трогает
+  // (сервер обычно удаляют именно потому, что он недоступен).
+  async uninstallProtocol(serverProtocol: ServerProtocol, server: Server): Promise<void> {
+    const driver = this.driverFor(serverProtocol.protocol);
+    const connection = this.connectionParams(server);
+    await this.sshService.withConnection(connection, (ssh) => driver.uninstall({ ssh, server, serverProtocol }));
   }
 
   async scanExistingPeers(serverProtocolId: string): Promise<ScannedPeer[]> {

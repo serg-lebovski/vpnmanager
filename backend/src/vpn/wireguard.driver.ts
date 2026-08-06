@@ -12,6 +12,7 @@ export class WireGuardDriver extends BaseWireGuardLikeDriver {
   protected readonly confDir = '/etc/wireguard';
   protected readonly defaultInterfaceName = 'wg0';
   protected readonly containerNameHints = ['amnezia-wireguard', 'amnezia-wg'];
+  protected readonly aptPackages = 'wireguard wireguard-tools';
 
   constructor(sshService: SshService) {
     super(sshService);
@@ -30,7 +31,7 @@ export class WireGuardDriver extends BaseWireGuardLikeDriver {
     await this.ensureIpv4NetworkPreferred(ssh);
     await this.sshService.execOrThrow(
       ssh,
-      'export DEBIAN_FRONTEND=noninteractive && apt-get update -y && apt-get install -y wireguard wireguard-tools iptables',
+      `export DEBIAN_FRONTEND=noninteractive && apt-get update -y && apt-get install -y ${this.aptPackages} iptables`,
     );
   }
 

@@ -19,6 +19,7 @@ export class AmneziaWgDriver extends BaseWireGuardLikeDriver {
   protected readonly confDir = '/etc/amnezia/amneziawg';
   protected readonly defaultInterfaceName = 'awg0';
   protected readonly containerNameHints = ['amnezia-awg', 'amnezia-amneziawg'];
+  protected readonly aptPackages = 'amneziawg amneziawg-tools';
 
   constructor(sshService: SshService) {
     super(sshService);
@@ -41,7 +42,7 @@ export class AmneziaWgDriver extends BaseWireGuardLikeDriver {
         'apt-get install -y software-properties-common',
         'add-apt-repository -y ppa:amnezia/ppa',
         'apt-get update -y',
-        'apt-get install -y amneziawg amneziawg-tools iptables',
+        `apt-get install -y ${this.aptPackages} iptables`,
       ].join(' && '),
     );
   }

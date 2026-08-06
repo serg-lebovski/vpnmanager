@@ -25,7 +25,9 @@ import {
   CreateServerInput,
   DetectionResult,
   UpdateServerCredentialsInput,
+  checkProtocolVersion,
   createServer,
+  deleteProtocol,
   deleteServer,
   detectExistingInstallations,
   fetchServers,
@@ -33,6 +35,7 @@ import {
   rebootServer,
   scanAndImportPeers,
   testServerConnection,
+  updateProtocolPackage,
   updateServer,
   updateServerCredentials,
 } from '../api/servers';
@@ -349,6 +352,10 @@ function ServerCard({
     },
   });
 
+  const deleteProtocolMutation = useMutation({ mutationFn: deleteProtocol, onSuccess: onDetected });
+  const checkVersionMutation = useMutation({ mutationFn: checkProtocolVersion, onSuccess: onDetected });
+  const updatePackageMutation = useMutation({ mutationFn: updateProtocolPackage, onSuccess: onDetected });
+
   const protocolLabels: Record<VpnProtocol, string> = { wireguard: 'WireGuard', amneziawg: 'AmneziaWG' };
 
   return (
@@ -511,6 +518,11 @@ function ServerCard({
                 порт {sp.listenPort}, сеть {sp.networkCidr}
               </Typography>
               {sp.bridgeName && <Chip label={`мост «${sp.bridgeName}»`} size="small" color="info" variant="outlined" />}
+              {sp.status === 'active' && (
+                <Typography variant="body2" color="text.secondary">
+                  {sp.packageVersion ?? 'версия не проверялась'}
+                </Typography>
+              )}
               {sp.lastError && (
                 <Typography variant="body2" color="error">
                   {sp.lastError}
@@ -521,8 +533,51 @@ function ServerCard({
                   Сканировать/импортировать peers
                 </Button>
               )}
+              {sp.status === 'active' && !sp.execContainer && (
+                <>
+                  <Button
+                    size="small"
+                    disabled={checkVersionMutation.isPending && checkVersionMutation.variables === sp.id}
+                    onClick={() => checkVersionMutation.mutate(sp.id)}
+                  >
+                    Проверить версию
+                  </Button>
+                  <Button
+                    size="small"
+                    disabled={updatePackageMutation.isPending && updatePackageMutation.variables === sp.id}
+                    onClick={() => updatePackageMutation.mutate(sp.id)}
+                  >
+                    Обновить пакет
+                  </Button>
+                </>
+              )}
+              {!sp.bridgeName && (
+                <Button
+                  size="small"
+                  color="error"
+                  disabled={deleteProtocolMutation.isPending && deleteProtocolMutation.variables === sp.id}
+                  onClick={() => deleteProtocolMutation.mutate(sp.id)}
+                >
+                  Удалить
+                </Button>
+              )}
             </Stack>
             {sp.status === 'installing' && <LinearProgress sx={{ mt: 1 }} />}
+            {checkVersionMutation.isError && checkVersionMutation.variables === sp.id && (
+              <Typography variant="body2" color="error">
+                {getErrorMessage(checkVersionMutation.error, 'Не удалось проверить версию')}
+              </Typography>
+            )}
+            {updatePackageMutation.isError && updatePackageMutation.variables === sp.id && (
+              <Typography variant="body2" color="error">
+                {getErrorMessage(updatePackageMutation.error, 'Не удалось обновить пакет')}
+              </Typography>
+            )}
+            {deleteProtocolMutation.isError && deleteProtocolMutation.variables === sp.id && (
+              <Typography variant="body2" color="error">
+                {getErrorMessage(deleteProtocolMutation.error, 'Не удалось удалить протокол')}
+              </Typography>
+            )}
           </Box>
         ))}
         {server.protocols.length === 0 && <Typography variant="body2">Протоколы ещё не устанавливались</Typography>}

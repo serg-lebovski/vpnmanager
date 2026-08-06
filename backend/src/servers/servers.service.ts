@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { BridgesService } from '../bridges/bridges.service';
@@ -195,6 +195,74 @@ export class ServersService {
     } catch (error) {
       this.logger.warn(`Не удалось заранее создать upstream-peer для ${serverProtocol.id}: ${(error as Error).message}`);
     }
+  }
+
+  // Удаление ОДНОГО протокола, а не всего сервера — в отличие от remove() (который SSH
+  // намеренно не трогает, т.к. сервер обычно удаляют именно потому, что он недоступен),
+  // здесь сервер продолжает жить и работать, поэтому реально снимаем интерфейс на нём
+  // (down/автозапуск/конфиг/ключи, см. VpnProvisioningService.uninstallProtocol) —
+  // раньше удаление в панели трогало только БД и оставляло интерфейс висеть на сервере
+  // (та самая причина конфликтов порта/сети при следующей установке, см. installProtocol).
+  async removeProtocol(serverProtocolId: string): Promise<void> {
+    const serverProtocol = await this.serverProtocolsRepository.findOne({
+      where: { id: serverProtocolId },
+      relations: ['server'],
+    });
+    if (!serverProtocol) {
+      throw new NotFoundException('Протокол не найден');
+    }
+
+    // Клиентский интерфейс моста — структурная часть моста (клиенты подключены именно к
+    // нему), удалить его отдельно от самого моста нельзя.
+    const { protocolBridgeNames } = await this.bridgesService.getSelfServerContext();
+    const bridgeName = protocolBridgeNames.get(serverProtocolId);
+    if (bridgeName) {
+      throw new BadRequestException(`Это клиентский интерфейс моста «${bridgeName}» — удалите сам мост вместо отдельного протокола`);
+    }
+
+    // Если протокол сейчас служит upstream для какого-то моста — переключаем его на другой
+    // доступный сервер того же VPN-протокола (тот же путь, что при удалении сервера
+    // целиком, см. remove() выше), прежде чем убирать сам протокол.
+    await this.bridgesService.reassignUpstreamAwayFrom([serverProtocolId]);
+
+    await this.peersRepository.update({ serverProtocolId }, { status: PeerStatus.REVOKED });
+    await this.peersRepository.delete({ serverProtocolId });
+
+    // Best-effort: сервер может быть недоступен именно потому, что протокол и удаляют
+    // (например, зависшая/неудачная установка) — не блокируем очистку записи в БД из-за
+    // недоступности SSH.
+    try {
+      await this.vpnProvisioningService.uninstallProtocol(serverProtocol, serverProtocol.server);
+    } catch (error) {
+      this.logger.warn(
+        `Не удалось снять ${serverProtocol.protocol} на сервере "${serverProtocol.server.name}" по SSH: ${(error as Error).message}`,
+      );
+    }
+
+    await this.serverProtocolsRepository.delete(serverProtocolId);
+  }
+
+  async checkProtocolVersion(serverProtocolId: string): Promise<ServerProtocol> {
+    const serverProtocol = await this.findProtocolOrFail(serverProtocolId);
+    serverProtocol.packageVersion = await this.vpnProvisioningService.getInstalledVersion(serverProtocol, serverProtocol.server);
+    return this.serverProtocolsRepository.save(serverProtocol);
+  }
+
+  async updateProtocolPackage(serverProtocolId: string): Promise<ServerProtocol> {
+    const serverProtocol = await this.findProtocolOrFail(serverProtocolId);
+    serverProtocol.packageVersion = await this.vpnProvisioningService.updateProtocolPackage(serverProtocol, serverProtocol.server);
+    return this.serverProtocolsRepository.save(serverProtocol);
+  }
+
+  private async findProtocolOrFail(serverProtocolId: string): Promise<ServerProtocol> {
+    const serverProtocol = await this.serverProtocolsRepository.findOne({
+      where: { id: serverProtocolId },
+      relations: ['server'],
+    });
+    if (!serverProtocol) {
+      throw new NotFoundException('Протокол не найден');
+    }
+    return serverProtocol;
   }
 
   async scanAndImport(serverProtocolId: string): Promise<{ importedCount: number }> {

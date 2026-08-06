@@ -68,6 +68,22 @@ export async function scanAndImportPeers(serverProtocolId: string): Promise<{ im
   return data;
 }
 
+// В отличие от deleteServer — реально снимает интерфейс на сервере (down/автозапуск/
+// конфиг/ключи), а не только запись в БД.
+export async function deleteProtocol(serverProtocolId: string): Promise<void> {
+  await apiClient.delete(`/servers/protocols/${serverProtocolId}`);
+}
+
+export async function checkProtocolVersion(serverProtocolId: string) {
+  const { data } = await apiClient.post(`/servers/protocols/${serverProtocolId}/check-version`);
+  return data;
+}
+
+export async function updateProtocolPackage(serverProtocolId: string) {
+  const { data } = await apiClient.post(`/servers/protocols/${serverProtocolId}/update-package`);
+  return data;
+}
+
 export interface DetectionResult {
   protocol: VpnProtocol;
   found: boolean;

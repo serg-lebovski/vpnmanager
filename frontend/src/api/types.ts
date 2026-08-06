@@ -42,6 +42,13 @@ export interface ServerProtocolEntity {
   // Имя моста, если этот протокол — клиентский интерфейс моста на self-сервере (см.
   // ServersService.findAll на бэкенде); null — обычный протокол, мостом не используется.
   bridgeName?: string | null;
+  // Версия CLI-инструментов (`wg --version`/`awg --version`) — null, если ещё не
+  // проверялась или протокол работает в стороннем Docker-контейнере.
+  packageVersion: string | null;
+  // Имя Docker-контейнера, если протокол работает внутри стороннего контейнера (например,
+  // официальный self-hosted сервер AmneziaVPN) — тогда проверка версии/обновление пакета
+  // недоступны с этой панели (см. VpnDriver.updatePackage/uninstall на бэкенде).
+  execContainer: string | null;
 }
 
 export interface ServerEntity {

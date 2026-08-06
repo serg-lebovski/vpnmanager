@@ -91,4 +91,11 @@ export class ServerProtocol {
 
   @Column({ name: 'reserved_upstream_peer_id', type: 'uuid', nullable: true })
   reservedUpstreamPeerId: string | null;
+
+  // Версия CLI-инструментов протокола (`wg --version`/`awg --version`) — записывается при
+  // установке и по кнопке "Проверить версию"/"Обновить" (см. ServersService). null —
+  // ещё не проверялась (протоколы, установленные до появления этого поля) или протокол
+  // работает в стороннем Docker-контейнере (см. VpnDriver.getInstalledVersion).
+  @Column({ name: 'package_version', type: 'varchar', nullable: true })
+  packageVersion: string | null;
 }

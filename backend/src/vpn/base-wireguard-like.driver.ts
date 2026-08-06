@@ -41,6 +41,10 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
   // Подстроки имени Docker-контейнера, по которым узнаём "это наш протокол" среди
   // контейнеров официального self-hosted сервера AmneziaVPN (см. AMNEZIA_CONTAINER_CONF_SEARCH).
   protected abstract readonly containerNameHints: string[];
+  // apt-пакеты протокола — используется и при первой установке (ensureClientToolsInstalled
+  // в подклассах), и при обновлении (updatePackage ниже), чтобы не дублировать список имён
+  // пакетов в двух местах.
+  protected abstract readonly aptPackages: string;
 
   abstract ensureClientToolsInstalled(ssh: NodeSSH): Promise<void>;
   protected abstract buildObfuscationParams(): Record<string, number> | undefined;
@@ -120,9 +124,10 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
 
     const obfuscationParams = this.buildObfuscationParams();
     const egressInterface = await this.detectEgressInterface(ctx.ssh, null);
+    const interfaceAddress = gatewayAddress(options.networkCidr);
     const configText = this.renderConfig({
       privateKey,
-      interfaceAddress: gatewayAddress(options.networkCidr),
+      interfaceAddress,
       listenPort: options.listenPort,
       networkCidr: options.networkCidr,
       interfaceName,
@@ -148,6 +153,13 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
     // WireGuard-интерфейсом, хотя тот же бинарник и та же команда, вызванные напрямую (не
     // через systemd), отрабатывают штатно. Прямой вызов работает везде и для установки не
     // требует systemd, поэтому используем его.
+    // Раньше на этом месте администратор узнавал про конфликт только из ошибки ниже и шёл
+    // чинить руками по SSH — теперь чиним сами ДО попытки поднять интерфейс (см.
+    // reclaimConflictingInterface). Хинт в catch остаётся как подстраховка на случай, если
+    // авточистка не сработала (например, ip -d link show не опознал интерфейс как
+    // wireguard-совместимый) — тогда всё ещё нужно вмешательство человека.
+    await this.reclaimConflictingInterface(ctx.ssh, interfaceAddress, interfaceName);
+
     await this.sshService.execOrThrow(ctx.ssh, `systemctl enable ${this.quickBinary}@${interfaceName}`);
     try {
       await this.sshService.execOrThrow(ctx.ssh, `${this.quickBinary} up ${this.confPath(this.confDir, interfaceName)}`);
@@ -184,6 +196,83 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
     );
 
     return { interfaceName, serverPublicKey, obfuscationParams, mtu: options.mtu };
+  }
+
+  // Автоматизирует то, что раньше приходилось делать руками по SSH (см. подсказку в catch
+  // выше install()): если IP, который вот-вот займёт наш новый интерфейс, уже держит
+  // ДРУГОЙ wireguard-совместимый интерфейс на этом хосте — обычно осиротевший после
+  // удаления протокола/моста через панель (раньше удаление трогало только БД, см.
+  // uninstall() ниже, который это как раз и чинит на будущее) — сносим его сами перед
+  // установкой. Проверяем именно link type "wireguard" в `ip -d link show`, а не удаляем
+  // что попало: AmneziaWG — форк ядра WireGuard и репортует тот же link type, так что
+  // проверка ловит осиротевшие интерфейсы ОБОИХ протоколов, а не только своего.
+  private async reclaimConflictingInterface(ssh: NodeSSH, interfaceAddress: string, ownInterfaceName: string): Promise<void> {
+    const found = await this.sshService.exec(ssh, `ip -o -4 addr show | awk '$4 == "${interfaceAddress}" {print $2}'`);
+    const staleInterface = found.stdout.trim().split('\n')[0]?.trim();
+    if (!staleInterface || staleInterface === ownInterfaceName) {
+      return;
+    }
+    const linkInfo = await this.sshService.exec(ssh, `ip -d link show ${staleInterface}`);
+    if (!/wireguard/i.test(linkInfo.stdout)) {
+      return;
+    }
+    // Не знаем заранее, каким именно юнитом (wg-quick@/awg-quick@) он был поднят —
+    // пробуем оба, best-effort (interfaces без такого юнита просто дают безобидную ошибку).
+    await this.sshService.exec(
+      ssh,
+      `systemctl disable --now wg-quick@${staleInterface} >/dev/null 2>&1; systemctl disable --now awg-quick@${staleInterface} >/dev/null 2>&1; true`,
+    );
+    await this.sshService.exec(ssh, `ip link delete ${staleInterface} >/dev/null 2>&1 || true`);
+  }
+
+  // Версия CLI-инструментов — для отображения в панели и как способ узнать, что стоит
+  // обновить. null — бинарник не найден (например, если ensureClientToolsInstalled ещё ни
+  // разу не отработал на этом хосте) или протокол работает в стороннем Docker-контейнере
+  // (в него команда напрямую с хоста не достучится, ctx.ssh — SSH на ХОСТ).
+  async getInstalledVersion(ctx: VpnDriverContext): Promise<string | null> {
+    if (ctx.serverProtocol.execContainer) {
+      return null;
+    }
+    const result = await this.sshService.exec(ctx.ssh, `${this.binary} --version`);
+    return result.code === 0 && result.stdout.trim() ? result.stdout.trim() : null;
+  }
+
+  // apt upgrade в рамках уже подключённых источников (обычный apt-репозиторий для
+  // WireGuard, PPA amnezia/ppa для AmneziaWG — сам PPA не переподключаем, см.
+  // ensureClientToolsInstalled в подклассах) — НЕ смена мажорной версии. Возвращает версию
+  // ПОСЛЕ обновления.
+  async updatePackage(ctx: VpnDriverContext): Promise<string | null> {
+    if (ctx.serverProtocol.execContainer) {
+      throw new Error(
+        'Обновление недоступно для протокола, работающего в стороннем Docker-контейнере (официальный self-hosted сервер AmneziaVPN) — управляется вне этой панели',
+      );
+    }
+    await this.sshService.execOrThrow(
+      ctx.ssh,
+      `export DEBIAN_FRONTEND=noninteractive && apt-get update -y && apt-get install --only-upgrade -y ${this.aptPackages}`,
+    );
+    return this.getInstalledVersion(ctx);
+  }
+
+  // Полностью снимает протокол с сервера — используется при удалении протокола из панели
+  // (см. ServersService.removeProtocol), чтобы НЕ оставлять осиротевший интерфейс (именно
+  // такие интерфейсы reclaimConflictingInterface потом подчищает при следующей установке
+  // — но лучше не создавать их вовсе). down — best-effort (`|| true`): если интерфейс уже
+  // не поднят, wg-quick/awg-quick завершится с ошибкой, это не повод останавливать очистку.
+  async uninstall(ctx: VpnDriverContext): Promise<void> {
+    if (ctx.serverProtocol.execContainer) {
+      throw new Error(
+        'Удаление недоступно для протокола, работающего в стороннем Docker-контейнере — остановите/удалите контейнер вручную по SSH',
+      );
+    }
+    const interfaceName = ctx.serverProtocol.interfaceName;
+    const confDir = ctx.serverProtocol.remoteConfDir || this.confDir;
+    const keyPrefix = this.keyFilePrefix(interfaceName);
+    const remotePath = this.confPath(confDir, interfaceName);
+    await this.sshService.exec(ctx.ssh, `${this.quickBinary} down ${remotePath} >/dev/null 2>&1 || true`);
+    await this.sshService.exec(ctx.ssh, `systemctl disable --now ${this.quickBinary}@${interfaceName} >/dev/null 2>&1 || true`);
+    await this.sshService.exec(ctx.ssh, `ip link delete ${interfaceName} >/dev/null 2>&1 || true`);
+    await this.sshService.exec(ctx.ssh, `rm -f ${remotePath} ${confDir}/${keyPrefix}_private.key ${confDir}/${keyPrefix}_public.key`);
   }
 
   async applyPeers(ctx: VpnDriverContext, peers: PeerSpec[]): Promise<void> {

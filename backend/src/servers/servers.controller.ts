@@ -65,6 +65,21 @@ export class ServersController {
     return this.serversService.scanAndImport(serverProtocolId);
   }
 
+  @Delete('protocols/:serverProtocolId')
+  removeProtocol(@Param('serverProtocolId') serverProtocolId: string) {
+    return this.serversService.removeProtocol(serverProtocolId);
+  }
+
+  @Post('protocols/:serverProtocolId/check-version')
+  checkProtocolVersion(@Param('serverProtocolId') serverProtocolId: string) {
+    return this.serversService.checkProtocolVersion(serverProtocolId);
+  }
+
+  @Post('protocols/:serverProtocolId/update-package')
+  updateProtocolPackage(@Param('serverProtocolId') serverProtocolId: string) {
+    return this.serversService.updateProtocolPackage(serverProtocolId);
+  }
+
   @Post(':id/detect')
   detectExistingInstallations(@Param('id') id: string) {
     return this.serversService.detectExistingInstallations(id);
