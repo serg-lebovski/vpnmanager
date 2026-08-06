@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { useAuth } from './auth/AuthContext';
 import { ProtectedRoute } from './auth/ProtectedRoute';
 import { BackendStatusBanner } from './components/BackendStatusBanner';
+import { AuditLogPage } from './pages/AuditLogPage';
 import { BridgePage } from './pages/BridgePage';
 import { ClientDetailPage } from './pages/ClientDetailPage';
 import { DashboardLayout } from './pages/DashboardLayout';
@@ -32,6 +33,7 @@ export default function App() {
               <Route path="/organizations/:id" element={<ClientDetailPage />} />
               <Route path="/bridge" element={<BridgePage />} />
               <Route path="/settings" element={<SettingsPage />} />
+              <Route path="/audit-log" element={<AuditLogPage />} />
             </Route>
             <Route element={<ProtectedRoute allowedRoles={['super_admin', 'org_admin']} />}>
               <Route path="/users" element={<UsersPage />} />

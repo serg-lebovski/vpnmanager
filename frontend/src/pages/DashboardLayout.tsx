@@ -94,6 +94,15 @@ export function DashboardLayout() {
               >
                 Настройки
               </MenuItem>,
+              <MenuItem
+                key="audit-log"
+                onClick={() => {
+                  setMenuAnchor(null);
+                  navigate('/audit-log');
+                }}
+              >
+                Журнал действий
+              </MenuItem>,
               <Divider key="divider" />,
             ]}
             <MenuItem

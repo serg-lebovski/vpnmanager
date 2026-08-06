@@ -1,10 +1,12 @@
 import { Module } from '@nestjs/common';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
+import { AuditLogInterceptor } from './audit-log/audit-log.interceptor';
+import { AuditLogModule } from './audit-log/audit-log.module';
 import { AuthModule } from './auth/auth.module';
 import { BridgesModule } from './bridges/bridges.module';
 import { DashboardModule } from './dashboard/dashboard.module';
@@ -43,6 +45,7 @@ import { VpnModule } from './vpn/vpn.module';
         synchronize: true,
       }),
     }),
+    AuditLogModule,
     AuthModule,
     DatabaseModule,
     OrganizationsModule,
@@ -57,6 +60,9 @@ import { VpnModule } from './vpn/vpn.module';
     DashboardModule,
   ],
   controllers: [AppController],
-  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
+  providers: [
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_INTERCEPTOR, useClass: AuditLogInterceptor },
+  ],
 })
 export class AppModule {}
