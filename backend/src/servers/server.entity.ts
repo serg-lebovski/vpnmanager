@@ -43,6 +43,14 @@ export class Server {
   @Column({ name: 'last_error', type: 'text', nullable: true })
   lastError: string | null;
 
+  // TOFU (trust-on-first-use) — отпечаток SSH host key, зафиксированный при первом
+  // успешном подключении (см. SshService). null — ещё не подключались ни разу, либо
+  // отпечаток сброшен вручную (после осознанной переустановки ОС сервера/смены хоста —
+  // PATCH /servers/:id/reset-host-key). Несовпадение при следующем подключении — сигнал
+  // возможной подмены сервера/MITM, подключение отклоняется (см. SshService.exec).
+  @Column({ name: 'ssh_host_key_fingerprint', type: 'varchar', nullable: true })
+  sshHostKeyFingerprint: string | null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 

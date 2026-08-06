@@ -146,6 +146,18 @@ getAllowedServersForRequester` (`GET /peers/allowed-servers`, доступен �
 на `Server` и приватных ключей peers в БД (`encryptSecret`/`decryptSecret`). Формат хранения:
 `iv:authTag:ciphertext` в hex, через `:`.
 
+**SSH host-key verification (TOFU)** (`Server.sshHostKeyFingerprint`, `SshService`) — раньше
+подключение принимало любой предъявленный host key без проверки вообще. Теперь при первом
+успешном подключении к серверу отпечаток (`SHA256:` + base64 от sha256 сырого ключа — хешируем
+сами в Node, не полагаясь на `hostHash` конкретной версии ssh2) фиксируется в БД
+(`VpnProvisioningService.connectionParams` — единая точка сборки `SshConnectionParams` для
+всех SSH-вызовов, там же `onHostKeyTrustedOnFirstUse` пишет отпечаток fire-and-forget); при
+каждом следующем подключении предъявленный ключ сверяется с сохранённым — несовпадение
+отклоняет подключение (`SshHostKeyMismatchError`, secret на сервер не уходит) ещё ДО завершения
+handshake. `connectWithRetry` намеренно не ретраит именно эту ошибку (транзиентной не станет).
+`POST /servers/:id/reset-host-key` — осознанный сброс после легитимной переустановки/смены
+сервера (иначе панель отклоняла бы этот сервер навсегда).
+
 **Режим моста** (`bridges/`) — панель поднимает WireGuard/AmneziaWG на собственном хосте
 (self-сервер), клиенты подключаются к нему напрямую, а сам мост работает клиентом к одному из уже
 добавленных backend-серверов через `VpnDriver.connectAsClient`. Self-сервер не выбирается из списка

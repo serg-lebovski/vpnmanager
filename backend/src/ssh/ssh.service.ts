@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { NodeSSH } from 'node-ssh';
 import { SshAuthType } from '../common/enums';
@@ -8,7 +9,22 @@ export interface SshConnectionParams {
   username: string;
   authType: SshAuthType;
   secret: string;
+  // TOFU (trust-on-first-use), см. Server.sshHostKeyFingerprint — undefined (поле не
+  // передано вовсе) означает "не проверять" (например, сервер ещё не сохранён в БД, класть
+  // отпечаток некуда); null — сервер сохранён, но отпечатка ещё нет (самое первое
+  // подключение — запоминаем предъявленный ключ); строка — сравниваем и отклоняем при
+  // несовпадении.
+  knownHostKeyFingerprint?: string | null;
+  // Вызывается синхронно, если это было первое подключение (knownHostKeyFingerprint ===
+  // null) — вызывающий код сохраняет новый отпечаток в БД.
+  onHostKeyTrustedOnFirstUse?: (fingerprint: string) => void;
 }
+
+// Специальный класс ошибки — connectWithRetry не должен ПОВТОРЯТЬ попытку при несовпадении
+// host key (в отличие от транзиентных сетевых сбоев): это не пройдёт и со второй, и с
+// третьей попытки, а сама повторная попытка выглядела бы так, будто мы пытаемся "продавить"
+// подключение через явный сигнал подмены сервера.
+export class SshHostKeyMismatchError extends Error {}
 
 export interface ExecResult {
   stdout: string;
@@ -39,6 +55,9 @@ export class SshService {
     let lastError: Error | undefined;
     for (let attempt = 1; attempt <= attempts; attempt++) {
       const ssh = new NodeSSH();
+      // Замыкание per-попытка, а не общая переменная снаружи цикла — на всякий случай,
+      // если бы retry когда-нибудь пошёл по этому пути (сейчас не ходит, см. ниже).
+      let mismatch: string | null = null;
       try {
         await ssh.connect({
           host: params.host,
@@ -47,11 +66,22 @@ export class SshService {
           password: params.authType === SshAuthType.PASSWORD ? params.secret : undefined,
           privateKey: params.authType === SshAuthType.PRIVATE_KEY ? params.secret : undefined,
           readyTimeout: 15000,
+          hostVerifier:
+            params.knownHostKeyFingerprint !== undefined
+              ? this.buildHostVerifier(params, (message) => (mismatch = message))
+              : undefined,
         });
         return ssh;
       } catch (error) {
         lastError = error as Error;
         ssh.dispose();
+        if (mismatch) {
+          // Не ретраим — несовпадение host key не пройдёт и со второй попытки, а сама
+          // повторная попытка выглядела бы так, будто мы пытаемся "продавить" подключение
+          // через явный сигнал возможной подмены сервера. Заменяем малопонятную сырую
+          // ошибку ssh2 ("Host verification failed" и т.п.) на объясняющее сообщение.
+          throw new SshHostKeyMismatchError(mismatch);
+        }
         if (attempt < attempts) {
           this.logger.warn(`SSH-подключение к ${params.host} не удалось (попытка ${attempt}/${attempts}): ${lastError.message}`);
           await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
@@ -59,6 +89,33 @@ export class SshService {
       }
     }
     throw lastError;
+  }
+
+  // ssh2 передаёт сюда СЫРОЙ Buffer публичного ключа хоста (без cfg.hostHash — тогда он бы
+  // отдавал уже хешированную hex-строку, но мы хешируем сами, чтобы формат отпечатка не
+  // зависел от версии/поддержки алгоритмов конкретно в ssh2). Возврат false обрывает
+  // подключение на уровне ssh2 ДО завершения handshake — секрет (пароль/приватный ключ)
+  // при несовпадении на сервер вообще не уходит. Пишем причину через onMismatch, а не
+  // бросаем исключение прямо здесь — колбэк вызывается синхронно из недр протокольного
+  // обработчика ssh2, а не напрямую из промиса connect(), не факт что там есть свой
+  // try/catch вокруг вызова.
+  private buildHostVerifier(params: SshConnectionParams, onMismatch: (message: string) => void): (key: Buffer) => boolean {
+    return (key: Buffer): boolean => {
+      const fingerprint = `SHA256:${createHash('sha256').update(key).digest('base64')}`;
+      if (!params.knownHostKeyFingerprint) {
+        params.onHostKeyTrustedOnFirstUse?.(fingerprint);
+        return true;
+      }
+      if (fingerprint !== params.knownHostKeyFingerprint) {
+        onMismatch(
+          `SSH host key сервера ${params.host} не совпадает с сохранённым при первом подключении отпечатком — возможна подмена сервера ` +
+            `(или сервер был переустановлен/восстановлен на другой машине). Ожидался ${params.knownHostKeyFingerprint}, получен ${fingerprint}. ` +
+            `Если это ожидаемо (например, вы переустановили сервер) — сбросьте сохранённый отпечаток в настройках сервера и подключитесь заново.`,
+        );
+        return false;
+      }
+      return true;
+    };
   }
 
   async withConnection<T>(params: SshConnectionParams, fn: (ssh: NodeSSH) => Promise<T>): Promise<T> {

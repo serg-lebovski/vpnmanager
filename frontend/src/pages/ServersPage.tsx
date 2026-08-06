@@ -30,6 +30,7 @@ import SecurityIcon from '@mui/icons-material/Security';
 import SyncIcon from '@mui/icons-material/Sync';
 import SystemUpdateAltIcon from '@mui/icons-material/SystemUpdateAlt';
 import TravelExploreIcon from '@mui/icons-material/TravelExplore';
+import VpnKeyIcon from '@mui/icons-material/VpnKey';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, useEffect, useState } from 'react';
 import { connectDashboardSocket } from '../api/dashboard';
@@ -48,6 +49,7 @@ import {
   fetchServers,
   installProtocol,
   rebootServer,
+  resetHostKeyFingerprint,
   scanAndImportPeers,
   testServerConnection,
   updateProtocolPackage,
@@ -161,6 +163,7 @@ export function ServersPage() {
     onSuccess: invalidate,
   });
   const fail2banMutation = useMutation({ mutationFn: ensureFail2ban });
+  const resetHostKeyMutation = useMutation({ mutationFn: resetHostKeyFingerprint, onSuccess: invalidate });
   const testMutation = useMutation({ mutationFn: testServerConnection, onSuccess: invalidate });
   const credentialsMutation = useMutation({
     mutationFn: (vars: { id: string; input: UpdateServerCredentialsInput }) => updateServerCredentials(vars.id, vars.input),
@@ -272,6 +275,8 @@ export function ServersPage() {
                 ? getErrorMessage(fail2banMutation.error, 'Не удалось настроить fail2ban')
                 : undefined
             }
+            onResetHostKey={() => resetHostKeyMutation.mutate(server.id)}
+            resetHostKeyPending={resetHostKeyMutation.isPending && resetHostKeyMutation.variables === server.id}
             isTesting={testMutation.isPending && testMutation.variables === server.id}
             onReboot={() => setRebootConfirmId(server.id)}
             onUpdateCredentials={(input) => credentialsMutation.mutate({ id: server.id, input })}
@@ -336,6 +341,8 @@ function ServerCard({
   fail2banPending,
   fail2banResult,
   fail2banErrorMessage,
+  onResetHostKey,
+  resetHostKeyPending,
 }: {
   server: ServerEntity;
   online?: boolean;
@@ -356,6 +363,8 @@ function ServerCard({
   fail2banPending: boolean;
   fail2banResult: Fail2banStatus | undefined;
   fail2banErrorMessage: string | undefined;
+  onResetHostKey: () => void;
+  resetHostKeyPending: boolean;
 }) {
   const [protocol, setProtocol] = useState<VpnProtocol>('wireguard');
   const [listenPort, setListenPort] = useState(() => suggestPort(server.protocols));
@@ -476,6 +485,21 @@ function ServerCard({
             <span>
               <IconButton size="small" onClick={onEnsureFail2ban} disabled={fail2banPending}>
                 {fail2banPending ? <CircularProgress size={16} /> : <SecurityIcon fontSize="small" />}
+              </IconButton>
+            </span>
+          </Tooltip>
+          <Tooltip
+            title={
+              resetHostKeyPending
+                ? 'Сбрасываем…'
+                : server.sshHostKeyFingerprint
+                  ? `SSH-ключ хоста закреплён (${server.sshHostKeyFingerprint}). Нажмите, чтобы сбросить после переустановки сервера — иначе следующее подключение будет отклонено как возможная подмена.`
+                  : 'SSH-ключ хоста ещё не закреплён — закрепится при следующем подключении'
+            }
+          >
+            <span>
+              <IconButton size="small" onClick={onResetHostKey} disabled={resetHostKeyPending || !server.sshHostKeyFingerprint}>
+                {resetHostKeyPending ? <CircularProgress size={16} /> : <VpnKeyIcon fontSize="small" />}
               </IconButton>
             </span>
           </Tooltip>

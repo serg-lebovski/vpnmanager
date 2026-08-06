@@ -89,4 +89,12 @@ export class ServersController {
   ensureFail2ban(@Param('id') id: string) {
     return this.serversService.ensureFail2banFor(id);
   }
+
+  // Осознанный сброс TOFU-отпечатка SSH host key (см. Server.sshHostKeyFingerprint) —
+  // после легитимной переустановки/смены сервера, иначе подключение отклонялось бы
+  // навсегда как возможная подмена (SshHostKeyMismatchError).
+  @Post(':id/reset-host-key')
+  resetHostKeyFingerprint(@Param('id') id: string) {
+    return this.serversService.resetHostKeyFingerprint(id);
+  }
 }

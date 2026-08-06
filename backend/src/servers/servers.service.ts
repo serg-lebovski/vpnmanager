@@ -170,18 +170,24 @@ export class ServersService {
 
   async testConnection(id: string): Promise<{ ok: boolean; info?: string; error?: string }> {
     const server = await this.findOneOrFail(id);
-    const result = await this.sshService.testConnection({
-      host: server.host,
-      port: server.sshPort,
-      username: server.sshUsername,
-      authType: server.sshAuthType,
-      secret: decryptSecret(server.sshSecretEnc),
-    });
+    // vpnProvisioningService.connectionParams — не только расшифровка секрета, но и TOFU
+    // (см. Server.sshHostKeyFingerprint); раньше здесь параметры собирались вручную и
+    // проверка host key просто не срабатывала для "Проверить подключение".
+    const result = await this.sshService.testConnection(this.vpnProvisioningService.connectionParams(server));
     server.status = result.ok ? ServerStatus.ONLINE : ServerStatus.OFFLINE;
     server.lastCheckedAt = new Date();
     server.lastError = result.ok ? null : result.error || null;
     await this.serversRepository.save(server);
     return result;
+  }
+
+  // Осознанный сброс TOFU-отпечатка — нужен после ЛЕГИТИМНОЙ смены host key (сервер
+  // переустановлен/восстановлен на другую машину и т.п.), иначе панель не смогла бы больше
+  // подключиться к этому серверу вообще (SshHostKeyMismatchError, см. SshService).
+  async resetHostKeyFingerprint(id: string): Promise<Server> {
+    const server = await this.findOneOrFail(id);
+    server.sshHostKeyFingerprint = null;
+    return this.serversRepository.save(server);
   }
 
   // Отправляет команду перезагрузки по SSH и сразу возвращает управление — сама

@@ -46,6 +46,15 @@ export class VpnProvisioningService {
       username: server.sshUsername,
       authType: server.sshAuthType,
       secret: decryptSecret(server.sshSecretEnc),
+      // TOFU — см. SshService/Server.sshHostKeyFingerprint. Персист нового отпечатка при
+      // первом подключении — fire-and-forget (сама SSH-операция, ради которой открывали
+      // это соединение, не должна ждать/падать из-за отдельной записи в БД).
+      knownHostKeyFingerprint: server.sshHostKeyFingerprint,
+      onHostKeyTrustedOnFirstUse: (fingerprint) => {
+        this.serversRepository.update(server.id, { sshHostKeyFingerprint: fingerprint }).catch((error) => {
+          this.logger.warn(`Не удалось сохранить отпечаток SSH host key сервера "${server.name}": ${(error as Error).message}`);
+        });
+      },
     };
   }
 

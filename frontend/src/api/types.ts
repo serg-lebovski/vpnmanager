@@ -70,6 +70,9 @@ export interface ServerEntity {
   lastCheckedAt: string | null;
   lastError: string | null;
   needsCredentials: boolean;
+  // TOFU-отпечаток SSH host key — null, пока ни разу не подключались (или сброшен вручную
+  // после переустановки сервера). См. SshService/ServersPage.
+  sshHostKeyFingerprint: string | null;
   createdAt: string;
   protocols: ServerProtocolEntity[];
 }

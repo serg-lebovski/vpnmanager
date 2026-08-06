@@ -108,3 +108,10 @@ export async function ensureFail2ban(serverId: string): Promise<Fail2banStatus> 
   const { data } = await apiClient.post<Fail2banStatus>(`/servers/${serverId}/fail2ban`);
   return data;
 }
+
+// Сброс TOFU-отпечатка SSH host key — после легитимной переустановки/смены сервера,
+// иначе панель отклоняла бы подключение как возможную подмену навсегда.
+export async function resetHostKeyFingerprint(serverId: string): Promise<ServerEntity> {
+  const { data } = await apiClient.post<ServerEntity>(`/servers/${serverId}/reset-host-key`);
+  return data;
+}
