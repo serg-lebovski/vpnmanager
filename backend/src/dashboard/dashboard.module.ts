@@ -5,12 +5,14 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { Peer } from '../peers/peer.entity';
 import { Server } from '../servers/server.entity';
 import { VpnModule } from '../vpn/vpn.module';
+import { DashboardController } from './dashboard.controller';
 import { DashboardGateway } from './dashboard.gateway';
 import { DashboardService } from './dashboard.service';
+import { PeerTrafficSample } from './peer-traffic-sample.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Server, Peer]),
+    TypeOrmModule.forFeature([Server, Peer, PeerTrafficSample]),
     VpnModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
@@ -20,6 +22,7 @@ import { DashboardService } from './dashboard.service';
       }),
     }),
   ],
+  controllers: [DashboardController],
   providers: [DashboardGateway, DashboardService],
 })
 export class DashboardModule {}

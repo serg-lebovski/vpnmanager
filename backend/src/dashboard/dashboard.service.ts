@@ -2,13 +2,14 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { PeerStatus, ServerProtocolStatus, VpnProtocol } from '../common/enums';
+import { PeerSource, PeerStatus, ServerProtocolStatus, VpnProtocol } from '../common/enums';
 import { Peer } from '../peers/peer.entity';
 import { ServerProtocol } from '../servers/server-protocol.entity';
 import { Server } from '../servers/server.entity';
 import { PeerTransferStats } from '../vpn/vpn-driver.interface';
 import { VpnProvisioningService } from '../vpn/vpn-provisioning.service';
 import { DashboardGateway } from './dashboard.gateway';
+import { PeerTrafficSample } from './peer-traffic-sample.entity';
 
 export interface DashboardServerStats {
   serverId: string;
@@ -33,7 +34,10 @@ export interface DashboardServerStats {
 export interface DashboardPeerStats {
   peerId: string;
   name: string;
+  serverId: string;
   serverName: string;
+  organizationId: string | null;
+  source: PeerSource;
   protocol: VpnProtocol;
   rxBytesTotal: number;
   txBytesTotal: number;
@@ -47,11 +51,41 @@ export interface DashboardSnapshot {
   peers: DashboardPeerStats[];
 }
 
+export type TrafficRange = 'day' | 'week' | 'month';
+
+export interface ServerTrafficRow {
+  serverId: string;
+  serverName: string;
+  rxBytes: number;
+  txBytes: number;
+}
+
+export interface PeerTrafficRow {
+  peerId: string;
+  peerName: string;
+  serverName: string;
+  rxBytes: number;
+  txBytes: number;
+}
+
+export interface MonthlyServerTrafficRow {
+  month: string; // 'YYYY-MM'
+  serverId: string;
+  serverName: string;
+  rxBytes: number;
+  txBytes: number;
+}
+
 // Опрашивать каждую пару минут смысла нет (это "реальное время"), но и раз в секунду —
 // перебор: на каждый сервер тратится отдельное SSH-подключение (см. SshService), и по
 // нескольку команд на каждый активный протокол. 7 секунд — компромисс между
 // отзывчивостью дашборда и нагрузкой на SSH/сеть при десятках серверов.
 const POLL_INTERVAL_MS = 7000;
+
+// Для истории трафика (день/неделя/месяц на дашборде) 7-секундная частота дала бы огромный
+// объём строк почти без пользы (для отчёта не нужна секундная точность) — сохраняем в БД
+// заметно реже, используя уже полученные (не новый SSH-запрос) данные того же опроса.
+const PERSIST_INTERVAL_MS = 15 * 60 * 1000;
 
 @Injectable()
 export class DashboardService {
@@ -62,9 +96,16 @@ export class DashboardService {
   private readonly lastSample = new Map<string, { rxBytes: number; txBytes: number; at: number }>();
   private gateway: DashboardGateway | null = null;
 
+  // peerId -> последняя кумулятивная проба, ИСПОЛЬЗОВАННАЯ для персиста дельты в историю
+  // трафика — отдельно от lastSample (та — для мгновенного bps каждые 7с, эта — для
+  // персиста раз в PERSIST_INTERVAL_MS, шаг другой).
+  private readonly lastPersistedCumulative = new Map<string, { rxBytes: number; txBytes: number }>();
+  private lastPersistedAt = 0;
+
   constructor(
     @InjectRepository(Server) private readonly serversRepository: Repository<Server>,
     @InjectRepository(Peer) private readonly peersRepository: Repository<Peer>,
+    @InjectRepository(PeerTrafficSample) private readonly trafficSamplesRepository: Repository<PeerTrafficSample>,
     private readonly vpnProvisioningService: VpnProvisioningService,
   ) {}
 
@@ -83,6 +124,16 @@ export class DashboardService {
     const snapshot = await this.buildSnapshot();
     this.lastSnapshot = snapshot;
     this.gateway?.broadcast(snapshot);
+
+    const now = Date.now();
+    if (now - this.lastPersistedAt >= PERSIST_INTERVAL_MS) {
+      this.lastPersistedAt = now;
+      try {
+        await this.persistTrafficSamples(snapshot.peers);
+      } catch (error) {
+        this.logger.warn(`Не удалось сохранить историю трафика: ${(error as Error).message}`);
+      }
+    }
   }
 
   private async buildSnapshot(): Promise<DashboardSnapshot> {
@@ -199,7 +250,10 @@ export class DashboardService {
       return {
         peerId: peer.id,
         name: peer.name,
+        serverId: server.id,
         serverName: server.name,
+        organizationId: peer.organizationId,
+        source: peer.source,
         protocol: serverProtocol.protocol,
         rxBytesTotal,
         txBytesTotal,
@@ -207,5 +261,135 @@ export class DashboardService {
         txBps: Math.round(txBps),
       };
     });
+  }
+
+  // Раз в PERSIST_INTERVAL_MS сохраняет ДЕЛЬТУ (не кумулятивное значение) трафика каждого
+  // peer'а с момента предыдущего персиста — используя уже полученный этим же опросом
+  // снапшот (см. poll()), без единого лишнего SSH-запроса. max(0, ...) — та же защита от
+  // сброса счётчиков интерфейса при пересоздании, что и у мгновенного bps в buildPeerStats.
+  private async persistTrafficSamples(peers: DashboardPeerStats[]): Promise<void> {
+    const rows: Array<Partial<PeerTrafficSample>> = [];
+    const seenPeerIds = new Set<string>();
+
+    for (const peer of peers) {
+      seenPeerIds.add(peer.peerId);
+      const previous = this.lastPersistedCumulative.get(peer.peerId);
+      this.lastPersistedCumulative.set(peer.peerId, { rxBytes: peer.rxBytesTotal, txBytes: peer.txBytesTotal });
+      if (!previous) {
+        // Первая проба этого peer'а с момента старта backend — дельту считать не от чего
+        // (посчитали бы весь накопленный к этому моменту трафик как "за один интервал").
+        continue;
+      }
+      const rxBytes = Math.max(0, peer.rxBytesTotal - previous.rxBytes);
+      const txBytes = Math.max(0, peer.txBytesTotal - previous.txBytes);
+      if (rxBytes === 0 && txBytes === 0) {
+        continue;
+      }
+      rows.push({
+        peerId: peer.peerId,
+        peerName: peer.name,
+        peerSource: peer.source,
+        organizationId: peer.organizationId,
+        serverId: peer.serverId,
+        serverName: peer.serverName,
+        rxBytes,
+        txBytes,
+      });
+    }
+
+    // Peers, пропавшие из снапшота (отозваны/удалены/сервер недоступен) — забываем их
+    // последнюю пробу, иначе появление НОВОГО peer'а с тем же id (после восстановления БД
+    // из бэкапа, например) молча досчитает несуществующий разрыв как дельту.
+    for (const peerId of this.lastPersistedCumulative.keys()) {
+      if (!seenPeerIds.has(peerId)) {
+        this.lastPersistedCumulative.delete(peerId);
+      }
+    }
+
+    if (rows.length > 0) {
+      await this.trafficSamplesRepository.insert(rows);
+    }
+  }
+
+  private rangeStart(range: TrafficRange): Date {
+    const from = new Date();
+    if (range === 'day') {
+      from.setDate(from.getDate() - 1);
+    } else if (range === 'week') {
+      from.setDate(from.getDate() - 7);
+    } else {
+      from.setMonth(from.getMonth() - 1);
+    }
+    return from;
+  }
+
+  // SUPER_ADMIN-only (см. DashboardController) — та же граница видимости, что у живого
+  // дашборда (WS namespace пускает только super_admin), поэтому без org-скоупинга: сумма
+  // по ВСЕМ организациям сразу.
+  async getTrafficByServer(range: TrafficRange): Promise<ServerTrafficRow[]> {
+    const rows = await this.trafficSamplesRepository
+      .createQueryBuilder('s')
+      .select('s.serverId', 'serverId')
+      .addSelect('MAX(s.serverName)', 'serverName')
+      .addSelect('SUM(s.rxBytes)', 'rxBytes')
+      .addSelect('SUM(s.txBytes)', 'txBytes')
+      .where('s.sampledAt >= :from', { from: this.rangeStart(range) })
+      .groupBy('s.serverId')
+      .orderBy('SUM(s.rxBytes) + SUM(s.txBytes)', 'DESC')
+      .getRawMany<{ serverId: string; serverName: string; rxBytes: string; txBytes: string }>();
+    return rows.map((r) => ({ serverId: r.serverId, serverName: r.serverName, rxBytes: Number(r.rxBytes), txBytes: Number(r.txBytes) }));
+  }
+
+  // Без BRIDGE_UPSTREAM — это системный peer моста (суммарный трафик всех его клиентов), а
+  // не настоящий клиент; он и так скрыт из обычных списков peers (см. PeersService).
+  async getTrafficByPeer(range: TrafficRange): Promise<PeerTrafficRow[]> {
+    const rows = await this.trafficSamplesRepository
+      .createQueryBuilder('s')
+      .select('s.peerId', 'peerId')
+      .addSelect('MAX(s.peerName)', 'peerName')
+      .addSelect('MAX(s.serverName)', 'serverName')
+      .addSelect('SUM(s.rxBytes)', 'rxBytes')
+      .addSelect('SUM(s.txBytes)', 'txBytes')
+      .where('s.sampledAt >= :from', { from: this.rangeStart(range) })
+      .andWhere('s.peerSource != :bridgeUpstream', { bridgeUpstream: PeerSource.BRIDGE_UPSTREAM })
+      .groupBy('s.peerId')
+      .orderBy('SUM(s.rxBytes) + SUM(s.txBytes)', 'DESC')
+      .getRawMany<{ peerId: string; peerName: string; serverName: string; rxBytes: string; txBytes: string }>();
+    return rows.map((r) => ({
+      peerId: r.peerId,
+      peerName: r.peerName,
+      serverName: r.serverName,
+      rxBytes: Number(r.rxBytes),
+      txBytes: Number(r.txBytes),
+    }));
+  }
+
+  // "Помесячно" — по серверам (включая self-серверы, несущие мосты — это обычные Server,
+  // отдельной группировки "по мостам" не нужно), последние `months` календарных месяцев.
+  async getTrafficMonthly(months: number): Promise<MonthlyServerTrafficRow[]> {
+    const from = new Date();
+    from.setMonth(from.getMonth() - (Math.max(1, months) - 1));
+    from.setDate(1);
+    from.setHours(0, 0, 0, 0);
+
+    const rows = await this.trafficSamplesRepository
+      .createQueryBuilder('s')
+      .select("to_char(date_trunc('month', s.sampledAt), 'YYYY-MM')", 'month')
+      .addSelect('s.serverId', 'serverId')
+      .addSelect('MAX(s.serverName)', 'serverName')
+      .addSelect('SUM(s.rxBytes)', 'rxBytes')
+      .addSelect('SUM(s.txBytes)', 'txBytes')
+      .where('s.sampledAt >= :from', { from })
+      .groupBy("date_trunc('month', s.sampledAt)")
+      .addGroupBy('s.serverId')
+      .orderBy("date_trunc('month', s.sampledAt)", 'DESC')
+      .getRawMany<{ month: string; serverId: string; serverName: string; rxBytes: string; txBytes: string }>();
+    return rows.map((r) => ({
+      month: r.month,
+      serverId: r.serverId,
+      serverName: r.serverName,
+      rxBytes: Number(r.rxBytes),
+      txBytes: Number(r.txBytes),
+    }));
   }
 }

@@ -15,8 +15,17 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material';
+import { useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { connectDashboardSocket, DashboardPeerStats, DashboardServerStats } from '../api/dashboard';
+import {
+  connectDashboardSocket,
+  DashboardPeerStats,
+  DashboardServerStats,
+  fetchTrafficByPeer,
+  fetchTrafficByServer,
+  fetchTrafficMonthly,
+  TrafficRange,
+} from '../api/dashboard';
 
 function formatBytesPerSecond(bytesPerSecond: number): string {
   if (bytesPerSecond < 1024) return `${bytesPerSecond} Б/с`;
@@ -160,6 +169,138 @@ function ServerLoadRow({ server }: { server: DashboardServerStats }) {
   );
 }
 
+const rangeLabels: Record<TrafficRange, string> = { day: 'День', week: 'Неделя', month: 'Месяц' };
+
+// История трафика — в отличие от остальной страницы (живой снапшот по WebSocket), это
+// обычные REST-запросы с историческими агрегатами (см. DashboardService.getTrafficByServer/
+// getTrafficByPeer/getTrafficMonthly на бэкенде) — react-query, без сокета.
+function TrafficSection() {
+  const [range, setRange] = useState<TrafficRange>('day');
+
+  const { data: byServer, isLoading: loadingByServer } = useQuery({
+    queryKey: ['traffic-by-server', range],
+    queryFn: () => fetchTrafficByServer(range),
+  });
+  const { data: byPeer, isLoading: loadingByPeer } = useQuery({
+    queryKey: ['traffic-by-peer', range],
+    queryFn: () => fetchTrafficByPeer(range),
+  });
+  const { data: monthly, isLoading: loadingMonthly } = useQuery({
+    queryKey: ['traffic-monthly'],
+    queryFn: () => fetchTrafficMonthly(6),
+  });
+
+  return (
+    <Paper sx={{ p: 2 }}>
+      <Stack direction="row" justifyContent="space-between" alignItems="center" mb={2} flexWrap="wrap" rowGap={1}>
+        <Typography variant="subtitle1">История трафика</Typography>
+        <Stack direction="row" spacing={1}>
+          {(['day', 'week', 'month'] as TrafficRange[]).map((r) => (
+            <Chip
+              key={r}
+              size="small"
+              label={rangeLabels[r]}
+              color={range === r ? 'primary' : 'default'}
+              onClick={() => setRange(r)}
+            />
+          ))}
+        </Stack>
+      </Stack>
+
+      <Typography variant="body2" color="text.secondary" mb={1}>
+        По серверам (включая self-серверы, несущие мосты) — за период «{rangeLabels[range]}»
+      </Typography>
+      <Table size="small" sx={{ mb: 3 }}>
+        <TableHead>
+          <TableRow>
+            <TableCell>Сервер</TableCell>
+            <TableCell>Скачано</TableCell>
+            <TableCell>Отправлено</TableCell>
+            <TableCell>Итого</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {byServer?.map((row) => (
+            <TableRow key={row.serverId}>
+              <TableCell>{row.serverName}</TableCell>
+              <TableCell>{formatBytesTotal(row.rxBytes)}</TableCell>
+              <TableCell>{formatBytesTotal(row.txBytes)}</TableCell>
+              <TableCell>{formatBytesTotal(row.rxBytes + row.txBytes)}</TableCell>
+            </TableRow>
+          ))}
+          {!loadingByServer && (byServer?.length ?? 0) === 0 && (
+            <TableRow>
+              <TableCell colSpan={4}>Нет данных за этот период</TableCell>
+            </TableRow>
+          )}
+        </TableBody>
+      </Table>
+
+      <Typography variant="body2" color="text.secondary" mb={1}>
+        По peers — за период «{rangeLabels[range]}»
+      </Typography>
+      <Table size="small" sx={{ mb: 3 }}>
+        <TableHead>
+          <TableRow>
+            <TableCell>Peer</TableCell>
+            <TableCell>Сервер</TableCell>
+            <TableCell>Скачано</TableCell>
+            <TableCell>Отправлено</TableCell>
+            <TableCell>Итого</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {byPeer?.map((row) => (
+            <TableRow key={row.peerId}>
+              <TableCell>{row.peerName}</TableCell>
+              <TableCell>{row.serverName}</TableCell>
+              <TableCell>{formatBytesTotal(row.rxBytes)}</TableCell>
+              <TableCell>{formatBytesTotal(row.txBytes)}</TableCell>
+              <TableCell>{formatBytesTotal(row.rxBytes + row.txBytes)}</TableCell>
+            </TableRow>
+          ))}
+          {!loadingByPeer && (byPeer?.length ?? 0) === 0 && (
+            <TableRow>
+              <TableCell colSpan={5}>Нет данных за этот период</TableCell>
+            </TableRow>
+          )}
+        </TableBody>
+      </Table>
+
+      <Typography variant="body2" color="text.secondary" mb={1}>
+        Помесячно (последние 6 месяцев), по серверам
+      </Typography>
+      <Table size="small">
+        <TableHead>
+          <TableRow>
+            <TableCell>Месяц</TableCell>
+            <TableCell>Сервер</TableCell>
+            <TableCell>Скачано</TableCell>
+            <TableCell>Отправлено</TableCell>
+            <TableCell>Итого</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {monthly?.map((row) => (
+            <TableRow key={`${row.month}-${row.serverId}`}>
+              <TableCell>{row.month}</TableCell>
+              <TableCell>{row.serverName}</TableCell>
+              <TableCell>{formatBytesTotal(row.rxBytes)}</TableCell>
+              <TableCell>{formatBytesTotal(row.txBytes)}</TableCell>
+              <TableCell>{formatBytesTotal(row.rxBytes + row.txBytes)}</TableCell>
+            </TableRow>
+          ))}
+          {!loadingMonthly && (monthly?.length ?? 0) === 0 && (
+            <TableRow>
+              <TableCell colSpan={5}>Нет данных — история накапливается по мере работы панели</TableCell>
+            </TableRow>
+          )}
+        </TableBody>
+      </Table>
+    </Paper>
+  );
+}
+
 export function DashboardPage() {
   const [servers, setServers] = useState<DashboardServerStats[]>([]);
   const [peers, setPeers] = useState<DashboardPeerStats[]>([]);
@@ -254,6 +395,8 @@ export function DashboardPage() {
           Обновлено: {new Date(timestamp).toLocaleTimeString()}
         </Typography>
       )}
+
+      <TrafficSection />
     </Stack>
   );
 }
