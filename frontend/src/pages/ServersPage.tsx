@@ -98,13 +98,14 @@ export function ServersPage() {
   const { data: servers, isLoading } = useQuery({
     queryKey: ['servers'],
     queryFn: fetchServers,
-    // Пока хотя бы один протокол в процессе установки, поллим статус почаще, чтобы
-    // видеть прогресс без ручного обновления страницы — сама установка идёт по SSH
-    // синхронно на бэкенде и может занимать минуты (apt-get и т.п.).
+    // Всегда поллим (не только пока что-то устанавливается) — иначе результат "Проверить
+    // подключение"/"Обновить пакет"/"Проверить версию" (идут по SSH синхронно на бэкенде,
+    // секунды-минуты) не появляется на странице, пока её не перезагрузить руками. Пока
+    // что-то в процессе установки — чаще, это самое "живое" состояние.
     refetchInterval: (query) => {
       const data = query.state.data as ServerEntity[] | undefined;
       const hasInstalling = data?.some((server) => server.protocols.some((sp) => sp.status === 'installing'));
-      return hasInstalling ? 3000 : false;
+      return hasInstalling ? 3000 : 8000;
     },
   });
 
@@ -258,6 +259,7 @@ export function ServersPage() {
             onDelete={() => deleteMutation.mutate(server.id)}
             onRename={(name) => renameMutation.mutate({ id: server.id, name })}
             onTest={() => testMutation.mutate(server.id)}
+            isTesting={testMutation.isPending && testMutation.variables === server.id}
             onReboot={() => setRebootConfirmId(server.id)}
             onUpdateCredentials={(input) => credentialsMutation.mutate({ id: server.id, input })}
             credentialsSaving={credentialsMutation.isPending && credentialsMutation.variables?.id === server.id}
@@ -307,6 +309,7 @@ function ServerCard({
   onDelete,
   onRename,
   onTest,
+  isTesting,
   onReboot,
   onInstall,
   isInstalling,
@@ -322,6 +325,7 @@ function ServerCard({
   onDelete: () => void;
   onRename: (name: string) => void;
   onTest: () => void;
+  isTesting: boolean;
   onReboot: () => void;
   onInstall: (protocol: VpnProtocol, listenPort: number, networkCidr: string) => void;
   isInstalling: boolean;
@@ -421,10 +425,12 @@ function ServerCard({
           )}
         </Box>
         <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-          <Tooltip title="Проверить подключение">
-            <IconButton size="small" onClick={onTest}>
-              <NetworkCheckIcon fontSize="small" />
-            </IconButton>
+          <Tooltip title={isTesting ? 'Проверяем…' : 'Проверить подключение'}>
+            <span>
+              <IconButton size="small" onClick={onTest} disabled={isTesting}>
+                {isTesting ? <CircularProgress size={16} /> : <NetworkCheckIcon fontSize="small" />}
+              </IconButton>
+            </span>
           </Tooltip>
           <Tooltip title="Проверить существующую установку">
             <IconButton size="small" onClick={() => detectMutation.mutate()} disabled={detectMutation.isPending}>
