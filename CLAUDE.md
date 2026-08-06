@@ -258,6 +258,28 @@ down-up), тем же способом, что и мгновенный bps в `b
 в частности), а вот `by-peer` его исключает — системный peer моста не настоящий клиент и
 так скрыт из обычных списков peers (см. `PeersService`).
 
+**Уведомления в Telegram** (`notifications/notifications.service.ts`, настройки — вкладка
+«Настройки») — суперадмин включает уведомления, задаёт токен бота (шифруется тем же
+`encryptSecret`, что и SSH-секреты серверов, хранится в `SystemSettings.telegramBotTokenEnc`,
+не отдаётся на фронтенд) и chat id. Точки отправки сейчас: истечение срока действия peer'а
+(`PeersService.checkExpiredPeers`, по каждому свежеистёкшему peer'у) и неудачное автообновление
+сертификата (`SettingsService.autoRenew`). `NotificationsService.sendMessage` — best-effort
+(ошибки только логируются, не пробрасываются) через `fetch` (нативный, Node 20) к Telegram Bot
+API с таймаутом 10с. **Маршрутизация через мост** (`SystemSettings.telegramBridgeId`) — на
+случай, если Telegram заблокирован в стране, где физически стоит self-сервер панели:
+`VpnProvisioningService.setupTelegramRouting` переиспользует тот же ipset/mangle/fwmark приём,
+что и `setupBridgeBypass` (см. выше), но в обратную сторону — не выводит трафик клиентов моста
+МИМО upstream-туннеля, а наоборот принудительно заворачивает исходящий трафик САМОГО
+self-сервера (в т.ч. backend-контейнера, слушающего на этом хосте) К `api.telegram.org` ВНУТРЬ
+upstream-туннеля выбранного моста (свой отдельный fwmark `0x2b`, чтобы не пересекаться с
+bypass-приёмом `0x2a`); резолвит домен на self-сервере, `ip rule fwmark 0x2b lookup
+<bridge.routeTable>`, `MASQUERADE`/`FORWARD ACCEPT` на `bridge.upstreamInterfaceName`. Правило
+переприменяется при сохранении настроек (best-effort, fire-and-forget) — регулярного refresh
+как у bypass-листа нет (Telegram не меняет IP так часто, как произвольные CDN-домены). Работает
+прозрачно для Node.js без какой-либо специальной конфигурации HTTP-клиента — исходящий трафик
+контейнера на дефолтной docker-сети проходит тот же хостовый netfilter-путь
+(PREROUTING→routing→FORWARD→POSTROUTING), что и трафик VPN-клиентов моста.
+
 **База данных**: TypeORM работает в режиме `synchronize: true` (`app.module.ts`) — миграций нет,
 схема выводится из entity-декораторов автоматически при старте. `database/seed.service.ts` создаёт
 суперадмина из `SEED_ADMIN_EMAIL`/`SEED_ADMIN_PASSWORD` при первом старте, если в БД ещё нет

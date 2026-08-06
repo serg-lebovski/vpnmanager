@@ -7,6 +7,7 @@ import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { decryptSecret, encryptSecret } from '../common/encryption.util';
 import { PeerSource, PeerStatus, Role, ServerProtocolStatus } from '../common/enums';
 import { LoadBalancerService } from '../load-balancer/load-balancer.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { Organization } from '../organizations/organization.entity';
 import { ServerProtocol } from '../servers/server-protocol.entity';
 import { Server } from '../servers/server.entity';
@@ -57,6 +58,7 @@ export class PeersService {
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly loadBalancerService: LoadBalancerService,
     private readonly vpnProvisioningService: VpnProvisioningService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   async findAllForRequester(requester: AuthenticatedUser, organizationId?: string): Promise<PeerListItem[]> {
@@ -541,12 +543,14 @@ export class PeersService {
 
     const currentIds = new Set<string>();
     const affectedProtocolIds = new Set<string>();
+    const newlyExpiredPeers: Peer[] = [];
     for (const peer of expiredPeers) {
       currentIds.add(peer.id);
       const expiryTimestamp = peer.expiresAt!.getTime();
       if (this.appliedExpiry.get(peer.id) !== expiryTimestamp) {
         this.appliedExpiry.set(peer.id, expiryTimestamp);
         affectedProtocolIds.add(peer.serverProtocolId);
+        newlyExpiredPeers.push(peer);
       }
     }
     // Peer'ы, продлённые с прошлого тика (больше не в числе истёкших), больше не нужно
@@ -563,6 +567,12 @@ export class PeersService {
       } catch (error) {
         this.logger.warn(`Не удалось отключить истёкшие peers на протоколе ${serverProtocolId}: ${(error as Error).message}`);
       }
+    }
+
+    for (const peer of newlyExpiredPeers) {
+      void this.notificationsService.sendMessage(
+        `⏳ Срок действия peer'а «${peer.name}» истёк — доступ отключён (запись не удалена, можно продлить в панели).`,
+      );
     }
   }
 }

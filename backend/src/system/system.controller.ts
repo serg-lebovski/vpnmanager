@@ -82,6 +82,12 @@ export class SystemController {
     return this.settingsService.renewCertificateNow(Boolean(dto.force));
   }
 
+  @Post('telegram/test')
+  async sendTestTelegramMessage() {
+    await this.settingsService.sendTestTelegramMessage();
+    return { message: 'Тестовое сообщение отправлено' };
+  }
+
   // Дамп сохраняется во временный файл (os.tmpdir() — тот же контейнер, что и psql,
   // который его потом прочитает, переживать пересоздание контейнера файлу не нужно).
   // RestoreDatabaseDto.confirmationPhrase проверяется ValidationPipe ДО того, как

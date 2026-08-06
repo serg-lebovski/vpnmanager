@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Bridge } from '../bridges/bridge.entity';
 import { LoadBalancerModule } from '../load-balancer/load-balancer.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { Organization } from '../organizations/organization.entity';
 import { ServerProtocol } from '../servers/server-protocol.entity';
 import { Server } from '../servers/server.entity';
@@ -11,7 +12,12 @@ import { PeersController } from './peers.controller';
 import { PeersService } from './peers.service';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Peer, ServerProtocol, Server, Bridge, Organization]), LoadBalancerModule, VpnModule],
+  imports: [
+    TypeOrmModule.forFeature([Peer, ServerProtocol, Server, Bridge, Organization]),
+    LoadBalancerModule,
+    VpnModule,
+    NotificationsModule,
+  ],
   controllers: [PeersController],
   providers: [PeersService],
   exports: [PeersService],

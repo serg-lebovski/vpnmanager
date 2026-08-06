@@ -8,6 +8,9 @@ export interface SystemSettings {
   httpsEnabled: boolean;
   certExpiresAt: string | null;
   lastCertError: string | null;
+  telegramEnabled: boolean;
+  telegramChatId: string | null;
+  telegramBridgeId: string | null;
   updatedAt: string;
 }
 
@@ -21,6 +24,11 @@ export interface UpdateSettingsInput {
   letsEncryptEmail?: string;
   httpEnabled?: boolean;
   httpsEnabled?: boolean;
+  telegramEnabled?: boolean;
+  // Отсутствие поля — не менять сохранённый токен.
+  telegramBotToken?: string;
+  telegramChatId?: string;
+  telegramBridgeId?: string | null;
 }
 
 export async function updateSettings(input: UpdateSettingsInput): Promise<SystemSettings> {
@@ -30,5 +38,10 @@ export async function updateSettings(input: UpdateSettingsInput): Promise<System
 
 export async function renewCertificate(force: boolean): Promise<SystemSettings> {
   const { data } = await apiClient.post<SystemSettings>('/system/certificate/renew', { force });
+  return data;
+}
+
+export async function sendTestTelegramMessage(): Promise<{ message: string }> {
+  const { data } = await apiClient.post<{ message: string }>('/system/telegram/test');
   return data;
 }

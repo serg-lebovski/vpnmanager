@@ -2,6 +2,10 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { Bridge } from '../bridges/bridge.entity';
+import { NotificationsModule } from '../notifications/notifications.module';
+import { Server } from '../servers/server.entity';
+import { VpnModule } from '../vpn/vpn.module';
 import { BackupService } from './backup.service';
 import { CertbotService } from './certbot.service';
 import { LogsService } from './logs.service';
@@ -15,7 +19,9 @@ import { UpdateService } from './update.service';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([SystemSettings]),
+    TypeOrmModule.forFeature([SystemSettings, Bridge, Server]),
+    VpnModule,
+    NotificationsModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

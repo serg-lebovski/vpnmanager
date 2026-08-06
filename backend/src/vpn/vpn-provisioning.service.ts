@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, Logger, NotFoundException } from '@nes
 import { NodeSSH } from 'node-ssh';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Not, Repository } from 'typeorm';
+import { Bridge } from '../bridges/bridge.entity';
 import { decryptSecret } from '../common/encryption.util';
 import { ServerProtocolStatus, VpnProtocol } from '../common/enums';
 import { ServerProtocol } from '../servers/server-protocol.entity';
@@ -550,5 +551,80 @@ export class VpnProvisioningService {
     );
     const bannedCount = Number(result.stdout.trim());
     return { installed: true, bannedCount: Number.isFinite(bannedCount) ? bannedCount : 0 };
+  }
+
+  // Общая для ВСЕХ мостов на self-сервере метка/правило маршрутизации исходящих запросов
+  // backend'а к Telegram Bot API через конкретный мост — на случай, если Telegram
+  // заблокирован в стране, где расположен сам self-сервер панели (см.
+  // SystemSettings.telegramBridgeId). Технически — та же схема, что setupBridgeBypass
+  // (ipset+mangle mark+ip rule+NAT), но НАОБОРОТ по смыслу: там исключаем трафик клиентов
+  // ИЗ upstream-туннеля, здесь наоборот — принудительно заворачиваем трафик backend'а (не
+  // трафик клиентов моста!) В upstream-туннель конкретного моста. Метка отдельная
+  // (TELEGRAM_FWMARK ≠ BYPASS_FWMARK), чтобы не пересекаться с обходом.
+  private static readonly TELEGRAM_FWMARK = '0x2b';
+  private static readonly TELEGRAM_RULE_PRIORITY = 85;
+
+  async setupTelegramRouting(selfServer: Server, bridge: Bridge, telegramDomain = 'api.telegram.org'): Promise<void> {
+    const connection = this.connectionParams(selfServer);
+    const ipsetName = `vpnmgr-tg-${bridge.id.replace(/-/g, '').slice(0, 16)}`;
+    const tmpSetName = `${ipsetName}-tmp`;
+    const fwmark = VpnProvisioningService.TELEGRAM_FWMARK;
+
+    await this.sshService.withConnection(connection, async (ssh) => {
+      await this.sshService.execOrThrow(ssh, `which ipset >/dev/null 2>&1 || (apt-get update -y && apt-get install -y ipset)`);
+
+      const result = await this.sshService.exec(ssh, `getent ahostsv4 ${telegramDomain} 2>/dev/null | awk '{print $1}'`);
+      const ips = Array.from(
+        new Set(
+          result.stdout
+            .split('\n')
+            .map((line) => line.trim())
+            .filter((line) => /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(line))
+            .map((ip) => `${ip}/32`),
+        ),
+      );
+
+      await this.sshService.execOrThrow(ssh, `ipset create ${ipsetName} hash:net -exist`);
+      await this.sshService.execOrThrow(ssh, `ipset create ${tmpSetName} hash:net -exist`);
+      await this.sshService.execOrThrow(ssh, `ipset flush ${tmpSetName}`);
+      for (const ip of ips) {
+        await this.sshService.execOrThrow(ssh, `ipset add ${tmpSetName} ${ip} -exist`);
+      }
+      await this.sshService.execOrThrow(ssh, `ipset swap ${tmpSetName} ${ipsetName}`);
+      await this.sshService.execOrThrow(ssh, `ipset destroy ${tmpSetName}`);
+
+      // Общее для всех мостов на self-сервере правило — но у КАЖДОГО моста своя routeTable
+      // в качестве цели, поэтому идемпотентный чек — по конкретной table, а не только по
+      // fwmark (иначе второй мост с телеграм-маршрутизацией не смог бы добавить своё
+      // правило после первого).
+      await this.sshService.execOrThrow(
+        ssh,
+        `ip rule show | grep -q "fwmark ${fwmark} lookup ${bridge.routeTable}" || ` +
+          `ip rule add fwmark ${fwmark} lookup ${bridge.routeTable} priority ${VpnProvisioningService.TELEGRAM_RULE_PRIORITY}`,
+      );
+      await this.sshService.execOrThrow(
+        ssh,
+        `iptables -t mangle -C PREROUTING -m set --match-set ${ipsetName} dst -j MARK --set-mark ${fwmark} 2>/dev/null || ` +
+          `iptables -t mangle -A PREROUTING -m set --match-set ${ipsetName} dst -j MARK --set-mark ${fwmark}`,
+      );
+      await this.sshService.execOrThrow(
+        ssh,
+        `iptables -t nat -C POSTROUTING -o ${bridge.upstreamInterfaceName} -m mark --mark ${fwmark} -j MASQUERADE 2>/dev/null || ` +
+          `iptables -t nat -A POSTROUTING -o ${bridge.upstreamInterfaceName} -m mark --mark ${fwmark} -j MASQUERADE`,
+      );
+      await this.sshService.execOrThrow(
+        ssh,
+        `iptables -C FORWARD -o ${bridge.upstreamInterfaceName} -m mark --mark ${fwmark} -j ACCEPT 2>/dev/null || ` +
+          `iptables -A FORWARD -o ${bridge.upstreamInterfaceName} -m mark --mark ${fwmark} -j ACCEPT`,
+      );
+      // Обратное направление (ответы Telegram) — по ESTABLISHED,RELATED, не по метке (mark
+      // не переживает новый проход ответных пакетов через PREROUTING), тем же способом,
+      // что и setupBridgeBypass.
+      await this.sshService.execOrThrow(
+        ssh,
+        `iptables -C FORWARD -i ${bridge.upstreamInterfaceName} -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || ` +
+          `iptables -A FORWARD -i ${bridge.upstreamInterfaceName} -m state --state ESTABLISHED,RELATED -j ACCEPT`,
+      );
+    });
   }
 }

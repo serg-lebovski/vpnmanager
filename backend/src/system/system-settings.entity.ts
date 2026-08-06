@@ -26,6 +26,25 @@ export class SystemSettings {
   @Column({ name: 'last_cert_error', type: 'text', nullable: true })
   lastCertError: string | null;
 
+  @Column({ name: 'telegram_enabled', default: false })
+  telegramEnabled: boolean;
+
+  // Зашифрован тем же APP_ENCRYPTION_KEY, что SSH-секреты серверов и ключи peers (см.
+  // common/encryption.util.ts) — токен бота даёт полный контроль над ботом.
+  @Column({ name: 'telegram_bot_token_enc', type: 'text', nullable: true })
+  telegramBotTokenEnc: string | null;
+
+  @Column({ name: 'telegram_chat_id', type: 'varchar', nullable: true })
+  telegramChatId: string | null;
+
+  // Если задан — исходящие запросы к Telegram Bot API маршрутизируются через upstream
+  // ЭТОГО моста (self-сервер помечает такой трафик меткой и отправляет через туннель) —
+  // на случай, если Telegram заблокирован в стране, где расположен сам self-сервер
+  // панели. null — обычный прямой исходящий запрос с self-сервера. См.
+  // VpnProvisioningService.setupTelegramRouting.
+  @Column({ name: 'telegram_bridge_id', type: 'uuid', nullable: true })
+  telegramBridgeId: string | null;
+
   @UpdateDateColumn({ name: 'updated_at' })
   updatedAt: Date;
 }

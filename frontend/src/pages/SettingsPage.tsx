@@ -17,8 +17,9 @@ import {
 } from '@mui/material';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
+import { fetchBridges } from '../api/bridges';
 import { getErrorMessage } from '../api/errors';
-import { fetchSettings, renewCertificate, updateSettings } from '../api/settings';
+import { fetchSettings, renewCertificate, sendTestTelegramMessage, updateSettings } from '../api/settings';
 import {
   connectRestoreProgressSocket,
   connectUpdateProgressSocket,
@@ -204,6 +205,49 @@ export function SettingsPage() {
   const settingsBusy =
     saveDomainMutation.isPending || toggleHttpsMutation.isPending || toggleHttpMutation.isPending || renewCertMutation.isPending;
 
+  const { data: bridges } = useQuery({ queryKey: ['bridges'], queryFn: fetchBridges });
+  const [telegramEnabled, setTelegramEnabled] = useState(false);
+  const [telegramBotToken, setTelegramBotToken] = useState('');
+  const [telegramChatId, setTelegramChatId] = useState('');
+  const [telegramBridgeId, setTelegramBridgeId] = useState('');
+  const [telegramError, setTelegramError] = useState<string | null>(null);
+  const [telegramTestMessage, setTelegramTestMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (settings) {
+      setTelegramEnabled(settings.telegramEnabled);
+      setTelegramChatId(settings.telegramChatId ?? '');
+      setTelegramBridgeId(settings.telegramBridgeId ?? '');
+    }
+  }, [settings]);
+
+  const saveTelegramMutation = useMutation({
+    mutationFn: () =>
+      updateSettings({
+        telegramEnabled,
+        telegramChatId: telegramChatId.trim() || undefined,
+        // Отсутствие поля — не менять сохранённый токен (не заставляем вводить заново
+        // при каждом сохранении).
+        ...(telegramBotToken.trim() ? { telegramBotToken: telegramBotToken.trim() } : {}),
+        telegramBridgeId: telegramBridgeId || null,
+      }),
+    onSuccess: () => {
+      refetchSettings();
+      setTelegramBotToken('');
+      setTelegramError(null);
+    },
+    onError: (err) => setTelegramError(getErrorMessage(err, 'Не удалось сохранить настройки Telegram')),
+  });
+
+  const testTelegramMutation = useMutation({
+    mutationFn: sendTestTelegramMessage,
+    onSuccess: (data) => {
+      setTelegramTestMessage(data.message);
+      setTelegramError(null);
+    },
+    onError: (err) => setTelegramError(getErrorMessage(err, 'Не удалось отправить тестовое сообщение')),
+  });
+
   const [logService, setLogService] = useState<LogService>('backend');
   const [logTail, setLogTail] = useState(300);
   const [logError, setLogError] = useState<string | null>(null);
@@ -352,6 +396,74 @@ export function SettingsPage() {
             {settingsError}
           </Alert>
         )}
+      </Paper>
+
+      <Paper sx={{ p: 2 }}>
+        <Typography variant="subtitle1" mb={2}>
+          Уведомления в Telegram
+        </Typography>
+        <Stack direction="row" spacing={1} alignItems="center" mb={2}>
+          <Typography variant="body2">Включены</Typography>
+          <Switch checked={telegramEnabled} onChange={(e) => setTelegramEnabled(e.target.checked)} />
+        </Stack>
+        <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="flex-start">
+          <TextField
+            label="Токен бота"
+            size="small"
+            type="password"
+            value={telegramBotToken}
+            onChange={(e) => setTelegramBotToken(e.target.value)}
+            placeholder={settings?.telegramChatId ? 'оставьте пустым, чтобы не менять' : 'получите у @BotFather'}
+            sx={{ minWidth: 260 }}
+          />
+          <TextField
+            label="Chat ID"
+            size="small"
+            value={telegramChatId}
+            onChange={(e) => setTelegramChatId(e.target.value)}
+            helperText="например, через @userinfobot"
+            sx={{ minWidth: 200 }}
+          />
+          <TextField
+            select
+            label="Маршрут через мост"
+            size="small"
+            value={telegramBridgeId}
+            onChange={(e) => setTelegramBridgeId(e.target.value)}
+            helperText="Если Telegram заблокирован в стране self-сервера"
+            sx={{ minWidth: 220 }}
+          >
+            <MenuItem value="">Напрямую (без моста)</MenuItem>
+            {bridges?.map((b) => (
+              <MenuItem key={b.id} value={b.id}>
+                {b.name}
+              </MenuItem>
+            ))}
+          </TextField>
+        </Stack>
+        <Stack direction="row" spacing={2} mt={2}>
+          <Button variant="outlined" disabled={saveTelegramMutation.isPending} onClick={() => saveTelegramMutation.mutate()}>
+            Сохранить
+          </Button>
+          <Button disabled={testTelegramMutation.isPending} onClick={() => testTelegramMutation.mutate()}>
+            Отправить тестовое сообщение
+          </Button>
+        </Stack>
+        {telegramTestMessage && (
+          <Alert severity="success" sx={{ mt: 2 }} onClose={() => setTelegramTestMessage(null)}>
+            {telegramTestMessage}
+          </Alert>
+        )}
+        {telegramError && (
+          <Alert severity="error" sx={{ mt: 2 }}>
+            {telegramError}
+          </Alert>
+        )}
+        <Typography variant="caption" color="text.secondary" display="block" mt={2}>
+          Сейчас уведомляет об истечении срока действия peer'а и об ошибке автообновления
+          сертификата. «Маршрут через мост» — исходящие запросы к Telegram Bot API идут через
+          upstream-туннель выбранного моста вместо прямого подключения с self-сервера.
+        </Typography>
       </Paper>
 
       <Paper sx={{ p: 2 }}>
