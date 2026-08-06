@@ -389,6 +389,16 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
     await this.sshService.execOrThrow(ssh, `mkdir -p ${this.confDir} && chmod 700 ${this.confDir}`);
     const encoded = Buffer.from(configText, 'utf8').toString('base64');
     await this.sshService.execOrThrow(ssh, `echo ${encoded} | base64 -d > ${remotePath} && chmod 600 ${remotePath}`);
+    // interfaceName здесь — ВСЕГДА Bridge.upstreamInterfaceName, сгенерированный нами
+    // случайным именем специально под этот upstream-туннель — с чем-либо посторонним
+    // столкнуться не может, поэтому безопасно сносить безусловно (в отличие от
+    // reclaimConflictingInterface в install(), которая разбирает ЧУЖИЕ осиротевшие
+    // интерфейсы и поэтому сначала проверяет тип линка). Нужно на случай, если
+    // disconnectAsClient не был вызван (например, самый первый connect) или не до конца
+    // снял интерфейс при переключении upstream МЕЖДУ ПРОТОКОЛАМИ — тогда `awg-quick up`
+    // после `wg-quick`-интерфейса того же имени (или наоборот) падает с "already exists"
+    // (поймано вживую: переключение WireGuard-upstream -> AmneziaWG-upstream).
+    await this.sshService.exec(ssh, `ip link delete ${interfaceName} >/dev/null 2>&1 || true`);
     await this.sshService.execOrThrow(ssh, `${this.quickBinary} up ${remotePath}`);
     // `Table = off` означает, что wg-quick не добавил маршрут по умолчанию сам —
     // делаем это явно, но только в выделенной таблице (реально её использует только
@@ -403,6 +413,13 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
     const remotePath = this.confPath(this.confDir, interfaceName);
     await this.sshService.exec(ssh, `${this.quickBinary} down ${remotePath} 2>/dev/null`);
     await this.sshService.exec(ssh, `rm -f ${remotePath}`);
+    // `*-quick down` — best-effort и на этом файле не единственный источник истины: если он
+    // по любой причине не удалил netdev (ошибка молча проглатывается выше), следующий
+    // connectAsClient — возможно, уже ДРУГИМ протоколом/бинарником (переключение upstream с
+    // WireGuard на AmneziaWG и обратно, интерфейс переиспользует то же имя) — упадёт с
+    // "already exists". Подчищаем интерфейс напрямую, безусловно (это всегда НАШ upstream-
+    // интерфейс, см. connectAsClient).
+    await this.sshService.exec(ssh, `ip link delete ${interfaceName} >/dev/null 2>&1 || true`);
   }
 
   async detectExisting(ssh: NodeSSH): Promise<DetectedInstallation | null> {
