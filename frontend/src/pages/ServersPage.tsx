@@ -10,13 +10,25 @@ import {
   DialogContentText,
   DialogTitle,
   Divider,
+  IconButton,
   LinearProgress,
   MenuItem,
   Paper,
   Stack,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material';
+import CheckIcon from '@mui/icons-material/Check';
+import CloseIcon from '@mui/icons-material/Close';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
+import EditIcon from '@mui/icons-material/Edit';
+import NetworkCheckIcon from '@mui/icons-material/NetworkCheck';
+import RefreshIcon from '@mui/icons-material/Refresh';
+import RestartAltIcon from '@mui/icons-material/RestartAlt';
+import SyncIcon from '@mui/icons-material/Sync';
+import SystemUpdateAltIcon from '@mui/icons-material/SystemUpdateAlt';
+import TravelExploreIcon from '@mui/icons-material/TravelExplore';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, useEffect, useState } from 'react';
 import { connectDashboardSocket } from '../api/dashboard';
@@ -363,39 +375,43 @@ function ServerCard({
       <Stack spacing={1}>
         <Box>
           {isEditingName ? (
-            <Stack direction="row" spacing={1} alignItems="center" mb={1}>
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap mb={1}>
               <TextField size="small" value={editName} onChange={(e) => setEditName(e.target.value)} autoFocus />
-              <Button
-                size="small"
-                variant="contained"
-                onClick={() => {
-                  onRename(editName);
-                  setIsEditingName(false);
-                }}
-              >
-                Сохранить
-              </Button>
-              <Button size="small" onClick={() => setIsEditingName(false)}>
-                Отмена
-              </Button>
+              <Tooltip title="Сохранить">
+                <IconButton
+                  size="small"
+                  color="primary"
+                  onClick={() => {
+                    onRename(editName);
+                    setIsEditingName(false);
+                  }}
+                >
+                  <CheckIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+              <Tooltip title="Отмена">
+                <IconButton size="small" onClick={() => setIsEditingName(false)}>
+                  <CloseIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
             </Stack>
           ) : (
-            <Typography variant="h6">
-              {server.name} <Chip size="small" label={server.status} color={statusColor[server.status]} sx={{ ml: 1 }} />
-              {server.isSelf && <Chip size="small" label="Мост (self)" color="info" sx={{ ml: 1 }} />}
-              <Chip
-                size="small"
-                label={online === undefined ? 'проверяем связь…' : online ? 'на связи' : 'нет связи'}
-                color={online === undefined ? 'default' : online ? 'success' : 'error'}
-                variant="outlined"
-                sx={{ ml: 1 }}
-              />
-              {server.needsCredentials && (
-                <Chip size="small" label="нужны новые SSH-данные" color="warning" sx={{ ml: 1 }} />
-              )}
+            <Typography variant="h6" sx={{ wordBreak: 'break-word' }}>
+              {server.name}
             </Typography>
           )}
-          <Typography variant="body2" color="text.secondary">
+          <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap rowGap={0.5} sx={{ my: 0.5 }}>
+            <Chip size="small" label={server.status} color={statusColor[server.status]} />
+            {server.isSelf && <Chip size="small" label="Мост (self)" color="info" />}
+            <Chip
+              size="small"
+              label={online === undefined ? 'проверяем связь…' : online ? 'на связи' : 'нет связи'}
+              color={online === undefined ? 'default' : online ? 'success' : 'error'}
+              variant="outlined"
+            />
+            {server.needsCredentials && <Chip size="small" label="нужны новые SSH-данные" color="warning" />}
+          </Stack>
+          <Typography variant="body2" color="text.secondary" sx={{ wordBreak: 'break-word' }}>
             {server.sshUsername}@{server.host}:{server.sshPort} · лимит {server.maxPeers} peers
           </Typography>
           {server.lastError && (
@@ -404,30 +420,40 @@ function ServerCard({
             </Typography>
           )}
         </Box>
-        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-          <Button size="small" onClick={onTest}>
-            Проверить подключение
-          </Button>
-          <Button size="small" onClick={() => detectMutation.mutate()} disabled={detectMutation.isPending}>
-            Проверить существующую установку
-          </Button>
-          <Button size="small" color="warning" onClick={onReboot}>
-            Перезагрузить
-          </Button>
+        <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+          <Tooltip title="Проверить подключение">
+            <IconButton size="small" onClick={onTest}>
+              <NetworkCheckIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="Проверить существующую установку">
+            <IconButton size="small" onClick={() => detectMutation.mutate()} disabled={detectMutation.isPending}>
+              <TravelExploreIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="Перезагрузить">
+            <IconButton size="small" color="warning" onClick={onReboot}>
+              <RestartAltIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
           {!isEditingName && (
-            <Button
-              size="small"
-              onClick={() => {
-                setEditName(server.name);
-                setIsEditingName(true);
-              }}
-            >
-              Переименовать
-            </Button>
+            <Tooltip title="Переименовать">
+              <IconButton
+                size="small"
+                onClick={() => {
+                  setEditName(server.name);
+                  setIsEditingName(true);
+                }}
+              >
+                <EditIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
           )}
-          <Button size="small" color="error" onClick={onDelete}>
-            Удалить
-          </Button>
+          <Tooltip title="Удалить сервер">
+            <IconButton size="small" color="error" onClick={onDelete}>
+              <DeleteOutlineIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
         </Stack>
       </Stack>
 
@@ -459,7 +485,7 @@ function ServerCard({
         </Alert>
       )}
       {isEditingCredentials && (
-        <Stack direction="row" spacing={2} alignItems="flex-start" mt={2}>
+        <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap rowGap={1.5} alignItems="flex-start" mt={2}>
           <TextField
             select
             size="small"
@@ -510,58 +536,70 @@ function ServerCard({
       </Typography>
       <Stack spacing={1}>
         {server.protocols.map((sp) => (
-          <Box key={sp.id}>
-            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap rowGap={1}>
-              <Chip label={sp.protocol} size="small" />
-              <Chip label={sp.status} size="small" color={statusColor[sp.status]} />
-              <Typography variant="body2">
-                порт {sp.listenPort}, сеть {sp.networkCidr}
-              </Typography>
-              {sp.bridgeName && <Chip label={`мост «${sp.bridgeName}»`} size="small" color="info" variant="outlined" />}
-              {sp.status === 'active' && (
+          <Box key={sp.id} sx={{ py: 0.5 }}>
+            <Stack direction="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" useFlexGap rowGap={0.5}>
+              <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap rowGap={0.5}>
+                <Chip label={sp.protocol} size="small" />
+                <Chip label={sp.status} size="small" color={statusColor[sp.status]} />
                 <Typography variant="body2" color="text.secondary">
-                  {sp.packageVersion ?? 'версия не проверялась'}
+                  :{sp.listenPort} · {sp.networkCidr}
                 </Typography>
-              )}
-              {sp.lastError && (
-                <Typography variant="body2" color="error">
-                  {sp.lastError}
-                </Typography>
-              )}
-              {sp.status === 'active' && (
-                <Button size="small" onClick={() => onScan(sp.id)}>
-                  Сканировать/импортировать peers
-                </Button>
-              )}
-              {sp.status === 'active' && !sp.execContainer && (
-                <>
-                  <Button
-                    size="small"
-                    disabled={checkVersionMutation.isPending && checkVersionMutation.variables === sp.id}
-                    onClick={() => checkVersionMutation.mutate(sp.id)}
-                  >
-                    Проверить версию
-                  </Button>
-                  <Button
-                    size="small"
-                    disabled={updatePackageMutation.isPending && updatePackageMutation.variables === sp.id}
-                    onClick={() => updatePackageMutation.mutate(sp.id)}
-                  >
-                    Обновить пакет
-                  </Button>
-                </>
-              )}
-              {!sp.bridgeName && (
-                <Button
-                  size="small"
-                  color="error"
-                  disabled={deleteProtocolMutation.isPending && deleteProtocolMutation.variables === sp.id}
-                  onClick={() => deleteProtocolMutation.mutate(sp.id)}
-                >
-                  Удалить
-                </Button>
-              )}
+                {sp.bridgeName && <Chip label={`мост «${sp.bridgeName}»`} size="small" color="info" variant="outlined" />}
+              </Stack>
+              <Stack direction="row" spacing={0.25}>
+                {sp.status === 'active' && (
+                  <Tooltip title="Сканировать/импортировать peers">
+                    <IconButton size="small" onClick={() => onScan(sp.id)}>
+                      <SyncIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                )}
+                {sp.status === 'active' && !sp.execContainer && (
+                  <>
+                    <Tooltip title="Проверить версию">
+                      <IconButton
+                        size="small"
+                        disabled={checkVersionMutation.isPending && checkVersionMutation.variables === sp.id}
+                        onClick={() => checkVersionMutation.mutate(sp.id)}
+                      >
+                        <RefreshIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                    <Tooltip title="Обновить пакет">
+                      <IconButton
+                        size="small"
+                        disabled={updatePackageMutation.isPending && updatePackageMutation.variables === sp.id}
+                        onClick={() => updatePackageMutation.mutate(sp.id)}
+                      >
+                        <SystemUpdateAltIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  </>
+                )}
+                {!sp.bridgeName && (
+                  <Tooltip title="Удалить протокол">
+                    <IconButton
+                      size="small"
+                      color="error"
+                      disabled={deleteProtocolMutation.isPending && deleteProtocolMutation.variables === sp.id}
+                      onClick={() => deleteProtocolMutation.mutate(sp.id)}
+                    >
+                      <DeleteOutlineIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                )}
+              </Stack>
             </Stack>
+            {sp.status === 'active' && (
+              <Typography variant="caption" color="text.secondary" display="block">
+                {sp.packageVersion ?? 'версия не проверялась'}
+              </Typography>
+            )}
+            {sp.lastError && (
+              <Typography variant="body2" color="error" sx={{ wordBreak: 'break-word' }}>
+                {sp.lastError}
+              </Typography>
+            )}
             {sp.status === 'installing' && <LinearProgress sx={{ mt: 1 }} />}
             {checkVersionMutation.isError && checkVersionMutation.variables === sp.id && (
               <Typography variant="body2" color="error">
@@ -593,21 +631,36 @@ function ServerCard({
         существующую установку» выше, иначе установка пересоздаст интерфейс с новыми
         ключами и существующие peers будут потеряны.
       </Typography>
-      <Stack direction="row" spacing={2} alignItems="flex-start">
-        <TextField select label="Протокол" value={protocol} onChange={(e) => setProtocol(e.target.value as VpnProtocol)} sx={{ minWidth: 160 }}>
+      <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap rowGap={1.5} alignItems="flex-start">
+        <TextField
+          select
+          size="small"
+          label="Протокол"
+          value={protocol}
+          onChange={(e) => setProtocol(e.target.value as VpnProtocol)}
+          sx={{ width: 140 }}
+        >
           <MenuItem value="wireguard">WireGuard</MenuItem>
           <MenuItem value="amneziawg">AmneziaWG</MenuItem>
         </TextField>
         <TextField
           label="Порт"
           type="number"
+          size="small"
           value={listenPort}
           onChange={(e) => setListenPort(Number(e.target.value))}
-          sx={{ width: 120 }}
+          sx={{ width: 100 }}
         />
-        <TextField label="Сеть (CIDR)" value={networkCidr} onChange={(e) => setNetworkCidr(e.target.value)} sx={{ width: 160 }} />
+        <TextField
+          label="Сеть (CIDR)"
+          size="small"
+          value={networkCidr}
+          onChange={(e) => setNetworkCidr(e.target.value)}
+          sx={{ width: 150 }}
+        />
         <Button
           variant="outlined"
+          size="small"
           disabled={isInstalling}
           startIcon={isInstalling ? <CircularProgress size={16} /> : undefined}
           onClick={() => onInstall(protocol, listenPort, networkCidr)}
