@@ -33,8 +33,7 @@ export function LoginPage() {
         </Typography>
         <form onSubmit={handleSubmit}>
           <TextField
-            label="Email"
-            type="email"
+            label="Email или логин"
             fullWidth
             margin="normal"
             value={email}

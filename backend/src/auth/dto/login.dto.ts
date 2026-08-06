@@ -1,7 +1,11 @@
-import { IsEmail, IsString, MinLength } from 'class-validator';
+import { IsString, MinLength } from 'class-validator';
 
 export class LoginDto {
-  @IsEmail()
+  // Не обязательно email — логином может быть и просто имя пользователя (см.
+  // CreateUserDto/UpdateUserDto — то же самое поле User.email в БД используется как общий
+  // идентификатор для входа, не только как настоящий адрес почты).
+  @IsString()
+  @MinLength(1)
   email: string;
 
   @IsString()

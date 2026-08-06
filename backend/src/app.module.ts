@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
 import { AuthModule } from './auth/auth.module';
@@ -20,6 +22,11 @@ import { VpnModule } from './vpn/vpn.module';
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     ScheduleModule.forRoot(),
+    // Глобальный лимит на IP — базовая защита от перебора/скрейпинга API в целом; логин
+    // отдельно ограничен строже (см. AuthController.login), т.к. это основная цель
+    // перебора. req.ip корректно видит реальный IP клиента, а не адрес nginx, только если
+    // включён 'trust proxy' (см. main.ts) — nginx уже прокидывает X-Forwarded-For/X-Real-IP.
+    ThrottlerModule.forRoot({ throttlers: [{ ttl: 60_000, limit: 120 }] }),
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -50,5 +57,6 @@ import { VpnModule } from './vpn/vpn.module';
     DashboardModule,
   ],
   controllers: [AppController],
+  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
 export class AppModule {}

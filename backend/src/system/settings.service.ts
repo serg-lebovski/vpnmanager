@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { setCorsAllowedDomain } from '../common/cors-origin.state';
 import { CertbotService } from './certbot.service';
 import { NginxConfigService } from './nginx-config.service';
 import { UpdateSettingsDto } from './dto/update-settings.dto';
@@ -71,6 +72,7 @@ export class SettingsService {
     }
 
     const saved = await this.settingsRepository.save(settings);
+    setCorsAllowedDomain(saved.domain);
     await this.nginxConfigService.render(saved);
     return saved;
   }

@@ -75,6 +75,11 @@ export class UsersService {
 
     if (dto.password !== undefined) {
       user.passwordHash = await bcrypt.hash(dto.password, 10);
+      // Инвалидирует все ранее выданные refresh-токены этого пользователя разом (см.
+      // AuthService.refresh — сравнивает tv в payload с текущим значением) — иначе смена
+      // пароля (например, после подозрения на компрометацию) не отзывала бы уже выданные
+      // токены до их естественного истечения (JWT_REFRESH_TTL, по умолчанию 7 дней).
+      user.tokenVersion += 1;
     }
 
     const nextRole = dto.role ?? user.role;

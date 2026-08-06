@@ -1,13 +1,15 @@
-import { IsEmail, IsEnum, IsOptional, IsString, IsUUID, MinLength, ValidateIf } from 'class-validator';
+import { IsEnum, IsOptional, IsString, IsUUID, MinLength, ValidateIf } from 'class-validator';
 import { Role } from '../../common/enums';
 
 export class UpdateUserDto {
-  @IsEmail()
+  // Не обязательно email — просто уникальный логин (см. LoginDto).
+  @IsString()
+  @MinLength(1)
   @IsOptional()
   email?: string;
 
   @IsString()
-  @MinLength(6)
+  @MinLength(10)
   @IsOptional()
   password?: string;
 

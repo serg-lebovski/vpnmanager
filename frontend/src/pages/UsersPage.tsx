@@ -121,7 +121,7 @@ export function UsersPage() {
         </Typography>
         <form onSubmit={handleSubmit}>
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems="flex-start" flexWrap="wrap">
-            <TextField label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+            <TextField label="Email или логин" value={email} onChange={(e) => setEmail(e.target.value)} required />
             <TextField
               label="Пароль"
               type="password"
@@ -216,7 +216,7 @@ export function UsersPage() {
         <DialogTitle>Изменить пользователя</DialogTitle>
         <DialogContent>
           <Stack spacing={2} mt={1}>
-            <TextField label="Email" type="email" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} required />
+            <TextField label="Email или логин" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} required />
             <TextField
               label="Новый пароль"
               type="password"
