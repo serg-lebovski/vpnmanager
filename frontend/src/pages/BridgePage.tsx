@@ -332,6 +332,7 @@ function BridgeCard({
   onChanged: () => void;
   onDelete: () => void;
 }) {
+  const [selectedUpstreamServer, setSelectedUpstreamServer] = useState('');
   const [selectedUpstream, setSelectedUpstream] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
@@ -386,6 +387,8 @@ function BridgeCard({
     onSuccess: () => {
       onChanged();
       setError(null);
+      setSelectedUpstreamServer('');
+      setSelectedUpstream('');
     },
     onError: (err) => setError(getErrorMessage(err, 'Не удалось переключить upstream')),
   });
@@ -449,6 +452,32 @@ function BridgeCard({
   const candidates = servers
     .flatMap((server) => server.protocols.map((protocol) => ({ ...protocol, serverName: server.name, host: server.host })))
     .filter((protocol) => protocol.status === 'active' && !clientProtocolIds.includes(protocol.id));
+
+  // Группировка кандидатов по физическому серверу — для ручного переключения выбираем
+  // сначала СЕРВЕР, а протокол только если у него их несколько (см. рендер ниже). Один и
+  // тот же сервер с WireGuard+AmneziaWG иначе пришлось бы дважды показывать в одном плоском
+  // списке — легко перепутать.
+  const candidatesByServerId = new Map<string, typeof candidates>();
+  for (const candidate of candidates) {
+    const list = candidatesByServerId.get(candidate.serverId) ?? [];
+    list.push(candidate);
+    candidatesByServerId.set(candidate.serverId, list);
+  }
+  const upstreamServerOptions = Array.from(candidatesByServerId.values()).map((protocols) => ({
+    serverId: protocols[0].serverId,
+    serverName: protocols[0].serverName,
+    host: protocols[0].host,
+    protocols,
+  }));
+  const selectedServerProtocols = candidatesByServerId.get(selectedUpstreamServer) ?? [];
+
+  function handleSelectUpstreamServer(serverId: string) {
+    setSelectedUpstreamServer(serverId);
+    const protocols = candidatesByServerId.get(serverId) ?? [];
+    // Один протокол на сервере — выбираем его сразу, без лишнего клика; два — оставляем
+    // выбор пользователю (см. второй TextField ниже).
+    setSelectedUpstream(protocols.length === 1 ? protocols[0].id : '');
+  }
 
   const clientInterfaces: Array<{ label: VpnProtocol; sp: BridgeEntity['wireguardClientProtocol'] }> = [
     { label: 'wireguard', sp: bridge.wireguardClientProtocol },
@@ -590,20 +619,35 @@ function BridgeCard({
           </Typography>
         </Stack>
       ) : (
-        <Stack direction="row" spacing={2} alignItems="flex-start">
+        <Stack direction="row" spacing={2} alignItems="flex-start" flexWrap="wrap" useFlexGap>
           <TextField
             select
-            label="Переключить upstream вручную"
-            value={selectedUpstream}
-            onChange={(e) => setSelectedUpstream(e.target.value)}
+            label="Переключить upstream вручную — сервер"
+            value={selectedUpstreamServer}
+            onChange={(e) => handleSelectUpstreamServer(e.target.value)}
             sx={{ minWidth: 260 }}
           >
-            {candidates.map((c) => (
-              <MenuItem key={c.id} value={c.id}>
-                {c.serverName} — {c.protocol} ({c.host})
+            {upstreamServerOptions.map((s) => (
+              <MenuItem key={s.serverId} value={s.serverId}>
+                {s.serverName} ({s.host})
               </MenuItem>
             ))}
           </TextField>
+          {selectedServerProtocols.length > 1 && (
+            <TextField
+              select
+              label="Протокол"
+              value={selectedUpstream}
+              onChange={(e) => setSelectedUpstream(e.target.value)}
+              sx={{ minWidth: 160 }}
+            >
+              {selectedServerProtocols.map((p) => (
+                <MenuItem key={p.id} value={p.id}>
+                  {p.protocol}
+                </MenuItem>
+              ))}
+            </TextField>
+          )}
           <Button
             variant="outlined"
             disabled={!selectedUpstream || upstreamMutation.isPending}
