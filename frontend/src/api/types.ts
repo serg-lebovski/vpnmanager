@@ -77,6 +77,9 @@ export interface BridgeEntity {
   status: BridgeStatus;
   lastError: string | null;
   domainName: string | null;
+  // Домены/IP, трафик к которым идёт напрямую с self-сервера, минуя upstream ("зарубежный"
+  // сервер) — см. VpnProvisioningService.setupBridgeBypass на бэкенде.
+  bypassDestinations: string[];
   upstreamCandidates: Array<{ id: string; priority: number; serverProtocol: (ServerProtocolEntity & { server?: ServerEntity }) | null }>;
   createdAt: string;
 }

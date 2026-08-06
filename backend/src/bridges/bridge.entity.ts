@@ -94,6 +94,14 @@ export class Bridge {
   @Column({ name: 'domain_name', type: 'varchar', nullable: true })
   domainName: string | null;
 
+  // Список доменов/IP, трафик к которым НЕ идёт через upstream ("зарубежный" сервер) моста
+  // — уходит напрямую с self-сервера его обычным подключением (см.
+  // VpnProvisioningService.setupBridgeBypass, BridgesService.syncBypassRules). Каждая
+  // строка — либо IPv4/CIDR как есть, либо доменное имя (резолвится на self-сервере и
+  // пере-резолвится раз в 5 минут, см. BridgesService.refreshBypassRules).
+  @Column({ name: 'bypass_destinations', type: 'text', array: true, default: () => "'{}'" })
+  bypassDestinations: string[];
+
   // Приоритетный список кандидатов для режима FAILOVER (см. BridgeUpstreamMode.FAILOVER,
   // BridgeFailoverService) — независим от upstreamServerProtocolId ("что активно прямо
   // сейчас"), это "в каком порядке предпочитать".

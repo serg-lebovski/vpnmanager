@@ -15,7 +15,7 @@ import {
   Typography,
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { FormEvent, useEffect, useState } from 'react';
+import { ChangeEvent, FormEvent, useEffect, useState } from 'react';
 import {
   BridgeClientProtocolInput,
   CreateBridgeInput,
@@ -338,8 +338,32 @@ function BridgeCard({
   const [editName, setEditName] = useState(bridge.name);
   const [editOrganizationId, setEditOrganizationId] = useState(bridge.organizationId ?? '');
   const [editDomainName, setEditDomainName] = useState(bridge.domainName ?? '');
+  // Список обхода upstream — редактируется как текст, по записи на строку (домен или
+  // IP/CIDR); при сохранении разбивается на массив, пустые строки и строки-комментарии
+  // (начинающиеся с #) отбрасываются.
+  const [editBypassText, setEditBypassText] = useState((bridge.bypassDestinations ?? []).join('\n'));
 
   const organizationName = organizations.find((o) => o.id === bridge.organizationId)?.name;
+
+  function parseBypassText(text: string): string[] {
+    return text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith('#'));
+  }
+
+  function handleBypassFileUpload(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const uploaded = parseBypassText(String(reader.result ?? ''));
+      const existing = parseBypassText(editBypassText);
+      setEditBypassText(Array.from(new Set([...existing, ...uploaded])).join('\n'));
+    };
+    reader.readAsText(file);
+    event.target.value = '';
+  }
 
   const updateMutation = useMutation({
     mutationFn: () =>
@@ -347,6 +371,7 @@ function BridgeCard({
         name: editName,
         organizationId: editOrganizationId || null,
         domainName: editDomainName.trim() || null,
+        bypassDestinations: parseBypassText(editBypassText),
       }),
     onSuccess: () => {
       onChanged();
@@ -435,37 +460,56 @@ function BridgeCard({
       <Stack direction="row" justifyContent="space-between" alignItems="flex-start">
         <Box flex={1}>
           {isEditing ? (
-            <Stack direction="row" spacing={2} alignItems="flex-start" mb={1}>
-              <TextField label="Название" size="small" value={editName} onChange={(e) => setEditName(e.target.value)} required />
-              <TextField
-                select
-                label="Организация"
-                size="small"
-                value={editOrganizationId}
-                onChange={(e) => setEditOrganizationId(e.target.value)}
-                sx={{ minWidth: 200 }}
-              >
-                <MenuItem value="">Общий (без организации)</MenuItem>
-                {organizations.map((org) => (
-                  <MenuItem key={org.id} value={org.id}>
-                    {org.name}
-                  </MenuItem>
-                ))}
-              </TextField>
-              <TextField
-                label="Доменное имя моста"
-                size="small"
-                value={editDomainName}
-                onChange={(e) => setEditDomainName(e.target.value)}
-                sx={{ minWidth: 220 }}
-                helperText="Вместо IP self-сервера в скачиваемых конфигах peers"
-              />
-              <Button size="small" variant="contained" disabled={updateMutation.isPending} onClick={() => updateMutation.mutate()}>
-                Сохранить
-              </Button>
-              <Button size="small" onClick={() => setIsEditing(false)}>
-                Отмена
-              </Button>
+            <Stack spacing={1.5} mb={1}>
+              <Stack direction="row" spacing={2} alignItems="flex-start" flexWrap="wrap" useFlexGap>
+                <TextField label="Название" size="small" value={editName} onChange={(e) => setEditName(e.target.value)} required />
+                <TextField
+                  select
+                  label="Организация"
+                  size="small"
+                  value={editOrganizationId}
+                  onChange={(e) => setEditOrganizationId(e.target.value)}
+                  sx={{ minWidth: 200 }}
+                >
+                  <MenuItem value="">Общий (без организации)</MenuItem>
+                  {organizations.map((org) => (
+                    <MenuItem key={org.id} value={org.id}>
+                      {org.name}
+                    </MenuItem>
+                  ))}
+                </TextField>
+                <TextField
+                  label="Доменное имя моста"
+                  size="small"
+                  value={editDomainName}
+                  onChange={(e) => setEditDomainName(e.target.value)}
+                  sx={{ minWidth: 220 }}
+                  helperText="Вместо IP self-сервера в скачиваемых конфигах peers"
+                />
+                <Button size="small" variant="contained" disabled={updateMutation.isPending} onClick={() => updateMutation.mutate()}>
+                  Сохранить
+                </Button>
+                <Button size="small" onClick={() => setIsEditing(false)}>
+                  Отмена
+                </Button>
+              </Stack>
+              <Stack spacing={0.5} alignItems="flex-start" sx={{ maxWidth: 480 }}>
+                <TextField
+                  label="Список обхода upstream (домены/IP, по одному на строку)"
+                  size="small"
+                  multiline
+                  minRows={3}
+                  maxRows={8}
+                  fullWidth
+                  value={editBypassText}
+                  onChange={(e) => setEditBypassText(e.target.value)}
+                  helperText="Трафик к этим доменам/IP пойдёт напрямую с self-сервера, минуя upstream ('зарубежный' сервер)"
+                />
+                <Button size="small" component="label">
+                  Загрузить .txt
+                  <input type="file" accept=".txt" hidden onChange={handleBypassFileUpload} />
+                </Button>
+              </Stack>
             </Stack>
           ) : (
             <Typography variant="h6">
@@ -480,6 +524,10 @@ function BridgeCard({
           ))}
           <Typography variant="body2" color="text.secondary">
             Домен: {bridge.domainName ?? 'не задан (в конфигах — IP self-сервера)'}
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Обход upstream:{' '}
+            {bridge.bypassDestinations?.length > 0 ? `${bridge.bypassDestinations.length} записей` : 'не задан'}
           </Typography>
           {bridge.lastError && (
             <Typography variant="body2" color="error">
@@ -519,6 +567,7 @@ function BridgeCard({
                 setEditName(bridge.name);
                 setEditOrganizationId(bridge.organizationId ?? '');
                 setEditDomainName(bridge.domainName ?? '');
+                setEditBypassText((bridge.bypassDestinations ?? []).join('\n'));
                 setIsEditing(true);
               }}
             >

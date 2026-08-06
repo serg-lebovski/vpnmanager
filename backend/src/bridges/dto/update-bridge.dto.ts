@@ -1,4 +1,4 @@
-import { IsOptional, IsString, IsUUID, MinLength, ValidateIf } from 'class-validator';
+import { IsArray, IsOptional, IsString, IsUUID, MinLength, ValidateIf } from 'class-validator';
 
 export class UpdateBridgeDto {
   @IsString()
@@ -19,4 +19,11 @@ export class UpdateBridgeDto {
   @ValidateIf((_, value) => value !== null)
   @IsOptional()
   domainName?: string | null;
+
+  // Полная замена списка (как upstreamCandidates) — каждая строка либо IP/CIDR, либо
+  // домен; точная валидация формата и дедупликация — в BridgesService.update.
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  bypassDestinations?: string[];
 }

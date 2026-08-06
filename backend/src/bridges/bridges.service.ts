@@ -11,6 +11,7 @@ import { Peer } from '../peers/peer.entity';
 import { PeersService } from '../peers/peers.service';
 import { ServerProtocol } from '../servers/server-protocol.entity';
 import { Server } from '../servers/server.entity';
+import { classifyBypassEntry } from '../vpn/network.util';
 import { UpstreamPeerConfig } from '../vpn/vpn-driver.interface';
 import { VpnProvisioningService } from '../vpn/vpn-provisioning.service';
 import { Bridge } from './bridge.entity';
@@ -232,8 +233,67 @@ export class BridgesService {
     if (dto.domainName !== undefined) {
       bridge.domainName = dto.domainName;
     }
+    if (dto.bypassDestinations !== undefined) {
+      const parsed: string[] = [];
+      const seen = new Set<string>();
+      for (const raw of dto.bypassDestinations) {
+        const classified = classifyBypassEntry(raw);
+        if (!classified) {
+          throw new BadRequestException(`Некорректная строка в списке обхода upstream: "${raw}" — ожидается IP/CIDR или доменное имя`);
+        }
+        if (!seen.has(classified.value)) {
+          seen.add(classified.value);
+          parsed.push(classified.value);
+        }
+      }
+      bridge.bypassDestinations = parsed;
+    }
     const saved = await this.bridgesRepository.save(bridge);
+
+    // В отличие от имени/организации (чистая косметика в БД), список обхода нужно сразу
+    // применить на self-сервере — не дожидаясь ближайшего тика refreshBypassRules.
+    // Best-effort: self-сервер может быть временно недоступен — не откатываем сохранённый
+    // список, периодическая пересинхронизация всё равно догонит его позже.
+    if (dto.bypassDestinations !== undefined) {
+      try {
+        await this.syncBypassRules(saved);
+      } catch (error) {
+        this.logger.warn(`Не удалось сразу применить список обхода upstream моста "${saved.name}": ${(error as Error).message}`);
+      }
+    }
+
     return this.toSafeBridge(saved);
+  }
+
+  // Общий шаг для update() (сразу после сохранения) и refreshBypassRules() (периодический
+  // пере-резолв доменов) — резолвинг самих доменов делает VpnProvisioningService.
+  private async syncBypassRules(bridge: Bridge): Promise<void> {
+    const selfServer = this.getSelfServer(bridge);
+    const clientInterfaces = [bridge.wireguardClientProtocol, bridge.amneziawgClientProtocol]
+      .filter((sp): sp is ServerProtocol => Boolean(sp))
+      .map((sp) => ({ networkCidr: sp.networkCidr, interfaceName: sp.interfaceName }));
+    if (clientInterfaces.length === 0) {
+      return;
+    }
+    await this.vpnProvisioningService.setupBridgeBypass(selfServer, bridge.id, clientInterfaces, bridge.bypassDestinations);
+  }
+
+  // Домены в списке обхода могут поменять IP (CDN и т.п.) без какого-либо действия
+  // администратора — периодически пере-резолвим и обновляем ipset на self-сервере.
+  // Пропускаем мосты без непустого списка — незачем открывать SSH ради него.
+  @Interval(5 * 60 * 1000)
+  private async refreshBypassRules(): Promise<void> {
+    const bridges = await this.bridgesRepository.find({ relations: BRIDGE_RELATIONS });
+    for (const bridge of bridges) {
+      if (!bridge.bypassDestinations || bridge.bypassDestinations.length === 0) {
+        continue;
+      }
+      try {
+        await this.syncBypassRules(bridge);
+      } catch (error) {
+        this.logger.warn(`Не удалось обновить список обхода upstream моста "${bridge.name}": ${(error as Error).message}`);
+      }
+    }
   }
 
   // MAX(routeTable) + 1 по всем мостам, под pessimistic-lock — тем же паттерном, что

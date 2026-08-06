@@ -314,4 +314,118 @@ export class VpnProvisioningService {
       }
     });
   }
+
+  // Общая для ВСЕХ мостов на self-сервере метка и правило маршрутизации — работает сразу
+  // для любого числа мостов: КАКОЙ трафик получает метку решает ipset+mangle-правило
+  // каждого конкретного моста (см. ниже), а куда её направить — одно общее правило.
+  private static readonly BYPASS_FWMARK = '0x2a';
+  private static readonly BYPASS_RULE_PRIORITY = 90;
+
+  // Список обхода upstream моста (Bridge.bypassDestinations, задаётся в настройках моста) —
+  // трафик клиентов моста к этим доменам/IP должен идти НАПРЯМУЮ с self-сервера, минуя
+  // upstream ("зарубежный" сервер). Приоритет 100 у "весь трафик клиента -> routeTable"
+  // (см. setupBridgeNat выше) — здесь используется МЕНЬШИЙ priority (90, выше по
+  // приоритету для `ip rule`), поэтому совпавшие с ipset пакеты уходят через main ДО того,
+  // как дошли бы до правила на routeTable.
+  //
+  // Механизм: iptables mangle помечает пакет (MARK) при совпадении dst с ipset моста ->
+  // `ip rule fwmark ... lookup main` направляет помеченные пакеты в main вместо routeTable
+  // -> отдельный MASQUERADE и FORWARD ACCEPT для этого пути (приватный IP клиента иначе не
+  // смог бы выйти в интернет напрямую и/или был бы отброшен в FORWARD). Обратное
+  // направление (ответы) не помечено (mark не переживает новый проход через PREROUTING у
+  // ответных пакетов) — пропускается по ESTABLISHED,RELATED, а не по метке.
+  //
+  // destinations — уже финальный плоский список (IP/CIDR как есть + ещё НЕ резолвленные
+  // домены, см. BridgesService.syncBypassRules/refreshBypassRules) — резолвинг доменов
+  // делает сама эта функция, одним SSH-сеансом вместе с остальной настройкой.
+  async setupBridgeBypass(
+    selfServer: Server,
+    bridgeId: string,
+    clientInterfaces: Array<{ networkCidr: string; interfaceName: string }>,
+    destinations: string[],
+  ): Promise<void> {
+    const connection = this.connectionParams(selfServer);
+    // ipset ограничивает длину имени (IPSET_MAXLEN=32) — префикс + 16 hex-символов id с
+    // запасом укладывается.
+    const ipsetName = `vpnmgr-byp-${bridgeId.replace(/-/g, '').slice(0, 16)}`;
+    const tmpSetName = `${ipsetName}-tmp`;
+    const fwmark = VpnProvisioningService.BYPASS_FWMARK;
+
+    await this.sshService.withConnection(connection, async (ssh) => {
+      // ipset не всегда стоит из коробки (в отличие от iptables/ip) — доустанавливаем при
+      // необходимости, идемпотентно.
+      await this.sshService.execOrThrow(ssh, `which ipset >/dev/null 2>&1 || (apt-get update -y && apt-get install -y ipset)`);
+
+      const ips: string[] = [];
+      const domains: string[] = [];
+      for (const destination of destinations) {
+        if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(destination)) {
+          ips.push(destination);
+        } else {
+          domains.push(destination);
+        }
+      }
+      if (domains.length > 0) {
+        // Один SSH-запрос на все домены сразу — резолвим тем же резолвером, что видит и
+        // сам self-сервер (getent ahostsv4 отдаёт ВСЕ A-записи, не только первую — важно
+        // для доменов за CDN с несколькими IP).
+        const script = domains.map((domain) => `getent ahostsv4 ${domain} 2>/dev/null | awk '{print $1}'`).join('; ');
+        const result = await this.sshService.exec(ssh, script);
+        const resolved = result.stdout
+          .split('\n')
+          .map((line) => line.trim())
+          .filter((line) => /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(line));
+        ips.push(...new Set(resolved.map((ip) => `${ip}/32`)));
+      }
+
+      // create -exist — идемпотентно (не падает, если ipset уже существует). swap вместо
+      // flush+add — атомарная замена содержимого, без "окна", когда набор пуст между
+      // пересчётами (домен временно не резолвится и т.п.).
+      await this.sshService.execOrThrow(ssh, `ipset create ${ipsetName} hash:net -exist`);
+      await this.sshService.execOrThrow(ssh, `ipset create ${tmpSetName} hash:net -exist`);
+      await this.sshService.execOrThrow(ssh, `ipset flush ${tmpSetName}`);
+      for (const ip of ips) {
+        await this.sshService.execOrThrow(ssh, `ipset add ${tmpSetName} ${ip} -exist`);
+      }
+      await this.sshService.execOrThrow(ssh, `ipset swap ${tmpSetName} ${ipsetName}`);
+      await this.sshService.execOrThrow(ssh, `ipset destroy ${tmpSetName}`);
+
+      // Общее для ВСЕХ мостов на этом self-сервере правило — идемпотентно, безопасно
+      // вызывать из каждого моста по отдельности.
+      await this.sshService.execOrThrow(
+        ssh,
+        `ip rule show | grep -q "fwmark ${fwmark} lookup main" || ` +
+          `ip rule add fwmark ${fwmark} lookup main priority ${VpnProvisioningService.BYPASS_RULE_PRIORITY}`,
+      );
+
+      for (const { networkCidr, interfaceName } of clientInterfaces) {
+        await this.sshService.execOrThrow(
+          ssh,
+          `iptables -t mangle -C PREROUTING -s ${networkCidr} -m set --match-set ${ipsetName} dst -j MARK --set-mark ${fwmark} 2>/dev/null || ` +
+            `iptables -t mangle -A PREROUTING -s ${networkCidr} -m set --match-set ${ipsetName} dst -j MARK --set-mark ${fwmark}`,
+        );
+        await this.sshService.execOrThrow(
+          ssh,
+          `iptables -C FORWARD -i ${interfaceName} -m mark --mark ${fwmark} -j ACCEPT 2>/dev/null || ` +
+            `iptables -A FORWARD -i ${interfaceName} -m mark --mark ${fwmark} -j ACCEPT`,
+        );
+        // Ответные пакеты приходят новым проходом через PREROUTING без метки (mark не
+        // переживает границу соединения) — пропускаем их по ESTABLISHED,RELATED, а не по
+        // fwmark, иначе исходящая часть работала бы, а ответы обрубались бы в FORWARD.
+        await this.sshService.execOrThrow(
+          ssh,
+          `iptables -C FORWARD -o ${interfaceName} -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || ` +
+            `iptables -A FORWARD -o ${interfaceName} -m state --state ESTABLISHED,RELATED -j ACCEPT`,
+        );
+        // Трафик в обход upstream всё равно исходит из приватной подсети клиентов моста —
+        // без MASQUERADE именно для этого пути (в дополнение к upstream-специфичному из
+        // setupBridgeNat) пакеты уходили бы с нероутящимся приватным source.
+        await this.sshService.execOrThrow(
+          ssh,
+          `iptables -t nat -C POSTROUTING -s ${networkCidr} -m mark --mark ${fwmark} -j MASQUERADE 2>/dev/null || ` +
+            `iptables -t nat -A POSTROUTING -s ${networkCidr} -m mark --mark ${fwmark} -j MASQUERADE`,
+        );
+      }
+    });
+  }
 }

@@ -38,6 +38,7 @@ export interface UpdateBridgeInput {
   name?: string;
   organizationId?: string | null;
   domainName?: string | null;
+  bypassDestinations?: string[];
 }
 
 export async function updateBridge(bridgeId: string, input: UpdateBridgeInput): Promise<BridgeEntity> {
