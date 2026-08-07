@@ -20,14 +20,21 @@ segfault `wg-quick` под systemd в некоторых окружениях) �
 
 ## Команды разработки
 
-Нет тестов и нет настроенного eslint-конфига в репозитории (скрипт `lint` в backend/package.json
-есть, но конфиг отсутствует) — не пытайся запускать `npm run lint` или `npm test`, их сейчас нет.
+Нет настроенного eslint-конфига в репозитории (скрипт `lint` в backend/package.json есть, но
+конфиг отсутствует) — не пытайся запускать `npm run lint`, его сейчас нет. У backend есть Jest
+(`npm test` в `backend/`) — юнит-тесты на чистую логику без БД/SSH (шифрование, генерация
+клиентского конфига, network-утилиты, TCP-проба, редактирование audit-log, выбор сервера в
+`LoadBalancerService`), через мок-репозитории TypeORM (`{ find: jest.fn(), ... } as unknown as
+Repository<...>`), без поднятия `TestingModule`/DI-контейнера — сервисы создаются `new
+XxxService(...)` напрямую, их конструкторы достаточно просты. `tsconfig.build.json` исключает
+`**/*.spec.ts` из `nest build` (без него `*.spec.js` утекали в `dist/`). Фронтенд тестов не имеет.
 
 ```bash
 # backend (слушает :3000)
 cd backend && npm install && npm run start:dev   # nest start --watch
 cd backend && npm run build                       # nest build
 cd backend && npm run start                        # node dist/main.js, после build
+cd backend && npm test                              # jest — юнит-тесты, без БД
 
 # frontend (dev-сервер :5173, проксирует /api никуда сам не проксирует — см. nginx для прод-роутинга)
 cd frontend && npm install && npm run dev
