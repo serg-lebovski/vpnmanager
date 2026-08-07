@@ -28,7 +28,9 @@ export class LoadBalancerService {
     // конкретного моста) не должны попадать в общий пул автобалансировки — иначе peer,
     // созданный без явного выбора сервера/моста, мог бы случайно оказаться клиентом
     // чужого моста. Бридж-peers назначаются только явно (см. bridgeId в CreatePeerDto).
-    const bridges = await this.bridgesRepository.find();
+    const bridges = await this.bridgesRepository.find({
+      select: ['wireguardClientProtocolId', 'amneziawgClientProtocolId'],
+    });
     const bridgeClientProtocolIds = new Set(
       bridges.flatMap((bridge) => [bridge.wireguardClientProtocolId, bridge.amneziawgClientProtocolId]).filter(Boolean),
     );
@@ -41,14 +43,25 @@ export class LoadBalancerService {
       throw new BadRequestException(`Нет активных серверов с установленным протоколом ${protocol}`);
     }
 
-    const withLoad = await Promise.all(
-      candidates.map(async (serverProtocol) => ({
-        serverProtocol,
-        activePeers: await this.peersRepository.count({
-          where: { serverProtocolId: serverProtocol.id, status: PeerStatus.ACTIVE },
-        }),
-      })),
-    );
+    // Один сгруппированный COUNT вместо отдельного запроса на каждого кандидата (было
+    // N запросов на N серверов протокола при каждом создании peer'а без явного выбора
+    // сервера).
+    const counts = candidates.length
+      ? await this.peersRepository
+          .createQueryBuilder('peer')
+          .select('peer.serverProtocolId', 'serverProtocolId')
+          .addSelect('COUNT(*)', 'count')
+          .where('peer.serverProtocolId IN (:...ids)', { ids: candidates.map((sp) => sp.id) })
+          .andWhere('peer.status = :status', { status: PeerStatus.ACTIVE })
+          .groupBy('peer.serverProtocolId')
+          .getRawMany<{ serverProtocolId: string; count: string }>()
+      : [];
+    const countsByProtocolId = new Map(counts.map((c) => [c.serverProtocolId, Number(c.count)]));
+
+    const withLoad = candidates.map((serverProtocol) => ({
+      serverProtocol,
+      activePeers: countsByProtocolId.get(serverProtocol.id) ?? 0,
+    }));
 
     const withCapacity = withLoad.filter((item) => item.activePeers < item.serverProtocol.server.maxPeers);
     if (withCapacity.length === 0) {

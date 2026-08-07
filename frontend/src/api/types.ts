@@ -1,12 +1,12 @@
 export type Role = 'super_admin' | 'org_admin' | 'org_user' | 'engineer';
 export type VpnProtocol = 'wireguard' | 'amneziawg';
-export type ServerStatus = 'unknown' | 'online' | 'offline';
+type ServerStatus = 'unknown' | 'online' | 'offline';
 export type ServerProtocolStatus = 'not_installed' | 'installing' | 'active' | 'error';
-export type PeerSource = 'created' | 'imported' | 'bridge_upstream';
-export type PeerStatus = 'active' | 'revoked';
+type PeerSource = 'created' | 'imported' | 'bridge_upstream';
+type PeerStatus = 'active' | 'revoked';
 export type SshAuthType = 'password' | 'private_key';
 export type BridgeUpstreamMode = 'manual' | 'auto' | 'failover';
-export type BridgeStatus = 'not_configured' | 'configuring' | 'active' | 'error';
+type BridgeStatus = 'not_configured' | 'configuring' | 'active' | 'error';
 
 export interface AuthUser {
   id: string;

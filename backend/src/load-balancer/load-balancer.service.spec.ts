@@ -16,15 +16,33 @@ function makeServerProtocol(id: string, maxPeers: number): ServerProtocol {
   } as unknown as ServerProtocol;
 }
 
+// pickServerProtocol считает нагрузку одним сгруппированным COUNT-запросом (createQueryBuilder),
+// а не отдельным count() на каждого кандидата — мок воспроизводит ту же цепочку вызовов,
+// отдавая заранее заданные пары (serverProtocolId, count) через getRawMany.
+function makeQueryBuilderMock(counts: Record<string, number>) {
+  const rows = Object.entries(counts).map(([serverProtocolId, count]) => ({ serverProtocolId, count: String(count) }));
+  const builder: any = {
+    select: jest.fn().mockReturnThis(),
+    addSelect: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    andWhere: jest.fn().mockReturnThis(),
+    groupBy: jest.fn().mockReturnThis(),
+    getRawMany: jest.fn().mockResolvedValue(rows),
+  };
+  return builder;
+}
+
 describe('LoadBalancerService.pickServerProtocol', () => {
   let serverProtocolsRepository: jest.Mocked<Pick<Repository<ServerProtocol>, 'find'>>;
-  let peersRepository: jest.Mocked<Pick<Repository<Peer>, 'count'>>;
+  let peersRepository: jest.Mocked<Pick<Repository<Peer>, 'createQueryBuilder'>>;
   let bridgesRepository: jest.Mocked<Pick<Repository<Bridge>, 'find'>>;
   let service: LoadBalancerService;
+  let peerCounts: Record<string, number>;
 
   beforeEach(() => {
+    peerCounts = {};
     serverProtocolsRepository = { find: jest.fn() };
-    peersRepository = { count: jest.fn() };
+    peersRepository = { createQueryBuilder: jest.fn(() => makeQueryBuilderMock(peerCounts)) };
     bridgesRepository = { find: jest.fn().mockResolvedValue([]) };
     service = new LoadBalancerService(
       serverProtocolsRepository as unknown as Repository<ServerProtocol>,
@@ -37,7 +55,7 @@ describe('LoadBalancerService.pickServerProtocol', () => {
     const busy = makeServerProtocol('busy', 100);
     const idle = makeServerProtocol('idle', 100);
     serverProtocolsRepository.find.mockResolvedValue([busy, idle]);
-    peersRepository.count.mockImplementation(({ where }: any) => Promise.resolve(where.serverProtocolId === 'busy' ? 10 : 2));
+    peerCounts = { busy: 10, idle: 2 };
 
     const picked = await service.pickServerProtocol(VpnProtocol.WIREGUARD);
     expect(picked.id).toBe('idle');
@@ -47,7 +65,6 @@ describe('LoadBalancerService.pickServerProtocol', () => {
     const bridgeClient = makeServerProtocol('bridge-client', 100);
     const regular = makeServerProtocol('regular', 100);
     serverProtocolsRepository.find.mockResolvedValue([bridgeClient, regular]);
-    peersRepository.count.mockResolvedValue(0);
     bridgesRepository.find.mockResolvedValue([
       { wireguardClientProtocolId: 'bridge-client', amneziawgClientProtocolId: null },
     ] as Bridge[]);
@@ -60,7 +77,6 @@ describe('LoadBalancerService.pickServerProtocol', () => {
     const allowed = makeServerProtocol('allowed', 100);
     const blocked = makeServerProtocol('blocked', 100);
     serverProtocolsRepository.find.mockResolvedValue([allowed, blocked]);
-    peersRepository.count.mockResolvedValue(0);
 
     const picked = await service.pickServerProtocol(VpnProtocol.WIREGUARD, ['server-allowed']);
     expect(picked.id).toBe('allowed');
@@ -74,7 +90,7 @@ describe('LoadBalancerService.pickServerProtocol', () => {
   it('throws when every candidate is at its maxPeers capacity', async () => {
     const full = makeServerProtocol('full', 5);
     serverProtocolsRepository.find.mockResolvedValue([full]);
-    peersRepository.count.mockResolvedValue(5);
+    peerCounts = { full: 5 };
 
     await expect(service.pickServerProtocol(VpnProtocol.WIREGUARD)).rejects.toThrow('Все доступные серверы достигли лимита нагрузки');
   });
@@ -83,7 +99,7 @@ describe('LoadBalancerService.pickServerProtocol', () => {
     const full = makeServerProtocol('full', 5);
     const hasRoom = makeServerProtocol('has-room', 5);
     serverProtocolsRepository.find.mockResolvedValue([full, hasRoom]);
-    peersRepository.count.mockImplementation(({ where }: any) => Promise.resolve(where.serverProtocolId === 'full' ? 5 : 4));
+    peerCounts = { full: 5, 'has-room': 4 };
 
     const picked = await service.pickServerProtocol(VpnProtocol.WIREGUARD);
     expect(picked.id).toBe('has-room');

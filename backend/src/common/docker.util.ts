@@ -6,7 +6,7 @@ const execFileAsync = promisify(execFile);
 // Находит ID запущенного контейнера ПО ИМЕНИ COMPOSE-СЕРВИСА (не по compose-имени
 // контейнера, которое зависит от project name) — у любого compose-managed контейнера
 // автоматически есть этот label, поэтому не нужно знать точное имя проекта/контейнера.
-export async function resolveContainerIdByComposeService(serviceName: string): Promise<string> {
+async function resolveContainerIdByComposeService(serviceName: string): Promise<string> {
   const { stdout } = await execFileAsync('docker', [
     'ps',
     '--filter',

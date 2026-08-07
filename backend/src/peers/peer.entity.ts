@@ -1,9 +1,17 @@
-import { Column, CreateDateColumn, Entity, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
+import { Column, CreateDateColumn, Entity, Index, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
 import { PeerSource, PeerStatus } from '../common/enums';
 import { Organization } from '../organizations/organization.entity';
 import { ServerProtocol } from '../servers/server-protocol.entity';
 
+// Индексы ниже — Postgres НЕ создаёт их автоматически для FK-колонок (в отличие от PK).
+// serverProtocolId фильтруется в каждом syncServerPeers/pickServerProtocol; status+expiresAt
+// — в checkExpiredPeers раз в минуту независимо от объёма данных; organizationId/
+// createdByUserId — в org-scoping выдачи peers (PeersService.findAllForRequester).
 @Entity('peers')
+@Index(['serverProtocolId'])
+@Index(['status', 'expiresAt'])
+@Index(['organizationId'])
+@Index(['createdByUserId'])
 export class Peer {
   @PrimaryGeneratedColumn('uuid')
   id: string;

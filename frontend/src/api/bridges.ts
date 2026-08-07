@@ -6,7 +6,7 @@ export async function fetchBridges(): Promise<BridgeEntity[]> {
   return data;
 }
 
-export interface BridgeCandidateProtocol {
+interface BridgeCandidateProtocol {
   id: string;
   serverId: string;
   protocol: VpnProtocol;
@@ -37,7 +37,7 @@ export interface BridgeClientProtocolInput {
   networkCidr: string;
 }
 
-export interface SelfServerCredentialsInput {
+interface SelfServerCredentialsInput {
   host: string;
   sshPort?: number;
   sshUsername?: string;

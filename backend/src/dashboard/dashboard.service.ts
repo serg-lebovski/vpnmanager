@@ -103,8 +103,9 @@ const PERSIST_INTERVAL_MS = 15 * 60 * 1000;
 export class DashboardService {
   private readonly logger = new Logger(DashboardService.name);
   private lastSnapshot: DashboardSnapshot | null = null;
-  // publicKey peer'а -> последняя проба трафика, чтобы считать мгновенную скорость
-  // (байт/сек) как дельту между двумя опросами, а не только кумулятивный счётчик.
+  // peerId -> последняя проба трафика, чтобы считать мгновенную скорость (байт/сек) как
+  // дельту между двумя опросами, а не только кумулятивный счётчик. Чистится в buildSnapshot
+  // от peers, пропавших из снапшота — иначе рос бы бесконечно на долгоживущем процессе.
   private readonly lastSample = new Map<string, { rxBytes: number; txBytes: number; at: number }>();
   private gateway: DashboardGateway | null = null;
 
@@ -193,6 +194,16 @@ export class DashboardService {
       }
     });
 
+    // Peers, отсутствующие в этом снапшоте (отозваны/удалены/сервер недоступен) — забываем
+    // их последнюю пробу, иначе lastSample рос бы бесконечно на долгоживущем процессе (та
+    // же чистка, что уже есть у lastPersistedCumulative в persistTrafficSamples).
+    const seenPeerIds = new Set(peerStats.map((p) => p.peerId));
+    for (const peerId of this.lastSample.keys()) {
+      if (!seenPeerIds.has(peerId)) {
+        this.lastSample.delete(peerId);
+      }
+    }
+
     return { timestamp: new Date().toISOString(), servers: serverStats, peers: peerStats };
   }
 
@@ -256,7 +267,7 @@ export class DashboardService {
       const rxBytesTotal = sample?.rxBytes ?? 0;
       const txBytesTotal = sample?.txBytes ?? 0;
 
-      const previous = this.lastSample.get(peer.publicKey);
+      const previous = this.lastSample.get(peer.id);
       let rxBps = 0;
       let txBps = 0;
       if (previous && sample) {
@@ -270,7 +281,7 @@ export class DashboardService {
         }
       }
       if (sample) {
-        this.lastSample.set(peer.publicKey, { rxBytes: rxBytesTotal, txBytes: txBytesTotal, at: now });
+        this.lastSample.set(peer.id, { rxBytes: rxBytesTotal, txBytes: txBytesTotal, at: now });
       }
 
       return {
