@@ -61,6 +61,15 @@ export interface PeerTrafficRow {
   peerId: string;
   peerName: string;
   serverName: string;
+  organizationId: string | null;
+  organizationName: string;
+  rxBytes: number;
+  txBytes: number;
+}
+
+export interface OrganizationTrafficRow {
+  organizationId: string | null;
+  organizationName: string;
   rxBytes: number;
   txBytes: number;
 }
@@ -73,17 +82,35 @@ export interface MonthlyServerTrafficRow {
   txBytes: number;
 }
 
-export async function fetchTrafficByServer(range: TrafficRange): Promise<ServerTrafficRow[]> {
-  const { data } = await apiClient.get<ServerTrafficRow[]>('/dashboard/traffic/by-server', { params: { range } });
+export interface TrafficFilters {
+  organizationId?: string;
+  serverId?: string;
+}
+
+export async function fetchTrafficByServer(range: TrafficRange, filters: TrafficFilters = {}): Promise<ServerTrafficRow[]> {
+  const { data } = await apiClient.get<ServerTrafficRow[]>('/dashboard/traffic/by-server', {
+    params: { range, organizationId: filters.organizationId },
+  });
   return data;
 }
 
-export async function fetchTrafficByPeer(range: TrafficRange): Promise<PeerTrafficRow[]> {
-  const { data } = await apiClient.get<PeerTrafficRow[]>('/dashboard/traffic/by-peer', { params: { range } });
+export async function fetchTrafficByOrganization(range: TrafficRange, filters: TrafficFilters = {}): Promise<OrganizationTrafficRow[]> {
+  const { data } = await apiClient.get<OrganizationTrafficRow[]>('/dashboard/traffic/by-organization', {
+    params: { range, serverId: filters.serverId },
+  });
   return data;
 }
 
-export async function fetchTrafficMonthly(months = 6): Promise<MonthlyServerTrafficRow[]> {
-  const { data } = await apiClient.get<MonthlyServerTrafficRow[]>('/dashboard/traffic/monthly', { params: { months } });
+export async function fetchTrafficByPeer(range: TrafficRange, filters: TrafficFilters = {}): Promise<PeerTrafficRow[]> {
+  const { data } = await apiClient.get<PeerTrafficRow[]>('/dashboard/traffic/by-peer', {
+    params: { range, organizationId: filters.organizationId, serverId: filters.serverId },
+  });
+  return data;
+}
+
+export async function fetchTrafficMonthly(months = 6, filters: TrafficFilters = {}): Promise<MonthlyServerTrafficRow[]> {
+  const { data } = await apiClient.get<MonthlyServerTrafficRow[]>('/dashboard/traffic/monthly', {
+    params: { months, organizationId: filters.organizationId },
+  });
   return data;
 }

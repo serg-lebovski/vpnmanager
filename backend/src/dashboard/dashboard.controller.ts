@@ -20,18 +20,26 @@ export class DashboardController {
   }
 
   @Get('traffic/by-server')
-  getTrafficByServer(@Query('range') range?: string) {
-    return this.dashboardService.getTrafficByServer(this.parseRange(range));
+  getTrafficByServer(@Query('range') range?: string, @Query('organizationId') organizationId?: string) {
+    return this.dashboardService.getTrafficByServer(this.parseRange(range), organizationId || undefined);
+  }
+
+  @Get('traffic/by-organization')
+  getTrafficByOrganization(@Query('range') range?: string, @Query('serverId') serverId?: string) {
+    return this.dashboardService.getTrafficByOrganization(this.parseRange(range), serverId || undefined);
   }
 
   @Get('traffic/by-peer')
-  getTrafficByPeer(@Query('range') range?: string) {
-    return this.dashboardService.getTrafficByPeer(this.parseRange(range));
+  getTrafficByPeer(@Query('range') range?: string, @Query('organizationId') organizationId?: string, @Query('serverId') serverId?: string) {
+    return this.dashboardService.getTrafficByPeer(this.parseRange(range), organizationId || undefined, serverId || undefined);
   }
 
   @Get('traffic/monthly')
-  getTrafficMonthly(@Query('months') months?: string) {
+  getTrafficMonthly(@Query('months') months?: string, @Query('organizationId') organizationId?: string) {
     const parsed = Number(months);
-    return this.dashboardService.getTrafficMonthly(Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 24) : 6);
+    return this.dashboardService.getTrafficMonthly(
+      Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 24) : 6,
+      organizationId || undefined,
+    );
   }
 }

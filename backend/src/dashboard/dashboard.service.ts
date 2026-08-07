@@ -1,8 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { PeerSource, PeerStatus, ServerProtocolStatus, VpnProtocol } from '../common/enums';
+import { Organization } from '../organizations/organization.entity';
 import { Peer } from '../peers/peer.entity';
 import { ServerProtocol } from '../servers/server-protocol.entity';
 import { Server } from '../servers/server.entity';
@@ -64,6 +65,15 @@ export interface PeerTrafficRow {
   peerId: string;
   peerName: string;
   serverName: string;
+  organizationId: string | null;
+  organizationName: string;
+  rxBytes: number;
+  txBytes: number;
+}
+
+export interface OrganizationTrafficRow {
+  organizationId: string | null;
+  organizationName: string;
   rxBytes: number;
   txBytes: number;
 }
@@ -75,6 +85,8 @@ export interface MonthlyServerTrafficRow {
   rxBytes: number;
   txBytes: number;
 }
+
+const NO_CLIENT_LABEL = 'Без клиента';
 
 // Опрашивать каждую пару минут смысла нет (это "реальное время"), но и раз в секунду —
 // перебор: на каждый сервер тратится отдельное SSH-подключение (см. SshService), и по
@@ -106,8 +118,22 @@ export class DashboardService {
     @InjectRepository(Server) private readonly serversRepository: Repository<Server>,
     @InjectRepository(Peer) private readonly peersRepository: Repository<Peer>,
     @InjectRepository(PeerTrafficSample) private readonly trafficSamplesRepository: Repository<PeerTrafficSample>,
+    @InjectRepository(Organization) private readonly organizationsRepository: Repository<Organization>,
     private readonly vpnProvisioningService: VpnProvisioningService,
   ) {}
+
+  // Общий резолвер имён клиентов для разрезов "по клиентам"/"по peers" — один запрос
+  // по всем встреченным organizationId сразу, а не по одному на строку. null (peer без
+  // организации) сознательно не попадает в IN(...) — это не ошибка резолва, а валидный
+  // случай "Без клиента".
+  private async resolveOrganizationNames(ids: Array<string | null>): Promise<Map<string, string>> {
+    const uniqueIds = Array.from(new Set(ids.filter((id): id is string => id !== null)));
+    if (uniqueIds.length === 0) {
+      return new Map();
+    }
+    const orgs = await this.organizationsRepository.find({ where: { id: In(uniqueIds) }, select: ['id', 'name'] });
+    return new Map(orgs.map((o) => [o.id, o.name]));
+  }
 
   // Сеттер, а не конструктор, — иначе DashboardGateway <-> DashboardService оказались бы
   // взаимными конструкторными зависимостями. Вызывается из конструктора гейтвея.
@@ -324,41 +350,88 @@ export class DashboardService {
   }
 
   // SUPER_ADMIN-only (см. DashboardController) — та же граница видимости, что у живого
-  // дашборда (WS namespace пускает только super_admin), поэтому без org-скоупинга: сумма
-  // по ВСЕМ организациям сразу.
-  async getTrafficByServer(range: TrafficRange): Promise<ServerTrafficRow[]> {
-    const rows = await this.trafficSamplesRepository
+  // дашборда (WS namespace пускает только super_admin), поэтому без org-скоупинга по
+  // умолчанию: сумма по ВСЕМ организациям сразу, если organizationId не передан — фильтр
+  // для удобства мониторинга конкретного клиента across серверов.
+  async getTrafficByServer(range: TrafficRange, organizationId?: string): Promise<ServerTrafficRow[]> {
+    const query = this.trafficSamplesRepository
       .createQueryBuilder('s')
       .select('s.serverId', 'serverId')
       .addSelect('MAX(s.serverName)', 'serverName')
       .addSelect('SUM(s.rxBytes)', 'rxBytes')
       .addSelect('SUM(s.txBytes)', 'txBytes')
-      .where('s.sampledAt >= :from', { from: this.rangeStart(range) })
+      .where('s.sampledAt >= :from', { from: this.rangeStart(range) });
+    if (organizationId) {
+      query.andWhere('s.organizationId = :organizationId', { organizationId });
+    }
+    const rows = await query
       .groupBy('s.serverId')
       .orderBy('SUM(s.rxBytes) + SUM(s.txBytes)', 'DESC')
       .getRawMany<{ serverId: string; serverName: string; rxBytes: string; txBytes: string }>();
     return rows.map((r) => ({ serverId: r.serverId, serverName: r.serverName, rxBytes: Number(r.rxBytes), txBytes: Number(r.txBytes) }));
   }
 
+  // Разрез "по клиентам" — сколько трафика потребила каждая организация (across всех её
+  // peers на всех серверах). Без BRIDGE_UPSTREAM (см. getTrafficByPeer — это не трафик
+  // настоящего клиента, а суммарный транзит моста через upstream) — иначе он бы весь
+  // осел в "Без клиента" и исказил картину. serverId — необязательный фильтр, чтобы можно
+  // было посмотреть "кто из клиентов сколько ест именно на этом сервере".
+  async getTrafficByOrganization(range: TrafficRange, serverId?: string): Promise<OrganizationTrafficRow[]> {
+    const query = this.trafficSamplesRepository
+      .createQueryBuilder('s')
+      .select('s.organizationId', 'organizationId')
+      .addSelect('SUM(s.rxBytes)', 'rxBytes')
+      .addSelect('SUM(s.txBytes)', 'txBytes')
+      .where('s.sampledAt >= :from', { from: this.rangeStart(range) })
+      .andWhere('s.peerSource != :bridgeUpstream', { bridgeUpstream: PeerSource.BRIDGE_UPSTREAM });
+    if (serverId) {
+      query.andWhere('s.serverId = :serverId', { serverId });
+    }
+    const rows = await query
+      .groupBy('s.organizationId')
+      .orderBy('SUM(s.rxBytes) + SUM(s.txBytes)', 'DESC')
+      .getRawMany<{ organizationId: string | null; rxBytes: string; txBytes: string }>();
+    const names = await this.resolveOrganizationNames(rows.map((r) => r.organizationId));
+    return rows.map((r) => ({
+      organizationId: r.organizationId,
+      organizationName: r.organizationId ? (names.get(r.organizationId) ?? 'Организация удалена') : NO_CLIENT_LABEL,
+      rxBytes: Number(r.rxBytes),
+      txBytes: Number(r.txBytes),
+    }));
+  }
+
   // Без BRIDGE_UPSTREAM — это системный peer моста (суммарный трафик всех его клиентов), а
   // не настоящий клиент; он и так скрыт из обычных списков peers (см. PeersService).
-  async getTrafficByPeer(range: TrafficRange): Promise<PeerTrafficRow[]> {
-    const rows = await this.trafficSamplesRepository
+  // organizationId/serverId — необязательные фильтры для удобства мониторинга (посмотреть
+  // peers конкретного клиента и/или конкретного сервера, не пролистывая общий список).
+  async getTrafficByPeer(range: TrafficRange, organizationId?: string, serverId?: string): Promise<PeerTrafficRow[]> {
+    const query = this.trafficSamplesRepository
       .createQueryBuilder('s')
       .select('s.peerId', 'peerId')
       .addSelect('MAX(s.peerName)', 'peerName')
       .addSelect('MAX(s.serverName)', 'serverName')
+      .addSelect('MAX(s.organizationId)', 'organizationId')
       .addSelect('SUM(s.rxBytes)', 'rxBytes')
       .addSelect('SUM(s.txBytes)', 'txBytes')
       .where('s.sampledAt >= :from', { from: this.rangeStart(range) })
-      .andWhere('s.peerSource != :bridgeUpstream', { bridgeUpstream: PeerSource.BRIDGE_UPSTREAM })
+      .andWhere('s.peerSource != :bridgeUpstream', { bridgeUpstream: PeerSource.BRIDGE_UPSTREAM });
+    if (organizationId) {
+      query.andWhere('s.organizationId = :organizationId', { organizationId });
+    }
+    if (serverId) {
+      query.andWhere('s.serverId = :serverId', { serverId });
+    }
+    const rows = await query
       .groupBy('s.peerId')
       .orderBy('SUM(s.rxBytes) + SUM(s.txBytes)', 'DESC')
-      .getRawMany<{ peerId: string; peerName: string; serverName: string; rxBytes: string; txBytes: string }>();
+      .getRawMany<{ peerId: string; peerName: string; serverName: string; organizationId: string | null; rxBytes: string; txBytes: string }>();
+    const names = await this.resolveOrganizationNames(rows.map((r) => r.organizationId));
     return rows.map((r) => ({
       peerId: r.peerId,
       peerName: r.peerName,
       serverName: r.serverName,
+      organizationId: r.organizationId,
+      organizationName: r.organizationId ? (names.get(r.organizationId) ?? 'Организация удалена') : NO_CLIENT_LABEL,
       rxBytes: Number(r.rxBytes),
       txBytes: Number(r.txBytes),
     }));
@@ -366,20 +439,25 @@ export class DashboardService {
 
   // "Помесячно" — по серверам (включая self-серверы, несущие мосты — это обычные Server,
   // отдельной группировки "по мостам" не нужно), последние `months` календарных месяцев.
-  async getTrafficMonthly(months: number): Promise<MonthlyServerTrafficRow[]> {
+  // organizationId — необязательный фильтр (динамика конкретного клиента по месяцам).
+  async getTrafficMonthly(months: number, organizationId?: string): Promise<MonthlyServerTrafficRow[]> {
     const from = new Date();
     from.setMonth(from.getMonth() - (Math.max(1, months) - 1));
     from.setDate(1);
     from.setHours(0, 0, 0, 0);
 
-    const rows = await this.trafficSamplesRepository
+    const query = this.trafficSamplesRepository
       .createQueryBuilder('s')
       .select("to_char(date_trunc('month', s.sampledAt), 'YYYY-MM')", 'month')
       .addSelect('s.serverId', 'serverId')
       .addSelect('MAX(s.serverName)', 'serverName')
       .addSelect('SUM(s.rxBytes)', 'rxBytes')
       .addSelect('SUM(s.txBytes)', 'txBytes')
-      .where('s.sampledAt >= :from', { from })
+      .where('s.sampledAt >= :from', { from });
+    if (organizationId) {
+      query.andWhere('s.organizationId = :organizationId', { organizationId });
+    }
+    const rows = await query
       .groupBy("date_trunc('month', s.sampledAt)")
       .addGroupBy('s.serverId')
       .orderBy("date_trunc('month', s.sampledAt)", 'DESC')

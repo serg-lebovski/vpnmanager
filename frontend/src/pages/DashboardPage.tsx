@@ -4,8 +4,12 @@ import {
   Chip,
   CircularProgress,
   Divider,
+  FormControl,
+  InputLabel,
   LinearProgress,
+  MenuItem,
   Paper,
+  Select,
   Stack,
   Table,
   TableBody,
@@ -17,10 +21,13 @@ import {
 } from '@mui/material';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
+import { fetchOrganizations } from '../api/organizations';
+import { fetchServers } from '../api/servers';
 import {
   connectDashboardSocket,
   DashboardPeerStats,
   DashboardServerStats,
+  fetchTrafficByOrganization,
   fetchTrafficByPeer,
   fetchTrafficByServer,
   fetchTrafficMonthly,
@@ -171,23 +178,41 @@ function ServerLoadRow({ server }: { server: DashboardServerStats }) {
 
 const rangeLabels: Record<TrafficRange, string> = { day: 'День', week: 'Неделя', month: 'Месяц' };
 
+const ALL_FILTER_VALUE = '__all__';
+
 // История трафика — в отличие от остальной страницы (живой снапшот по WebSocket), это
 // обычные REST-запросы с историческими агрегатами (см. DashboardService.getTrafficByServer/
-// getTrafficByPeer/getTrafficMonthly на бэкенде) — react-query, без сокета.
+// getTrafficByOrganization/getTrafficByPeer/getTrafficMonthly на бэкенде) — react-query, без
+// сокета. Фильтры по клиенту/серверу — для удобства мониторинга, применяются ко всем
+// разрезам сразу (кроме "по клиентам", который сам по себе и есть разрез по клиенту, туда
+// applies только фильтр по серверу — "кто из клиентов сколько ест именно на этом сервере").
 function TrafficSection() {
   const [range, setRange] = useState<TrafficRange>('day');
+  const [organizationId, setOrganizationId] = useState<string>(ALL_FILTER_VALUE);
+  const [serverId, setServerId] = useState<string>(ALL_FILTER_VALUE);
 
+  const { data: organizations } = useQuery({ queryKey: ['organizations'], queryFn: fetchOrganizations });
+  const { data: servers } = useQuery({ queryKey: ['servers'], queryFn: fetchServers });
+
+  const orgFilter = organizationId === ALL_FILTER_VALUE ? undefined : organizationId;
+  const serverFilter = serverId === ALL_FILTER_VALUE ? undefined : serverId;
+  const filters = { organizationId: orgFilter, serverId: serverFilter };
+
+  const { data: byOrganization, isLoading: loadingByOrganization } = useQuery({
+    queryKey: ['traffic-by-organization', range, serverFilter],
+    queryFn: () => fetchTrafficByOrganization(range, filters),
+  });
   const { data: byServer, isLoading: loadingByServer } = useQuery({
-    queryKey: ['traffic-by-server', range],
-    queryFn: () => fetchTrafficByServer(range),
+    queryKey: ['traffic-by-server', range, orgFilter],
+    queryFn: () => fetchTrafficByServer(range, filters),
   });
   const { data: byPeer, isLoading: loadingByPeer } = useQuery({
-    queryKey: ['traffic-by-peer', range],
-    queryFn: () => fetchTrafficByPeer(range),
+    queryKey: ['traffic-by-peer', range, orgFilter, serverFilter],
+    queryFn: () => fetchTrafficByPeer(range, filters),
   });
   const { data: monthly, isLoading: loadingMonthly } = useQuery({
-    queryKey: ['traffic-monthly'],
-    queryFn: () => fetchTrafficMonthly(6),
+    queryKey: ['traffic-monthly', orgFilter],
+    queryFn: () => fetchTrafficMonthly(6, filters),
   });
 
   return (
@@ -207,8 +232,63 @@ function TrafficSection() {
         </Stack>
       </Stack>
 
+      <Stack direction="row" spacing={2} mb={3} flexWrap="wrap" rowGap={1}>
+        <FormControl size="small" sx={{ minWidth: 200 }}>
+          <InputLabel>Клиент</InputLabel>
+          <Select label="Клиент" value={organizationId} onChange={(e) => setOrganizationId(e.target.value)}>
+            <MenuItem value={ALL_FILTER_VALUE}>Все клиенты</MenuItem>
+            {organizations?.map((org) => (
+              <MenuItem key={org.id} value={org.id}>
+                {org.name}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+        <FormControl size="small" sx={{ minWidth: 200 }}>
+          <InputLabel>Сервер</InputLabel>
+          <Select label="Сервер" value={serverId} onChange={(e) => setServerId(e.target.value)}>
+            <MenuItem value={ALL_FILTER_VALUE}>Все серверы</MenuItem>
+            {servers?.map((server) => (
+              <MenuItem key={server.id} value={server.id}>
+                {server.name}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+      </Stack>
+
       <Typography variant="body2" color="text.secondary" mb={1}>
-        По серверам (включая self-серверы, несущие мосты) — за период «{rangeLabels[range]}»
+        По клиентам{serverFilter ? ' (на выбранном сервере)' : ''} — за период «{rangeLabels[range]}»
+      </Typography>
+      <Table size="small" sx={{ mb: 3 }}>
+        <TableHead>
+          <TableRow>
+            <TableCell>Клиент</TableCell>
+            <TableCell>Скачано</TableCell>
+            <TableCell>Отправлено</TableCell>
+            <TableCell>Итого</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {byOrganization?.map((row) => (
+            <TableRow key={row.organizationId ?? 'none'}>
+              <TableCell>{row.organizationName}</TableCell>
+              <TableCell>{formatBytesTotal(row.rxBytes)}</TableCell>
+              <TableCell>{formatBytesTotal(row.txBytes)}</TableCell>
+              <TableCell>{formatBytesTotal(row.rxBytes + row.txBytes)}</TableCell>
+            </TableRow>
+          ))}
+          {!loadingByOrganization && (byOrganization?.length ?? 0) === 0 && (
+            <TableRow>
+              <TableCell colSpan={4}>Нет данных за этот период</TableCell>
+            </TableRow>
+          )}
+        </TableBody>
+      </Table>
+
+      <Typography variant="body2" color="text.secondary" mb={1}>
+        По серверам (включая self-серверы, несущие мосты){orgFilter ? ' — только выбранный клиент' : ''} — за период
+        «{rangeLabels[range]}»
       </Typography>
       <Table size="small" sx={{ mb: 3 }}>
         <TableHead>
@@ -243,6 +323,7 @@ function TrafficSection() {
         <TableHead>
           <TableRow>
             <TableCell>Peer</TableCell>
+            <TableCell>Клиент</TableCell>
             <TableCell>Сервер</TableCell>
             <TableCell>Скачано</TableCell>
             <TableCell>Отправлено</TableCell>
@@ -253,6 +334,7 @@ function TrafficSection() {
           {byPeer?.map((row) => (
             <TableRow key={row.peerId}>
               <TableCell>{row.peerName}</TableCell>
+              <TableCell>{row.organizationName}</TableCell>
               <TableCell>{row.serverName}</TableCell>
               <TableCell>{formatBytesTotal(row.rxBytes)}</TableCell>
               <TableCell>{formatBytesTotal(row.txBytes)}</TableCell>
@@ -261,14 +343,14 @@ function TrafficSection() {
           ))}
           {!loadingByPeer && (byPeer?.length ?? 0) === 0 && (
             <TableRow>
-              <TableCell colSpan={5}>Нет данных за этот период</TableCell>
+              <TableCell colSpan={6}>Нет данных за этот период</TableCell>
             </TableRow>
           )}
         </TableBody>
       </Table>
 
       <Typography variant="body2" color="text.secondary" mb={1}>
-        Помесячно (последние 6 месяцев), по серверам
+        Помесячно (последние 6 месяцев), по серверам{orgFilter ? ' — только выбранный клиент' : ''}
       </Typography>
       <Table size="small">
         <TableHead>

@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { Organization } from '../organizations/organization.entity';
 import { Peer } from '../peers/peer.entity';
 import { Server } from '../servers/server.entity';
 import { VpnModule } from '../vpn/vpn.module';
@@ -12,7 +13,7 @@ import { PeerTrafficSample } from './peer-traffic-sample.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Server, Peer, PeerTrafficSample]),
+    TypeOrmModule.forFeature([Server, Peer, PeerTrafficSample, Organization]),
     VpnModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
