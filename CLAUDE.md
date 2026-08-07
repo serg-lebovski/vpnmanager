@@ -164,6 +164,27 @@ getAllowedServersForRequester` (`GET /peers/allowed-servers`, доступен �
 `AuthenticatedUser` из request. Роли и organization-scoping — два независимых слоя проверки,
 обычно нужны оба.
 
+**Роль `ENGINEER`** — не привязана ни к одной организации (`User.organizationId = null`, как у
+`SUPER_ADMIN`, см. `UsersService.createForRequester`/`updateForRequester`), но урезана по
+сравнению с ним: создаёт `peers` для ЛЮБОЙ организации/моста (`PeersService.
+resolveOrganizationId`/`create`/`findBridgeClientProtocol` — те же ветки, что у `SUPER_ADMIN`),
+видит дашборд (`DashboardController`, `DashboardGateway`) и создаёт/настраивает мосты
+(`BridgesController` — `Role.ENGINEER` добавлен ко всем методам, КРОМЕ `DELETE /bridges/:id`,
+которое осталось только `SUPER_ADMIN`, — необратимая операция). НЕ имеет доступа к `/servers`,
+`/users`, `/system`, audit-log (там же зашифрованные SSH-секреты серверов и настройки панели) —
+для карточки моста (детект self-сервера, выбор upstream-кандидатов) есть отдельный безопасный
+эндпоинт `GET /bridges/candidate-servers` (`BridgesService.getCandidateServers`) без SSH-полей
+`Server`, вместо полного `/servers`. `GET /organizations` открыт ENGINEER на чтение (сущность не
+хранит секретов — только `id`/`name`/`allowedServerIds`/`blockedBridgeIds`), но создание/
+изменение/удаление организаций остаются `SUPER_ADMIN`-only. Видимость своих peers — НЕ по
+организации (её нет), а по `Peer.createdByUserId` (`PeersService.findAllForRequester`/
+`findOneScoped`) — ENGINEER видит и управляет (скачать конфиг, переименовать, отозвать/удалить)
+только теми peers, что создал сам, даже в чужих организациях; смена организации/срока действия
+существующего peer'а остаётся только `SUPER_ADMIN` (в т.ч. на фронтенде — редактирование этих
+полей в `PeersPage.tsx` не расширено на ENGINEER). Список прав сознательно минимален — задан
+пользователем явно ("на этом пока права ограничим, возможно позже расширим"), не расширять без
+явной просьбы.
+
 **Шифрование секретов**: `common/encryption.util.ts` — AES-256-GCM, ключ выводится из
 `APP_ENCRYPTION_KEY` через `scryptSync` с фиксированной солью. Используется для SSH-паролей/ключей
 на `Server` и приватных ключей peers в БД (`encryptSecret`/`decryptSecret`). Формат хранения:

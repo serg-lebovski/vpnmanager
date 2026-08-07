@@ -28,32 +28,40 @@ export class BridgesController {
     return this.bridgesService.findAll(user);
   }
 
+  // Безопасный (без SSH-секретов) список серверов+протоколов для настройки моста — см.
+  // BridgesService.getCandidateServers. ENGINEER не имеет доступа к полному /servers.
+  @Get('candidate-servers')
+  @Roles(Role.SUPER_ADMIN, Role.ENGINEER)
+  getCandidateServers() {
+    return this.bridgesService.getCandidateServers();
+  }
+
   @Post()
-  @Roles(Role.SUPER_ADMIN)
+  @Roles(Role.SUPER_ADMIN, Role.ENGINEER)
   create(@Body() dto: CreateBridgeDto) {
     return this.bridgesService.create(dto);
   }
 
   @Patch(':id')
-  @Roles(Role.SUPER_ADMIN)
+  @Roles(Role.SUPER_ADMIN, Role.ENGINEER)
   update(@Param('id') id: string, @Body() dto: UpdateBridgeDto) {
     return this.bridgesService.update(id, dto);
   }
 
   @Post(':id/upstream')
-  @Roles(Role.SUPER_ADMIN)
+  @Roles(Role.SUPER_ADMIN, Role.ENGINEER)
   setUpstream(@Param('id') id: string, @Body() dto: SetUpstreamDto) {
     return this.bridgesService.setUpstream(id, dto.serverProtocolId);
   }
 
   @Post(':id/mode')
-  @Roles(Role.SUPER_ADMIN)
+  @Roles(Role.SUPER_ADMIN, Role.ENGINEER)
   setMode(@Param('id') id: string, @Body() dto: SetModeDto) {
     return this.bridgesService.setMode(id, dto.mode);
   }
 
   @Put(':id/upstream-candidates')
-  @Roles(Role.SUPER_ADMIN)
+  @Roles(Role.SUPER_ADMIN, Role.ENGINEER)
   setUpstreamCandidates(@Param('id') id: string, @Body() dto: SetUpstreamCandidatesDto) {
     return this.bridgesService.setUpstreamCandidates(id, dto.serverProtocolIds);
   }
@@ -62,17 +70,20 @@ export class BridgesController {
   // уровне контроллера, а не BridgesService, чтобы не создавать циклическую зависимость
   // между сервисами (BridgeFailoverService уже зависит от BridgesService).
   @Get(':id/candidate-status')
-  @Roles(Role.SUPER_ADMIN)
+  @Roles(Role.SUPER_ADMIN, Role.ENGINEER)
   getCandidateStatus() {
     return this.bridgeFailoverService.getReachabilityByServerId();
   }
 
   @Post(':id/rebalance')
-  @Roles(Role.SUPER_ADMIN)
+  @Roles(Role.SUPER_ADMIN, Role.ENGINEER)
   rebalance(@Param('id') id: string) {
     return this.bridgesService.rebalanceNow(id);
   }
 
+  // Удаление НАМЕРЕННО только для SUPER_ADMIN (не ENGINEER, в отличие от остальных методов
+  // здесь) — необратимая операция, отзывающая и удаляющая системный upstream-peer моста и
+  // клиентские ServerProtocol; см. README про ограниченный список прав ENGINEER.
   @Delete(':id')
   @Roles(Role.SUPER_ADMIN)
   remove(@Param('id') id: string) {

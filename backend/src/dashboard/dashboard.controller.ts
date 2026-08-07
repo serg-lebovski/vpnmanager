@@ -7,11 +7,12 @@ import { DashboardService, TrafficRange } from './dashboard.service';
 
 const VALID_RANGES: TrafficRange[] = ['day', 'week', 'month'];
 
-// SUPER_ADMIN-only — та же граница, что у живого дашборда (WS namespace 'dashboard'
-// пускает только super_admin, см. dashboard.gateway.ts).
+// SUPER_ADMIN + ENGINEER — та же граница, что у живого дашборда (WS namespace 'dashboard'
+// пускает те же роли, см. dashboard.gateway.ts). ENGINEER — просмотр, без доступа к
+// /servers/organizations, которые дашборд не раскрывает напрямую (только агрегаты).
 @Controller('dashboard')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.SUPER_ADMIN)
+@Roles(Role.SUPER_ADMIN, Role.ENGINEER)
 export class DashboardController {
   constructor(private readonly dashboardService: DashboardService) {}
 

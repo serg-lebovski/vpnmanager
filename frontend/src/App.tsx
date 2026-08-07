@@ -26,12 +26,14 @@ export default function App() {
         <Route element={<ProtectedRoute />}>
           <Route element={<DashboardLayout />}>
             <Route path="/" element={<PeersPage />} />
-            <Route element={<ProtectedRoute allowedRoles={['super_admin']} />}>
+            <Route element={<ProtectedRoute allowedRoles={['super_admin', 'engineer']} />}>
               <Route path="/dashboard" element={<DashboardPage />} />
+              <Route path="/bridge" element={<BridgePage />} />
+            </Route>
+            <Route element={<ProtectedRoute allowedRoles={['super_admin']} />}>
               <Route path="/servers" element={<ServersPage />} />
               <Route path="/organizations" element={<OrganizationsPage />} />
               <Route path="/organizations/:id" element={<ClientDetailPage />} />
-              <Route path="/bridge" element={<BridgePage />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/audit-log" element={<AuditLogPage />} />
             </Route>

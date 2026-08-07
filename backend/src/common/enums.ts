@@ -1,7 +1,15 @@
+// ENGINEER — не привязан ни к одной организации (как SUPER_ADMIN, см. user.organizationId в
+// users.service.ts), но урезан по сравнению с ним: может создавать peers для ЛЮБОЙ
+// организации/моста, видеть дашборд и создавать/настраивать мосты (см. PeersService,
+// BridgesController, DashboardController) — но не может управлять серверами, клиентами
+// (организациями), пользователями, настройками панели и удалять мосты. Задуман для
+// сотрудников, которые физически разворачивают VPN клиентам, но не администрируют саму
+// панель. Список прав сознательно минимален на старте — см. CLAUDE.md.
 export enum Role {
   SUPER_ADMIN = 'super_admin',
   ORG_ADMIN = 'org_admin',
   ORG_USER = 'org_user',
+  ENGINEER = 'engineer',
 }
 
 export enum VpnProtocol {

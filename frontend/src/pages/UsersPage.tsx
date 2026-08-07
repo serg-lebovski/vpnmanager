@@ -72,7 +72,7 @@ export function UsersPage() {
         email: editEmail,
         password: editPassword || undefined,
         role: editRole,
-        organizationId: editRole === 'super_admin' ? null : editOrganizationId,
+        organizationId: editRole === 'super_admin' || editRole === 'engineer' ? null : editOrganizationId,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users'] });
@@ -107,7 +107,7 @@ export function UsersPage() {
       email,
       password,
       role: isSuperAdmin ? role : 'org_user',
-      organizationId: isSuperAdmin ? (role === 'super_admin' ? undefined : organizationId) : undefined,
+      organizationId: isSuperAdmin ? (role === 'super_admin' || role === 'engineer' ? undefined : organizationId) : undefined,
     });
   }
 
@@ -134,9 +134,10 @@ export function UsersPage() {
                 <MenuItem value="org_admin">Администратор организации</MenuItem>
                 <MenuItem value="org_user">Пользователь организации</MenuItem>
                 <MenuItem value="super_admin">Суперадмин</MenuItem>
+                <MenuItem value="engineer">Инженер</MenuItem>
               </TextField>
             )}
-            {isSuperAdmin && role !== 'super_admin' && (
+            {isSuperAdmin && role !== 'super_admin' && role !== 'engineer' && (
               <TextField
                 select
                 label="Организация"
@@ -228,8 +229,9 @@ export function UsersPage() {
               <MenuItem value="org_admin">Администратор организации</MenuItem>
               <MenuItem value="org_user">Пользователь организации</MenuItem>
               <MenuItem value="super_admin">Суперадмин</MenuItem>
+              <MenuItem value="engineer">Инженер</MenuItem>
             </TextField>
-            {editRole !== 'super_admin' && (
+            {editRole !== 'super_admin' && editRole !== 'engineer' && (
               <TextField
                 select
                 label="Организация"

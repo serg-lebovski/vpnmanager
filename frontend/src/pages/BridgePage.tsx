@@ -17,11 +17,13 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChangeEvent, FormEvent, useEffect, useState } from 'react';
 import {
+  BridgeCandidateServer,
   BridgeClientProtocolInput,
   CreateBridgeInput,
   createBridge,
   deleteBridge,
   fetchBridges,
+  fetchCandidateServers,
   fetchCandidateStatus,
   rebalanceBridge,
   setBridgeMode,
@@ -32,8 +34,8 @@ import {
 import { BridgeSwitchProgress, connectBridgeProgressSocket } from '../api/bridgeSocket';
 import { getErrorMessage } from '../api/errors';
 import { fetchOrganizations } from '../api/organizations';
-import { fetchServers } from '../api/servers';
-import { BridgeEntity, BridgeUpstreamMode, Organization, ServerEntity, SshAuthType, VpnProtocol } from '../api/types';
+import { BridgeEntity, BridgeUpstreamMode, Organization, SshAuthType, VpnProtocol } from '../api/types';
+import { useAuth } from '../auth/AuthContext';
 
 const statusColor: Record<string, 'default' | 'success' | 'error' | 'warning'> = {
   not_configured: 'default',
@@ -49,9 +51,15 @@ interface ProtocolRowState {
 }
 
 export function BridgePage() {
+  const { user } = useAuth();
+  // Удаление моста — необратимая операция (отзывает и удаляет системный upstream-peer,
+  // клиентские ServerProtocol), поэтому только суперадмину, в отличие от остальных
+  // действий на этой странице (см. BridgesController — ENGINEER допущен ко всему, кроме
+  // DELETE /bridges/:id).
+  const isSuperAdmin = user?.role === 'super_admin';
   const queryClient = useQueryClient();
   const { data: bridges, isLoading } = useQuery({ queryKey: ['bridges'], queryFn: fetchBridges });
-  const { data: servers } = useQuery({ queryKey: ['servers'], queryFn: fetchServers });
+  const { data: servers } = useQuery({ queryKey: ['bridge-candidate-servers'], queryFn: fetchCandidateServers });
   const { data: organizations } = useQuery({ queryKey: ['organizations'], queryFn: fetchOrganizations });
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['bridges'] });
@@ -269,6 +277,7 @@ export function BridgePage() {
           progress={progressByBridge[bridge.id]}
           onChanged={invalidate}
           onDelete={() => deleteMutation.mutate(bridge.id)}
+          canDelete={isSuperAdmin}
         />
       ))}
     </Stack>
@@ -324,13 +333,15 @@ function BridgeCard({
   progress,
   onChanged,
   onDelete,
+  canDelete,
 }: {
   bridge: BridgeEntity;
-  servers: ServerEntity[];
+  servers: BridgeCandidateServer[];
   organizations: Organization[];
   progress?: BridgeSwitchProgress;
   onChanged: () => void;
   onDelete: () => void;
+  canDelete: boolean;
 }) {
   const [selectedUpstreamServer, setSelectedUpstreamServer] = useState('');
   const [selectedUpstream, setSelectedUpstream] = useState('');
@@ -603,9 +614,11 @@ function BridgeCard({
               Изменить
             </Button>
           )}
-          <Button size="small" color="error" onClick={onDelete}>
-            Удалить
-          </Button>
+          {canDelete && (
+            <Button size="small" color="error" onClick={onDelete}>
+              Удалить
+            </Button>
+          )}
         </Stack>
       </Stack>
 

@@ -74,26 +74,32 @@ function serverLabel(peer: PeerEntity, bridges?: BridgeEntity[]): string {
 export function PeersPage() {
   const { user } = useAuth();
   const isSuperAdmin = user?.role === 'super_admin';
+  // ENGINEER создаёт peers для ЛЮБОЙ организации/моста/сервера, как суперадмин (см.
+  // PeersService на бэкенде) — но не привязан к организации, и в отличие от суперадмина не
+  // видит чужие peers (список/фильтр по организации, редактирование срока действия — ниже
+  // остаются isSuperAdmin-only).
+  const isEngineer = user?.role === 'engineer';
+  const canManageAnyOrg = isSuperAdmin || isEngineer;
   const queryClient = useQueryClient();
 
   const [organizationFilter, setOrganizationFilter] = useState('');
   const { data: organizations } = useQuery({
     queryKey: ['organizations'],
     queryFn: fetchOrganizations,
-    enabled: isSuperAdmin,
+    enabled: canManageAnyOrg,
   });
-  const { data: servers } = useQuery({ queryKey: ['servers'], queryFn: fetchServers, enabled: isSuperAdmin });
+  const { data: servers } = useQuery({ queryKey: ['servers'], queryFn: fetchServers, enabled: canManageAnyOrg });
   // Мосты доступны всем ролям (бэкенд сам скоупит по организации, включая
   // Organization.blockedBridgeIds) — org_admin/org_user должны иметь возможность создать
   // peer для моста своей организации.
   const { data: bridges } = useQuery({ queryKey: ['bridges'], queryFn: fetchBridges });
-  // Обычные серверы, доступные НАПРЯМУЮ (в обход моста) — для super_admin используется
-  // полный /servers (там же protocols для авто-подстановки протокола), для остальных —
-  // Organization.allowedServerIds (см. fetchAllowedServers).
+  // Обычные серверы, доступные НАПРЯМУЮ (в обход моста) — для super_admin/engineer
+  // используется полный /servers (там же protocols для авто-подстановки протокола), для
+  // остальных — Organization.allowedServerIds (см. fetchAllowedServers).
   const { data: allowedServers } = useQuery({
     queryKey: ['peers-allowed-servers'],
     queryFn: fetchAllowedServers,
-    enabled: !isSuperAdmin,
+    enabled: !canManageAnyOrg,
   });
   const { data: peers, isLoading } = useQuery({
     queryKey: ['peers', organizationFilter],
@@ -132,11 +138,11 @@ export function PeersPage() {
   // только один раз при первой загрузке списка организаций, не мешая последующему
   // осознанному выбору пользователя (в т.ч. выбору «Без клиента», который тоже непустой).
   useEffect(() => {
-    if (isSuperAdmin && organizations && !clientOrgId) {
+    if (canManageAnyOrg && organizations && !clientOrgId) {
       const defaultOrg = organizations.find((org) => org.name === DEFAULT_CLIENT_ORG_NAME);
       setClientOrgId(defaultOrg ? defaultOrg.id : NO_CLIENT);
     }
-  }, [isSuperAdmin, organizations, clientOrgId]);
+  }, [canManageAnyOrg, organizations, clientOrgId]);
 
   const createMutation = useMutation({
     mutationFn: createPeer,
@@ -198,7 +204,7 @@ export function PeersPage() {
     event.preventDefault();
     createMutation.mutate({
       ...form,
-      organizationId: isSuperAdmin ? (clientOrgId === NO_CLIENT ? null : clientOrgId) : undefined,
+      organizationId: canManageAnyOrg ? (clientOrgId === NO_CLIENT ? null : clientOrgId) : undefined,
     });
   }
 
@@ -324,10 +330,10 @@ export function PeersPage() {
                   ))}
                 </TextField>
               )}
-              {!form.bridgeId && (isSuperAdmin ? (servers?.length ?? 0) > 0 : (allowedServers?.length ?? 0) > 0) && (
+              {!form.bridgeId && (canManageAnyOrg ? (servers?.length ?? 0) > 0 : (allowedServers?.length ?? 0) > 0) && (
                 <TextField
                   select
-                  label={isSuperAdmin ? 'Сервер (авто, если не выбран)' : 'Сервер'}
+                  label={canManageAnyOrg ? 'Сервер (авто, если не выбран)' : 'Сервер'}
                   value={form.serverId || ''}
                   onChange={(e) => {
                     const serverId = e.target.value || undefined;
@@ -335,8 +341,8 @@ export function PeersPage() {
                     // У self-сервера обычно только один установленный протокол (тот, что
                     // выбрали при создании моста — WireGuard или AmneziaWG). Подставляем его
                     // автоматически, иначе комбинация протокол+сервер может не найтись.
-                    // Есть только для super_admin — у остальных ролей allowedServers не
-                    // содержит protocols, оставляем протокол как есть.
+                    // Есть только для super_admin/engineer — у остальных ролей allowedServers
+                    // не содержит protocols, оставляем протокол как есть.
                     const activeProtocol = selected?.protocols.find((p) => p.status === 'active')?.protocol;
                     setForm({ ...form, serverId, protocol: activeProtocol ?? form.protocol });
                   }}
@@ -344,8 +350,8 @@ export function PeersPage() {
                   fullWidth
                   helperText="Обычный сервер — в обход моста"
                 >
-                  {isSuperAdmin && <MenuItem value="">Автоматически (балансировка)</MenuItem>}
-                  {isSuperAdmin
+                  {canManageAnyOrg && <MenuItem value="">Автоматически (балансировка)</MenuItem>}
+                  {canManageAnyOrg
                     ? servers?.map((s) => (
                         <MenuItem key={s.id} value={s.id}>
                           {s.name}
@@ -359,12 +365,12 @@ export function PeersPage() {
                       ))}
                 </TextField>
               )}
-              {!isSuperAdmin && (!bridges || bridges.length === 0) && (!allowedServers || allowedServers.length === 0) && (
+              {!canManageAnyOrg && (!bridges || bridges.length === 0) && (!allowedServers || allowedServers.length === 0) && (
                 <Alert severity="warning">
                   Администратор ещё не выдал вашей организации доступ ни к одному серверу или мосту — создание peer недоступно.
                 </Alert>
               )}
-              {isSuperAdmin && (
+              {canManageAnyOrg && (
                 <TextField
                   select
                   label="Клиент"
@@ -388,8 +394,8 @@ export function PeersPage() {
                 fullWidth
                 disabled={
                   createMutation.isPending ||
-                  (isSuperAdmin && !clientOrgId) ||
-                  (!isSuperAdmin && (!bridges || bridges.length === 0) && (!allowedServers || allowedServers.length === 0))
+                  (canManageAnyOrg && !clientOrgId) ||
+                  (!canManageAnyOrg && (!bridges || bridges.length === 0) && (!allowedServers || allowedServers.length === 0))
                 }
               >
                 Создать

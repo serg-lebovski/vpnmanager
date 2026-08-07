@@ -79,8 +79,10 @@ export class BridgesService {
       relations: BRIDGE_RELATIONS,
       order: { createdAt: 'DESC' },
     });
+    // ENGINEER видит ВСЕ мосты (не привязан к организации, может создавать peers для
+    // любого) — та же граница видимости, что у суперадмина, здесь.
     let visible =
-      requester.role === Role.SUPER_ADMIN
+      requester.role === Role.SUPER_ADMIN || requester.role === Role.ENGINEER
         ? bridges
         : // org_admin/org_user видят только мосты своей организации плюс общие (organizationId
           // = null) — по тому же принципу, что видимость peers (см. findAllForRequester в
@@ -99,6 +101,32 @@ export class BridgesService {
     }
 
     return visible.map((bridge) => this.toSafeBridge(bridge));
+  }
+
+  // Безопасный (без SSH-секретов и остальных полей Server) список серверов+протоколов для
+  // настройки моста (детект "self-сервер уже есть" при создании, выбор upstream-
+  // кандидатов/переключение) — используется ENGINEER, у которого НЕТ доступа к полному
+  // GET /servers (там же зашифрованный Server.sshSecretEnc, см. ServersController —
+  // единый @Roles(SUPER_ADMIN) на весь контроллер). SUPER_ADMIN тоже может использовать
+  // этот эндпоинт вместо /servers для тех же целей — состав полей одинаков для обеих ролей.
+  async getCandidateServers(): Promise<
+    Array<{ id: string; name: string; host: string; isSelf: boolean; protocols: Array<Pick<ServerProtocol, 'id' | 'serverId' | 'protocol' | 'status' | 'listenPort' | 'networkCidr'>> }>
+  > {
+    const servers = await this.serversRepository.find({ relations: ['protocols'], order: { createdAt: 'DESC' } });
+    return servers.map((server) => ({
+      id: server.id,
+      name: server.name,
+      host: server.host,
+      isSelf: server.isSelf,
+      protocols: server.protocols.map((p) => ({
+        id: p.id,
+        serverId: p.serverId,
+        protocol: p.protocol,
+        status: p.status,
+        listenPort: p.listenPort,
+        networkCidr: p.networkCidr,
+      })),
+    }));
   }
 
   // Эндпоинт доступен всем ролям (см. BridgesController.findAll), включая org_admin/

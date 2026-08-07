@@ -1,4 +1,4 @@
-export type Role = 'super_admin' | 'org_admin' | 'org_user';
+export type Role = 'super_admin' | 'org_admin' | 'org_user' | 'engineer';
 export type VpnProtocol = 'wireguard' | 'amneziawg';
 export type ServerStatus = 'unknown' | 'online' | 'offline';
 export type ServerProtocolStatus = 'not_installed' | 'installing' | 'active' | 'error';

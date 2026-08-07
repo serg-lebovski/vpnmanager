@@ -12,8 +12,8 @@ interface AccessTokenPayload {
 // Отдельный namespace, а не общий guard/interceptor — socket.io-хендшейк не проходит
 // через обычный HTTP middleware-стек Nest (JwtAuthGuard/RolesGuard рассчитаны на
 // Express-запрос), поэтому токен проверяется вручную при подключении. Дашборд показывает
-// инфраструктуру всех клиентских серверов сразу — доступ только суперадмину, то же самое
-// разделение, что и у /servers.
+// инфраструктуру всех клиентских серверов сразу — доступ super_admin и engineer (см.
+// DashboardController), остальным ролям недоступно — то же разделение, что у /servers.
 @WebSocketGateway({ namespace: 'dashboard', cors: { origin: '*' } })
 export class DashboardGateway implements OnGatewayConnection {
   @WebSocketServer()
@@ -36,7 +36,7 @@ export class DashboardGateway implements OnGatewayConnection {
     }
     try {
       const payload = await this.jwtService.verifyAsync<AccessTokenPayload>(token);
-      if (payload.type !== 'access' || payload.role !== 'super_admin') {
+      if (payload.type !== 'access' || !['super_admin', 'engineer'].includes(payload.role)) {
         client.disconnect(true);
         return;
       }

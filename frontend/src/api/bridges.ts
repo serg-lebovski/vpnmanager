@@ -1,8 +1,33 @@
 import { apiClient } from './client';
-import { BridgeEntity, BridgeUpstreamMode, SshAuthType, VpnProtocol } from './types';
+import { BridgeEntity, BridgeUpstreamMode, ServerProtocolStatus, SshAuthType, VpnProtocol } from './types';
 
 export async function fetchBridges(): Promise<BridgeEntity[]> {
   const { data } = await apiClient.get<BridgeEntity[]>('/bridges');
+  return data;
+}
+
+export interface BridgeCandidateProtocol {
+  id: string;
+  serverId: string;
+  protocol: VpnProtocol;
+  status: ServerProtocolStatus;
+  listenPort: number;
+  networkCidr: string;
+}
+
+export interface BridgeCandidateServer {
+  id: string;
+  name: string;
+  host: string;
+  isSelf: boolean;
+  protocols: BridgeCandidateProtocol[];
+}
+
+// Безопасный (без SSH-секретов) список серверов+протоколов для настройки моста — в отличие
+// от /servers (SUPER_ADMIN-only, там же зашифрованные SSH-секреты), доступен и ENGINEER
+// (см. BridgesController.getCandidateServers на бэкенде).
+export async function fetchCandidateServers(): Promise<BridgeCandidateServer[]> {
+  const { data } = await apiClient.get<BridgeCandidateServer[]>('/bridges/candidate-servers');
   return data;
 }
 

@@ -63,11 +63,15 @@ export class PeersService {
 
   async findAllForRequester(requester: AuthenticatedUser, organizationId?: string): Promise<PeerListItem[]> {
     // Системные upstream-peers моста (BRIDGE_UPSTREAM) не показываются в обычных списках —
-    // ими управляет только BridgesService.
+    // ими управляет только BridgesService. ENGINEER не привязан к организации (создаёт
+    // peers для ЛЮБОЙ) — поэтому скоупится не по organizationId, а по тому, кто именно
+    // создал peer (см. findOneScoped — та же логика для доступа к одному peer'у).
     const where =
       requester.role === Role.SUPER_ADMIN
         ? { source: Not(PeerSource.BRIDGE_UPSTREAM), ...(organizationId ? { organizationId } : {}) }
-        : { organizationId: requester.organizationId ?? IsNull(), source: Not(PeerSource.BRIDGE_UPSTREAM) };
+        : requester.role === Role.ENGINEER
+          ? { createdByUserId: requester.userId, source: Not(PeerSource.BRIDGE_UPSTREAM) }
+          : { organizationId: requester.organizationId ?? IsNull(), source: Not(PeerSource.BRIDGE_UPSTREAM) };
 
     const peers = await this.peersRepository.find({
       where,
@@ -82,7 +86,9 @@ export class PeersService {
   // (не self-, не мостовых) им можно выбирать напрямую (см. Organization.allowedServerIds)
   // — только имя и id, без остальных полей сервера.
   async getAllowedServersForRequester(requester: AuthenticatedUser): Promise<Array<{ id: string; name: string }>> {
-    if (requester.role === Role.SUPER_ADMIN) {
+    // ENGINEER создаёt peers для любой организации/моста — как и суперадмину, ему не имеет
+    // смысла ограничивать выбор серверов через allowedServerIds конкретной организации.
+    if (requester.role === Role.SUPER_ADMIN || requester.role === Role.ENGINEER) {
       const servers = await this.serversRepository.find({ order: { name: 'ASC' } });
       return servers.map((s) => ({ id: s.id, name: s.name }));
     }
@@ -124,11 +130,11 @@ export class PeersService {
   async create(requester: AuthenticatedUser, dto: CreatePeerDto): Promise<Peer> {
     const organizationId = this.resolveOrganizationId(requester, dto.organizationId);
 
-    // Суперадмин не ограничен allowedServerIds/blockedBridgeIds организации — эти
-    // ограничения существуют для self-service org_admin/org_user, не для управления
-    // инфраструктурой в целом (суперадмин и так явно выбирает организацию каждого peer'а).
+    // Суперадмин и ENGINEER не ограничены allowedServerIds/blockedBridgeIds организации —
+    // эти ограничения существуют для self-service org_admin/org_user, не для управления
+    // инфраструктурой в целом (оба явно выбирают организацию каждого peer'а сами).
     let allowedServerIds: string[] | undefined;
-    if (requester.role !== Role.SUPER_ADMIN && organizationId) {
+    if (requester.role !== Role.SUPER_ADMIN && requester.role !== Role.ENGINEER && organizationId) {
       const organization = await this.organizationsRepository.findOneOrFail({ where: { id: organizationId } });
       if (dto.bridgeId) {
         if (organization.blockedBridgeIds.includes(dto.bridgeId)) {
@@ -391,13 +397,14 @@ export class PeersService {
     });
   }
 
-  // null — явный осознанный выбор суперадмина «без клиента» (peer не привязан ни к одной
-  // организации); undefined — поле не передали вовсе, это ошибка, суперадмин должен
-  // выбрать явно (см. CreatePeerDto.organizationId).
+  // null — явный осознанный выбор «без клиента» (peer не привязан ни к одной организации);
+  // undefined — поле не передали вовсе, это ошибка, суперадмин/ENGINEER должны выбрать
+  // явно (см. CreatePeerDto.organizationId) — ни один из них не привязан к своей
+  // организации, поэтому в отличие от org_admin/org_user взять её неоткуда неявно.
   private resolveOrganizationId(requester: AuthenticatedUser, requestedOrgId?: string | null): string | null {
-    if (requester.role === Role.SUPER_ADMIN) {
+    if (requester.role === Role.SUPER_ADMIN || requester.role === Role.ENGINEER) {
       if (requestedOrgId === undefined) {
-        throw new BadRequestException('Для суперадмина обязателен organizationId (или явно null — «без клиента»)');
+        throw new BadRequestException('Обязателен organizationId (или явно null — «без клиента»)');
       }
       return requestedOrgId;
     }
@@ -451,7 +458,15 @@ export class PeersService {
     if (!bridge) {
       throw new BadRequestException('Мост не найден');
     }
-    if (requester.role !== Role.SUPER_ADMIN && bridge.organizationId !== null && bridge.organizationId !== requester.organizationId) {
+    // ENGINEER может создавать peers для ЛЮБОГО моста, не только своей организации (у него
+    // и нет своей — см. resolveOrganizationId), поэтому пропускает эту проверку так же, как
+    // суперадмин.
+    if (
+      requester.role !== Role.SUPER_ADMIN &&
+      requester.role !== Role.ENGINEER &&
+      bridge.organizationId !== null &&
+      bridge.organizationId !== requester.organizationId
+    ) {
       throw new ForbiddenException('Недостаточно прав для этого моста');
     }
     const serverProtocolId = protocol === 'wireguard' ? bridge.wireguardClientProtocolId : bridge.amneziawgClientProtocolId;
@@ -469,6 +484,14 @@ export class PeersService {
     const peer = await this.peersRepository.findOne({ where: { id } });
     if (!peer) {
       throw new NotFoundException('Peer не найден');
+    }
+    // ENGINEER не привязан к организации — видит и управляет только ТЕМИ peers, что создал
+    // сам (в т.ч. в чужих организациях), а не всеми peers какой-либо организации.
+    if (requester.role === Role.ENGINEER) {
+      if (peer.createdByUserId !== requester.userId) {
+        throw new ForbiddenException('Недостаточно прав для доступа к этому peer');
+      }
+      return peer;
     }
     if (requester.role !== Role.SUPER_ADMIN && peer.organizationId !== requester.organizationId) {
       throw new ForbiddenException('Недостаточно прав для доступа к этому peer');

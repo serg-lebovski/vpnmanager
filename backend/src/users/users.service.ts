@@ -26,10 +26,13 @@ export class UsersService {
     let organizationId: string | null;
 
     if (requester.role === Role.SUPER_ADMIN) {
-      if (dto.role !== Role.SUPER_ADMIN && !dto.organizationId) {
+      // ENGINEER, как и SUPER_ADMIN, организационно ничей (не привязан ни к одной
+      // организации — создаёт peers/мосты для любой, см. PeersService).
+      const orgless = dto.role === Role.SUPER_ADMIN || dto.role === Role.ENGINEER;
+      if (!orgless && !dto.organizationId) {
         throw new BadRequestException('Для этой роли обязателен organizationId');
       }
-      organizationId = dto.role === Role.SUPER_ADMIN ? null : dto.organizationId!;
+      organizationId = orgless ? null : dto.organizationId!;
     } else if (requester.role === Role.ORG_ADMIN) {
       if (dto.role !== Role.ORG_USER) {
         throw new ForbiddenException('Администратор организации может создавать только пользователей своей организации');
@@ -84,8 +87,9 @@ export class UsersService {
 
     const nextRole = dto.role ?? user.role;
     const nextOrganizationId = dto.organizationId !== undefined ? dto.organizationId : user.organizationId;
+    const nextOrgless = nextRole === Role.SUPER_ADMIN || nextRole === Role.ENGINEER;
 
-    if (nextRole !== Role.SUPER_ADMIN) {
+    if (!nextOrgless) {
       if (!nextOrganizationId) {
         throw new BadRequestException('Для этой роли обязателен organizationId');
       }
@@ -96,9 +100,9 @@ export class UsersService {
     }
 
     user.role = nextRole;
-    // super_admin организационно ничей — иначе он попал бы в org-скоуп наравне с
+    // super_admin/engineer организационно ничьи — иначе попали бы в org-скоуп наравне с
     // org_admin/org_user (см. resolveOrganizationId в peers.service.ts и аналогичные места).
-    user.organizationId = nextRole === Role.SUPER_ADMIN ? null : nextOrganizationId;
+    user.organizationId = nextOrgless ? null : nextOrganizationId;
 
     const saved = await this.usersRepository.save(user);
     const { passwordHash: _omit, ...safe } = saved;

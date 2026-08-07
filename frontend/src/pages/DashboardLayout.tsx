@@ -10,6 +10,7 @@ const roleLabels: Record<string, string> = {
   super_admin: 'Суперадмин',
   org_admin: 'Администратор организации',
   org_user: 'Пользователь',
+  engineer: 'Инженер',
 };
 
 export function DashboardLayout() {
@@ -46,21 +47,25 @@ export function DashboardLayout() {
           <Button color="inherit" {...navButtonProps('/')}>
             Peers
           </Button>
+          {(user?.role === 'super_admin' || user?.role === 'engineer') && (
+            <Button color="inherit" {...navButtonProps('/dashboard')}>
+              Дашборд
+            </Button>
+          )}
           {user?.role === 'super_admin' && (
             <>
-              <Button color="inherit" {...navButtonProps('/dashboard')}>
-                Дашборд
-              </Button>
               <Button color="inherit" {...navButtonProps('/servers')}>
                 Серверы
               </Button>
               <Button color="inherit" {...navButtonProps('/organizations')}>
                 Клиенты
               </Button>
-              <Button color="inherit" {...navButtonProps('/bridge')}>
-                Мост
-              </Button>
             </>
+          )}
+          {(user?.role === 'super_admin' || user?.role === 'engineer') && (
+            <Button color="inherit" {...navButtonProps('/bridge')}>
+              Мост
+            </Button>
           )}
           {(user?.role === 'super_admin' || user?.role === 'org_admin') && (
             <Button color="inherit" {...navButtonProps('/users')}>
