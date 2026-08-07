@@ -3,6 +3,7 @@ import { NodeSSH } from 'node-ssh';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Not, Repository } from 'typeorm';
 import { Bridge } from '../bridges/bridge.entity';
+import { probeTcpPort } from '../common/tcp-probe.util';
 import { decryptSecret } from '../common/encryption.util';
 import { ServerProtocolStatus, VpnProtocol } from '../common/enums';
 import { ServerProtocol } from '../servers/server-protocol.entity';
@@ -17,6 +18,16 @@ export interface Fail2banStatus {
   installed: boolean;
   bannedCount: number;
 }
+
+// См. VpnProvisioningService.ensureKernelModuleReady — автоперезагрузка сервера, когда DKMS
+// уже собрал модуль протокола под другое ядро, чем сейчас загружено. GRACE — не проверять
+// доступность сразу после отправки "reboot" (серверу нужно время просто НАЧАТЬ выключаться,
+// иначе первая же проба TCP ещё застаёт живой sshd и ложно решает, что сервер "уже вернулся").
+// TIMEOUT — с запасом под proxy_read_timeout 300s на /api/ (см. nginx.conf.template).
+const KERNEL_REBOOT_GRACE_MS = 5_000;
+const KERNEL_REBOOT_TIMEOUT_MS = 150_000;
+const KERNEL_REBOOT_POLL_MS = 4_000;
+const KERNEL_REBOOT_SSHD_SETTLE_MS = 3_000;
 
 @Injectable()
 export class VpnProvisioningService {
@@ -57,6 +68,60 @@ export class VpnProvisioningService {
         });
       },
     };
+  }
+
+  // Пойманный вживую реальный сценарий (2026-08-07): DKMS уже собрал и установил модуль
+  // протокола (обычно AmneziaWG), но под ДРУГОЕ ядро, чем сейчас реально загружено на
+  // сервере — типично после apt upgrade, подтянувшего новее kernel-пакет, без
+  // последующей перезагрузки. "<quickBinary> up" в этом случае падает с "Unknown device
+  // type" (см. withKernelModuleHint в драйвере) — но раз DKMS уже показывает "installed"
+  // для конкретной версии ядра, проблема чинится ровно одной перезагрузкой, без участия
+  // человека. Вызывается ДО открытия "основного" соединения для install()/connectAsClient()
+  // — та же логика (ensureClientToolsInstalled → сборка DKMS) должна уже отработать один
+  // раз к этому моменту, иначе dkms status ещё пуст (см. вызовы ниже: сначала пакеты, потом
+  // эта проверка).
+  //
+  // ВАЖНО: это перезагрузка ВСЕГО сервера — если на нём уже есть другие активные
+  // протоколы/peers, они на время перезагрузки (обычно 30-90с) тоже недоступны. Это
+  // неизбежное следствие смены ядра, а не наша прихоть — обойти без реальной перезагрузки
+  // нельзя (модуль физически отсутствует в /lib/modules/<текущее ядро>).
+  //
+  // Если модуль вообще не собран (rebootKernel: null, см. KernelModuleStatus) —
+  // перезагрузка не поможет, ничего не делаем и даём install()/connectAsClient() провалиться
+  // как обычно — withKernelModuleHint даст пользователю ручную инструкцию.
+  private async ensureKernelModuleReady(server: Server, connection: SshConnectionParams, driver: VpnDriver): Promise<void> {
+    const status = await this.sshService.withConnection(connection, (ssh) => driver.checkKernelModuleStatus(ssh));
+    if (status.ready || !status.rebootKernel) {
+      return;
+    }
+    this.logger.warn(
+      `Модуль ${driver.protocol} на сервере "${server.name}" собран для ядра ${status.rebootKernel}, но сервер ` +
+        `сейчас работает на другом ядре — перезагружаю сервер, чтобы применить его (до ${KERNEL_REBOOT_TIMEOUT_MS / 1000}с)…`,
+    );
+    try {
+      await this.sshService.withConnection(connection, (ssh) => this.sshService.exec(ssh, 'reboot'));
+    } catch {
+      // Соединение обрывается вместе с перезагрузкой — ожидаемо, не ошибка (см. ServersService.reboot).
+    }
+    await new Promise((resolve) => setTimeout(resolve, KERNEL_REBOOT_GRACE_MS));
+    const deadline = Date.now() + KERNEL_REBOOT_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (await probeTcpPort(server.host, server.sshPort, 3000)) {
+        // SSH-порт нередко открывается раньше, чем система (и DKMS-модули) полностью готовы.
+        await new Promise((resolve) => setTimeout(resolve, KERNEL_REBOOT_SSHD_SETTLE_MS));
+        const recheck = await this.sshService.withConnection(connection, (ssh) => driver.checkKernelModuleStatus(ssh));
+        if (!recheck.ready) {
+          throw new Error(
+            `Сервер "${server.name}" перезагрузился, но модуль ${driver.protocol} всё ещё недоступен для текущего ` +
+              `ядра — возможно, загрузчик выбирает не ту версию ядра по умолчанию. Проверьте по SSH "uname -r" и "dkms status".`,
+          );
+        }
+        this.logger.log(`Сервер "${server.name}" вернулся после перезагрузки, модуль ${driver.protocol} готов`);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, KERNEL_REBOOT_POLL_MS));
+    }
+    throw new Error(`Сервер "${server.name}" не вернулся в сеть после перезагрузки в течение ${KERNEL_REBOOT_TIMEOUT_MS / 1000}с`);
   }
 
   async installProtocol(
@@ -127,6 +192,7 @@ export class VpnProvisioningService {
     // этот лог (Настройки → «Логи» → backend).
     this.logger.log(`Установка ${protocol} на сервере "${server.name}" (${server.host}:${listenPort})…`);
     try {
+      await this.ensureKernelModuleReady(server, connection, driver);
       // Версию забираем в ТОЙ ЖЕ SSH-сессии, что и саму установку — не открываем отдельное
       // подключение только ради неё.
       const result = await this.sshService.withConnection(connection, async (ssh) => {
@@ -310,6 +376,7 @@ export class VpnProvisioningService {
   ): Promise<void> {
     const driver = this.driverFor(protocol);
     const connection = this.connectionParams(selfServer);
+    await this.ensureKernelModuleReady(selfServer, connection, driver);
     await this.sshService.withConnection(connection, (ssh) => driver.connectAsClient(ssh, interfaceName, config, routeTable));
   }
 

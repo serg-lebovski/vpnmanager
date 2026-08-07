@@ -6,6 +6,7 @@ import {
   DetectedInstallation,
   InstallOptions,
   InstallResult,
+  KernelModuleStatus,
   PeerSpec,
   PeerTransferStats,
   ScannedPeer,
@@ -219,6 +220,31 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
       `Если модуль всё равно не собирается — на этом ядре ${this.protocol} физически недоступен, используйте ` +
       `WireGuard.`;
     return new Error(`${error.message}\n\n${hint}`);
+  }
+
+  // См. KernelModuleStatus. `modprobe` — самый дешёвый и надёжный способ спросить у ядра
+  // "готов ли модуль прямо сейчас" (в отличие от парсинга `ip link add`, тут не создаётся
+  // и не удаляется никакой netdev). Если не готов — `dkms status` может показать, что
+  // модуль вообще-то СОБРАН, просто под ДРУГУЮ версию ядра (см. комментарий типа выше) —
+  // тогда даём вызывающему коду (VpnProvisioningService.ensureKernelModuleReady) шанс
+  // починить это перезагрузкой сервера, вместо того чтобы сразу проваливать install().
+  async checkKernelModuleStatus(ssh: NodeSSH): Promise<KernelModuleStatus> {
+    const probe = await this.sshService.exec(ssh, `modprobe ${this.protocol}`);
+    if (probe.code === 0) {
+      return { ready: true };
+    }
+    const currentKernel = (await this.sshService.exec(ssh, 'uname -r')).stdout.trim();
+    const dkmsStatus = await this.sshService.exec(ssh, 'dkms status');
+    // Строка вида "amneziawg/1.0.0, 6.8.0-137-generic, x86_64: installed" — берём версию
+    // ядра из первой строки протокола со статусом "installed" (сборка под какое-то ядро
+    // прошла успешно), не обязательно текущего.
+    const pattern = new RegExp(`^${this.protocol}/\\S+,\\s*(\\S+),.*:\\s*installed`, 'm');
+    const match = dkmsStatus.stdout.match(pattern);
+    const builtForKernel = match?.[1] ?? null;
+    if (builtForKernel && builtForKernel !== currentKernel) {
+      return { ready: false, rebootKernel: builtForKernel };
+    }
+    return { ready: false, rebootKernel: null };
   }
 
   // Автоматизирует то, что раньше приходилось делать руками по SSH (см. подсказку в catch

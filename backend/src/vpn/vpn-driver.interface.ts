@@ -80,9 +80,24 @@ export interface UpstreamPeerConfig {
   dns?: string;
 }
 
+// Готовность kernel-модуля протокола ПЕРЕД тем, как install()/connectAsClient() попробуют
+// поднять интерфейс ("<quickBinary> up" внутри себя делает "ip link add ... type <protocol>",
+// который требует загруженного модуля). rebootKernel — версия ядра, для которой DKMS УЖЕ
+// собрал и установил модуль (см. `dkms status`), если она отличается от текущей
+// (`uname -r`) — типичная причина: apt upgrade подтянул новый kernel-пакет, DKMS
+// пересобрал модуль под него, но сервер ещё не перезагружен в этот новый kernel. В этом
+// случае проблема чинится перезагрузкой сервера (см. VpnProvisioningService.
+// ensureKernelModuleReady) — в отличие от случая, когда модуль вообще не собрался
+// (rebootKernel: null), где перезагрузка ничего не даст и нужно вмешательство человека.
+export type KernelModuleStatus = { ready: true } | { ready: false; rebootKernel: string | null };
+
 export interface VpnDriver {
   readonly protocol: VpnProtocol;
   install(ctx: VpnDriverContext, options: InstallOptions): Promise<InstallResult>;
+  // См. KernelModuleStatus. Дешёвая проверка (modprobe + при неудаче — dkms status) —
+  // вызывается перед КАЖДЫМ install()/connectAsClient(), поэтому должна быть быстрой и не
+  // бросать исключений самостоятельно.
+  checkKernelModuleStatus(ssh: NodeSSH): Promise<KernelModuleStatus>;
   scanExistingPeers(ctx: VpnDriverContext): Promise<ScannedPeer[]>;
   applyPeers(ctx: VpnDriverContext, peers: PeerSpec[]): Promise<void>;
   getActivePeerCount(ctx: VpnDriverContext): Promise<number>;
