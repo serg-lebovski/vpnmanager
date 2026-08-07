@@ -132,7 +132,11 @@ export class SettingsService {
     if (!settings.telegramEnabled || !settings.telegramBotTokenEnc || !settings.telegramChatId) {
       throw new BadRequestException('Сначала включите и настройте уведомления в Telegram (токен бота и chat id)');
     }
-    await this.notificationsService.sendMessage('🔔 Тестовое сообщение от VPN Manager — уведомления настроены верно.');
+    try {
+      await this.notificationsService.sendTestMessage('🔔 Тестовое сообщение от VPN Manager — уведомления настроены верно.');
+    } catch (error) {
+      throw new BadRequestException(`Telegram не принял сообщение: ${(error as Error).message}`);
+    }
   }
 
   async renewCertificateNow(force: boolean): Promise<SystemSettings> {
