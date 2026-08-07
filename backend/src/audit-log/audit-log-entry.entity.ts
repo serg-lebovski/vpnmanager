@@ -12,7 +12,7 @@ export class AuditLogEntry {
   @Column({ name: 'actor_user_id', type: 'uuid', nullable: true })
   actorUserId: string | null;
 
-  @Column({ name: 'actor_email', nullable: true })
+  @Column({ name: 'actor_email', type: 'varchar', nullable: true })
   actorEmail: string | null;
 
   @Column()
@@ -35,7 +35,7 @@ export class AuditLogEntry {
   @Column({ name: 'status_code' })
   statusCode: number;
 
-  @Column({ name: 'ip_address', nullable: true })
+  @Column({ name: 'ip_address', type: 'varchar', nullable: true })
   ipAddress: string | null;
 
   @CreateDateColumn({ name: 'created_at' })
