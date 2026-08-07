@@ -180,7 +180,7 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
           `если включён автозапуск), либо выберите другую сеть клиентов.`;
         throw new Error(`${message}\n\n${hint}`);
       }
-      throw error;
+      throw this.withKernelModuleHint(error as Error);
     }
 
     // Некоторые провайдеры (например ISPmanager) включают ufw с политикой DROP по
@@ -196,6 +196,29 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
     );
 
     return { interfaceName, serverPublicKey, obfuscationParams, mtu: options.mtu };
+  }
+
+  // "ip link add ... type <protocol>" ("<quickBinary> up" вызывает это внутри себя) падает
+  // с "Unknown device type", когда в ядре хоста нет соответствующего netlink-модуля — почти
+  // всегда AmneziaWG на нестандартном/кастомном ядре провайдера без собранного DKMS-модуля
+  // (см. класс-комментарий AmneziaWgDriver и README "Известные ограничения MVP"), но WireGuard
+  // на совсем урезанных ядрах тоже может не иметь встроенного модуля. Общий для install() и
+  // connectAsClient() — обе точки делают "up" и могут упереться в один и тот же класс ошибки;
+  // `this.protocol` ('wireguard'/'amneziawg') совпадает со строкой link type у обоих квик-скриптов.
+  private withKernelModuleHint(error: Error): Error {
+    if (!/unknown device type/i.test(error.message)) {
+      return error;
+    }
+    const hint =
+      `Ядро этого сервера не поддерживает модуль ${this.protocol} ("ip link add ... type ${this.protocol}" ` +
+      `вернул "Unknown device type") — обычно значит, что DKMS-модуль не собрался под текущее ядро ` +
+      `(нестандартное/кастомное ядро провайдера, либо не установлены заголовки ядра). Проверьте по SSH: ` +
+      `"modprobe ${this.protocol}" (покажет реальную причину), "dkms status" (собрался ли модуль под текущее ` +
+      `ядро), "apt-get install -y linux-headers-$(uname -r) && apt-get install --reinstall -y ${this.aptPackages}" ` +
+      `(пересобрать модуль под текущее ядро — иногда нужен перезапуск сервера после установки заголовков). ` +
+      `Если модуль всё равно не собирается — на этом ядре ${this.protocol} физически недоступен, используйте ` +
+      `WireGuard.`;
+    return new Error(`${error.message}\n\n${hint}`);
   }
 
   // Автоматизирует то, что раньше приходилось делать руками по SSH (см. подсказку в catch
@@ -399,7 +422,11 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
     // после `wg-quick`-интерфейса того же имени (или наоборот) падает с "already exists"
     // (поймано вживую: переключение WireGuard-upstream -> AmneziaWG-upstream).
     await this.sshService.exec(ssh, `ip link delete ${interfaceName} >/dev/null 2>&1 || true`);
-    await this.sshService.execOrThrow(ssh, `${this.quickBinary} up ${remotePath}`);
+    try {
+      await this.sshService.execOrThrow(ssh, `${this.quickBinary} up ${remotePath}`);
+    } catch (error) {
+      throw this.withKernelModuleHint(error as Error);
+    }
     // `Table = off` означает, что wg-quick не добавил маршрут по умолчанию сам —
     // делаем это явно, но только в выделенной таблице (реально её использует только
     // трафик из сети клиентов моста — см. `ip rule` в setupBridgeNat). `replace`, а не
