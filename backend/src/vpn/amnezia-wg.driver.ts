@@ -34,17 +34,50 @@ export class AmneziaWgDriver extends BaseWireGuardLikeDriver {
       return;
     }
     await this.ensureIpv4NetworkPreferred(ssh);
-    await this.sshService.execOrThrow(
-      ssh,
-      [
-        'export DEBIAN_FRONTEND=noninteractive',
-        'apt-get update -y',
-        'apt-get install -y software-properties-common',
-        'add-apt-repository -y ppa:amnezia/ppa',
-        'apt-get update -y',
-        `apt-get install -y ${this.aptPackages} iptables`,
-      ].join(' && '),
-    );
+    try {
+      await this.sshService.execOrThrow(
+        ssh,
+        [
+          'export DEBIAN_FRONTEND=noninteractive',
+          'apt-get update -y',
+          'apt-get install -y software-properties-common',
+          'add-apt-repository -y ppa:amnezia/ppa',
+          'apt-get update -y',
+          `apt-get install -y ${this.aptPackages} iptables`,
+        ].join(' && '),
+      );
+    } catch (error) {
+      throw this.withPpaReleaseHint(error as Error);
+    }
+  }
+
+  // `add-apt-repository -y ppa:amnezia/ppa` подставляет ТЕКУЩИЙ кодовое имя релиза Ubuntu
+  // (`lsb_release -cs`) в добавляемый источник — если сторонний PPA (поддерживается
+  // энтузиастами, не Canonical) ещё не опубликовал сборку под этот конкретный релиз
+  // (обычно самый свежий, вышедший недавно), apt-get update валится с "does not have a
+  // Release file" именно для этого источника. Это внешнее ограничение (см. README
+  // "Известные ограничения MVP"), не чинится кодом панели — но подменить кодовое имя в уже
+  // добавленном источнике на заведомо поддерживаемое (LTS) обычно безопасно и работает:
+  // сам DKMS-модуль всё равно собирается против РЕАЛЬНЫХ заголовков запущенного ядра, а не
+  // против кодового имени релиза — то есть источник просто описывает, ОТКУДА тянуть .deb,
+  // а не то, под что они бинарно завязаны.
+  private withPpaReleaseHint(error: Error): Error {
+    const match = error.message.match(/ubuntu ([a-z0-9.]+)[^']*'? does not have a Release file/i);
+    if (!match) {
+      return error;
+    }
+    const codename = match[1];
+    const hint =
+      `PPA ppa:amnezia/ppa (сторонний, поддерживается энтузиастами, не Canonical) ещё не ` +
+      `опубликовал сборку для релиза Ubuntu "${codename}" — вероятно, это совсем свежий релиз. ` +
+      `Варианты: 1) подождать, пока мейнтейнеры PPA добавят сборку под "${codename}"; ` +
+      `2) зайти по SSH и подменить кодовое имя в уже добавленном источнике на заведомо ` +
+      `поддерживаемый LTS-релиз, например: "sed -i 's/${codename}/noble/' ` +
+      `/etc/apt/sources.list.d/amnezia-ubuntu-ppa-*.list && apt-get update" — и повторить ` +
+      `установку из панели (обычно работает: DKMS-модуль собирается под реальное ядро сервера, ` +
+      `не под кодовое имя релиза в источнике apt); 3) использовать WireGuard — он ставится из ` +
+      `официальных репозиториев Ubuntu и от этого PPA не зависит.`;
+    return new Error(`${error.message}\n\n${hint}`);
   }
 
   protected buildObfuscationParams(): Record<string, number> {
