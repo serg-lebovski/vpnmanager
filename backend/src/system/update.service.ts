@@ -108,18 +108,45 @@ export class UpdateService {
       emit(5, 'git pull');
       await this.runLogged('git pull', repoPath, logPath);
 
-      emit(15, 'Сборка образов backend и frontend');
-      await this.runLogged('docker compose build backend frontend', repoPath, logPath);
-
-      // Перерендерить nginx-конфиг из (возможно обновлённого) nginx.conf.template ДО
-      // пересоздания nginx — тот же файл, что nginx/generated/default.conf, git-tracked
-      // один раз и никогда не трогается будущими коммитами (см. NginxConfigService),
-      // поэтому этот шаг безопасно повторять на каждом обновлении.
+      // Реальный инцидент (2026-08-07): "git pull" уже обновил nginx.conf.template на диске,
+      // но ЭТОТ ПРОЦЕСС — всё ещё СТАРЫЙ backend (новый образ только что собран шагом выше,
+      // но текущий контейнер пересоздаётся последним, см. recreateBackendDetached). Если
+      // очередной коммит меняет nginx.conf.template и NginxConfigService.render() СОВМЕСТНО
+      // (как коммит, добавивший `limit_req zone=X` в шаблон и `limit_req_zone X:10m` в
+      // render() одним пакетом) — render() СТАРЫМ кодом рендерит НОВЫЙ шаблон (он читается с
+      // диска заново на каждый вызов) СТАРОЙ логикой, которая ещё не знает про добавленную
+      // зону — на выходе `limit_req zone=X` без единой `limit_req_zone`-декларации. nginx на
+      // это отвечает не синтаксической ошибкой (успевает напечатать "syntax is ok"), а "zero
+      // size shared memory zone X" уже на этапе выделения shared-памяти. render() при этом
+      // УСПЕВАЕТ записать этот битый файл на диск ДО того, как споткнётся об `nginx -t` —
+      // поэтому просто перевыбросить ошибку недостаточно: `docker compose up -d
+      // --force-recreate` ниже стартовал бы НОВЫЙ контейнер nginx с этим самым битым файлом
+      // без какой-либо проверки (в отличие от живого `-s reload`, force-recreate не умеет
+      // "остаться на старом конфиге при ошибке") — то есть настоящий даунтайм вместо старого
+      // бага "просто ничего не обновилось". Поэтому при ошибке рендера nginx СОЗНАТЕЛЬНО НЕ
+      // пересоздаём в этом заходе — старый контейнер продолжает работать на своём прежнем,
+      // валидном конфиге; frontend всё равно пересоздаётся. Конфиг корректно перерендерится и
+      // применится через живой reload сразу после перезапуска backend ниже (там код и шаблон
+      // гарантированно из одного и того же коммита).
       emit(50, 'Обновление конфигурации nginx');
-      await this.nginxConfigService.render();
+      let nginxRenderOk = true;
+      try {
+        await this.nginxConfigService.render();
+      } catch (error) {
+        nginxRenderOk = false;
+        this.logger.warn(
+          `Не удалось перерендерить/перезагрузить nginx на этом шаге — пересоздание nginx в этом обновлении пропущено, старый контейнер продолжит работать со своим текущим конфигом. Конфиг применится автоматически после перезапуска backend. Причина: ${(error as Error).message}`,
+        );
+      }
 
-      emit(60, 'Пересоздание nginx и frontend');
-      await this.runLogged('docker compose up -d --force-recreate --no-deps nginx frontend', repoPath, logPath);
+      emit(60, nginxRenderOk ? 'Пересоздание nginx и frontend' : 'Пересоздание frontend (nginx пропущен из-за ошибки конфигурации выше)');
+      await this.runLogged(
+        nginxRenderOk
+          ? 'docker compose up -d --force-recreate --no-deps nginx frontend'
+          : 'docker compose up -d --force-recreate --no-deps frontend',
+        repoPath,
+        logPath,
+      );
 
       emit(85, 'Запуск пересоздания backend в отдельном служебном контейнере — соединение сейчас оборвётся, это ожидаемо');
       await this.recreateBackendDetached(repoPath, logPath);
