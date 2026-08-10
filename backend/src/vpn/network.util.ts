@@ -25,6 +25,17 @@ export function hostAddress(cidr: string, hostOctet: number): string {
   return `${networkPrefix(cidr)}.${hostOctet}`;
 }
 
+// Следующая сеть при автоподборе свободной (см. VpnProvisioningService.installProtocol) —
+// инкремент третьего октета: 10.9.1.0/24 -> 10.9.2.0/24 -> ... Бросает, когда третий октет
+// уже 255 (весь /16 исчерпан) — вызывающий код решает, что делать дальше.
+export function nextCidr(cidr: string): string {
+  const [a, b, c] = networkPrefix(cidr).split('.').map(Number);
+  if (c >= 255) {
+    throw new BadRequestException(`Не удалось подобрать свободную сеть — исчерпан диапазон ${a}.${b}.0.0/16`);
+  }
+  return `${a}.${b}.${c + 1}.0/24`;
+}
+
 // Список обхода upstream моста (Bridge.bypassDestinations) — каждая строка либо IPv4/CIDR,
 // либо доменное имя (домены резолвятся отдельно, на self-сервере, см.
 // VpnProvisioningService.setupBridgeBypass). Возвращает null для явно некорректных строк —

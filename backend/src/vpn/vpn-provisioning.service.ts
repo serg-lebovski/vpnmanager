@@ -10,7 +10,7 @@ import { ServerProtocol } from '../servers/server-protocol.entity';
 import { Server } from '../servers/server.entity';
 import { SshConnectionParams, SshService } from '../ssh/ssh.service';
 import { AmneziaWgDriver } from './amnezia-wg.driver';
-import { assertSupportedCidr } from './network.util';
+import { assertSupportedCidr, nextCidr } from './network.util';
 import { PeerSpec, PeerTransferStats, ScannedPeer, UpstreamPeerConfig, VpnDriver } from './vpn-driver.interface';
 import { WireGuardDriver } from './wireguard.driver';
 
@@ -148,23 +148,42 @@ export class VpnProvisioningService {
 
     // Порт/сеть должны быть уникальны в пределах сервера НЕЗАВИСИМО от протокола — иначе
     // второй протокол на том же порту/сети ловит малопонятную ошибку прямо на SSH-уровне
-    // ("RTNETLINK answers: Address already in use" от ip/wg-quick) вместо явной ошибки
-    // здесь, ДО того как что-либо тронули на сервере (поймано вживую: форма установки
-    // протокола на сервере подставляет одинаковые порт/сеть по умолчанию для любого
-    // протокола, легко не заметить при добавлении второго протокола на тот же сервер).
-    // Смотрим только ACTIVE/INSTALLING других протоколов — ERROR уже откатил себя при
-    // неудачной установке (см. driver.install) и ничего реально не занимает на сервере.
+    // ("RTNETLINK answers: Address already in use" от ip/wg-quick). Раньше при конфликте
+    // просто отклоняли запрос с просьбой выбрать другие значения вручную — теперь сервер сам
+    // подбирает следующую свободную пару (порт +1, третий октет сети +1 — см. nextCidr),
+    // пока не найдёт свободную (поймано вживую: форма установки протокола на фронтенде
+    // подставляет одинаковые порт/сеть по умолчанию для любого протокола, легко не заметить
+    // при добавлении второго протокола/моста на тот же сервер). Смотрим ЛЮБОЙ другой
+    // протокол на сервере (не только отличный от устанавливаемого — self-сервер может нести
+    // несколько мостов с одним и тем же VPN-протоколом на разных портах/сетях) и только
+    // ACTIVE/INSTALLING — ERROR уже откатил себя при неудачной установке (см. driver.install)
+    // и ничего реально не занимает на сервере; сам `existing` (переустановка того же
+    // протокола на том же порту) исключается — он не "чужой" конфликт.
     const others = await this.serverProtocolsRepository.find({
-      where: { serverId, protocol: Not(protocol), status: In([ServerProtocolStatus.ACTIVE, ServerProtocolStatus.INSTALLING]) },
+      where: {
+        serverId,
+        status: In([ServerProtocolStatus.ACTIVE, ServerProtocolStatus.INSTALLING]),
+        ...(existing ? { id: Not(existing.id) } : {}),
+      },
     });
-    const portConflict = others.find((sp) => sp.listenPort === listenPort);
-    if (portConflict) {
-      throw new BadRequestException(`Порт ${listenPort} на этом сервере уже занят протоколом ${portConflict.protocol} — выберите другой порт`);
+    const usedPorts = new Set(others.map((sp) => sp.listenPort));
+    const usedCidrs = new Set(others.map((sp) => sp.networkCidr));
+
+    let resolvedPort = listenPort;
+    while (usedPorts.has(resolvedPort)) {
+      resolvedPort += 1;
+      if (resolvedPort > 65535) {
+        throw new BadRequestException('Не удалось подобрать свободный порт на этом сервере');
+      }
     }
-    const cidrConflict = others.find((sp) => sp.networkCidr === networkCidr);
-    if (cidrConflict) {
-      throw new BadRequestException(
-        `Сеть ${networkCidr} на этом сервере уже используется протоколом ${cidrConflict.protocol} — выберите другую сеть клиентов`,
+    let resolvedCidr = networkCidr;
+    while (usedCidrs.has(resolvedCidr)) {
+      resolvedCidr = nextCidr(resolvedCidr);
+    }
+    if (resolvedPort !== listenPort || resolvedCidr !== networkCidr) {
+      this.logger.log(
+        `Порт/сеть для ${protocol} на сервере "${server.name}" заняты другим интерфейсом — ` +
+          `автоматически выбраны ${resolvedCidr}:${resolvedPort} (запрошено ${networkCidr}:${listenPort})`,
       );
     }
 
@@ -174,10 +193,13 @@ export class VpnProvisioningService {
         serverId,
         protocol,
         interfaceName: '',
-        listenPort,
-        networkCidr,
         nextHostOctet: 2,
       });
+    // На переустановке ранее упавшего протокола (existing.status === ERROR) порт/сеть тоже
+    // могли с тех пор занять — resolvedPort/resolvedCidr выше уже это учитывают, но их нужно
+    // явно применить и к переиспользуемой записи, не только к только что созданной.
+    serverProtocol.listenPort = resolvedPort;
+    serverProtocol.networkCidr = resolvedCidr;
     serverProtocol.status = ServerProtocolStatus.INSTALLING;
     serverProtocol.lastError = null;
     serverProtocol = await this.serverProtocolsRepository.save(serverProtocol);
@@ -190,13 +212,16 @@ export class VpnProvisioningService {
     // nginx/nginx.conf.template) — если клиент к этому моменту уже отвалился по таймауту,
     // единственный способ узнать реальный исход операции без похода в БД напрямую — вот
     // этот лог (Настройки → «Логи» → backend).
-    this.logger.log(`Установка ${protocol} на сервере "${server.name}" (${server.host}:${listenPort})…`);
+    this.logger.log(`Установка ${protocol} на сервере "${server.name}" (${server.host}:${resolvedPort})…`);
     try {
       await this.ensureKernelModuleReady(server, connection, driver);
       // Версию забираем в ТОЙ ЖЕ SSH-сессии, что и саму установку — не открываем отдельное
       // подключение только ради неё.
       const result = await this.sshService.withConnection(connection, async (ssh) => {
-        const installResult = await driver.install({ ssh, server, serverProtocol }, { listenPort, networkCidr, mtu, interfaceName });
+        const installResult = await driver.install(
+          { ssh, server, serverProtocol },
+          { listenPort: resolvedPort, networkCidr: resolvedCidr, mtu, interfaceName },
+        );
         const packageVersion = await driver.getInstalledVersion({ ssh, server, serverProtocol });
         return { ...installResult, packageVersion };
       });

@@ -1,5 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
-import { assertSupportedCidr, classifyBypassEntry, gatewayAddress, hostAddress, networkPrefix } from './network.util';
+import { assertSupportedCidr, classifyBypassEntry, gatewayAddress, hostAddress, networkPrefix, nextCidr } from './network.util';
 
 describe('assertSupportedCidr', () => {
   it('accepts a /24 network', () => {
@@ -28,6 +28,21 @@ describe('gatewayAddress / hostAddress', () => {
 
   it('computes a host address for the given octet', () => {
     expect(hostAddress('10.8.0.0/24', 5)).toBe('10.8.0.5');
+  });
+});
+
+describe('nextCidr', () => {
+  it('increments the third octet', () => {
+    expect(nextCidr('10.9.1.0/24')).toBe('10.9.2.0/24');
+  });
+
+  it('wraps correctly across two-digit to three-digit octets', () => {
+    expect(nextCidr('10.9.9.0/24')).toBe('10.9.10.0/24');
+    expect(nextCidr('10.9.99.0/24')).toBe('10.9.100.0/24');
+  });
+
+  it('throws once the third octet is exhausted', () => {
+    expect(() => nextCidr('10.9.255.0/24')).toThrow(BadRequestException);
   });
 });
 
