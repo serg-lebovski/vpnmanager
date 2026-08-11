@@ -258,7 +258,7 @@ export function ServersPage() {
           мостом — видно по чипу "мост «Имя»" у самого протокола ниже. Сетка вместо
           вертикального списка — auto-fill сам решает, сколько карточек влезает в ряд
           (обычно 2-3 на десктопе), пересчитывая при изменении ширины окна. */}
-      <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 2 }}>
+      <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(360px, 100%), 1fr))', gap: 2 }}>
         {servers?.map((server) => (
           <ServerCard
             key={server.id}

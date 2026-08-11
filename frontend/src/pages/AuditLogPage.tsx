@@ -7,6 +7,7 @@ import {
   Table,
   TableBody,
   TableCell,
+  TableContainer,
   TableHead,
   TableRow,
   Typography,
@@ -43,6 +44,7 @@ export function AuditLogPage() {
         нажмите на строку, чтобы увидеть тело запроса (пароли/секреты скрыты).
       </Typography>
       <Paper sx={{ p: 2 }}>
+        <TableContainer sx={{ overflowX: 'auto' }}>
         <Table size="small">
           <TableHead>
             <TableRow>
@@ -75,6 +77,7 @@ export function AuditLogPage() {
             )}
           </TableBody>
         </Table>
+        </TableContainer>
       </Paper>
 
       <Dialog open={!!selected} onClose={() => setSelected(null)} fullWidth maxWidth="sm">

@@ -15,6 +15,7 @@ import {
   Table,
   TableBody,
   TableCell,
+  TableContainer,
   TableHead,
   TableRow,
   TableSortLabel,
@@ -417,6 +418,7 @@ export function PeersPage() {
             onChange={(e) => setSearch(e.target.value)}
             sx={{ mb: 2, minWidth: 280 }}
           />
+          <TableContainer sx={{ overflowX: 'auto' }}>
           <Table size="small">
             <TableHead>
               <TableRow>
@@ -527,6 +529,7 @@ export function PeersPage() {
               )}
             </TableBody>
           </Table>
+          </TableContainer>
         </Paper>
       </Stack>
 

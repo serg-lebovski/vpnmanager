@@ -11,6 +11,7 @@ import {
   Table,
   TableBody,
   TableCell,
+  TableContainer,
   TableHead,
   TableRow,
   TableSortLabel,
@@ -173,6 +174,7 @@ export function UsersPage() {
           onChange={(e) => setSearch(e.target.value)}
           sx={{ mb: 2, minWidth: 260 }}
         />
+        <TableContainer sx={{ overflowX: 'auto' }}>
         <Table size="small">
           <TableHead>
             <TableRow>
@@ -211,6 +213,7 @@ export function UsersPage() {
             )}
           </TableBody>
         </Table>
+        </TableContainer>
       </Paper>
 
       <Dialog open={!!editingUser} onClose={() => setEditingUser(null)} fullWidth maxWidth="xs">

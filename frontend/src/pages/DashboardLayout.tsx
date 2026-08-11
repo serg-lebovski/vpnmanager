@@ -1,6 +1,25 @@
-import { AppBar, Box, Button, Container, Divider, IconButton, Menu, MenuItem, Toolbar, Tooltip, Typography } from '@mui/material';
+import {
+  AppBar,
+  Box,
+  Button,
+  Container,
+  Divider,
+  Drawer,
+  IconButton,
+  List,
+  ListItemButton,
+  ListItemText,
+  Menu,
+  MenuItem,
+  Toolbar,
+  Tooltip,
+  Typography,
+  useMediaQuery,
+  useTheme,
+} from '@mui/material';
 import Brightness4Icon from '@mui/icons-material/Brightness4';
 import Brightness7Icon from '@mui/icons-material/Brightness7';
+import MenuIcon from '@mui/icons-material/Menu';
 import { useState } from 'react';
 import { Link as RouterLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
@@ -20,6 +39,12 @@ export function DashboardLayout() {
   const navigate = useNavigate();
 
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const theme = useTheme();
+  // Пунктов навигации у суперадмина (Peers/Дашборд/Серверы/Клиенты/Мост/Пользователи) в один
+  // ряд Toolbar не влезает на телефоне — ниже md прячем их за гамбургер-меню (Drawer), сама
+  // строка Toolbar на десктопе остаётся как есть.
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
 
   // "/" — только точное совпадение (иначе подсвечивался бы всегда, это префикс всех
   // путей); остальные вкладки — по префиксу, чтобы вложенные страницы (например,
@@ -41,36 +66,45 @@ export function DashboardLayout() {
     <Box>
       <AppBar position="static">
         <Toolbar sx={{ gap: 2 }}>
-          <Typography variant="h6" sx={{ flexGrow: 0 }}>
+          {isMobile && (
+            <IconButton color="inherit" edge="start" aria-label="Меню" onClick={() => setDrawerOpen(true)}>
+              <MenuIcon />
+            </IconButton>
+          )}
+          <Typography variant="h6" sx={{ flexGrow: 0 }} noWrap>
             VPN Manager
           </Typography>
-          <Button color="inherit" {...navButtonProps('/')}>
-            Peers
-          </Button>
-          {(user?.role === 'super_admin' || user?.role === 'engineer') && (
-            <Button color="inherit" {...navButtonProps('/dashboard')}>
-              Дашборд
-            </Button>
-          )}
-          {user?.role === 'super_admin' && (
+          {!isMobile && (
             <>
-              <Button color="inherit" {...navButtonProps('/servers')}>
-                Серверы
+              <Button color="inherit" {...navButtonProps('/')}>
+                Peers
               </Button>
-              <Button color="inherit" {...navButtonProps('/organizations')}>
-                Клиенты
-              </Button>
+              {(user?.role === 'super_admin' || user?.role === 'engineer') && (
+                <Button color="inherit" {...navButtonProps('/dashboard')}>
+                  Дашборд
+                </Button>
+              )}
+              {user?.role === 'super_admin' && (
+                <>
+                  <Button color="inherit" {...navButtonProps('/servers')}>
+                    Серверы
+                  </Button>
+                  <Button color="inherit" {...navButtonProps('/organizations')}>
+                    Клиенты
+                  </Button>
+                </>
+              )}
+              {(user?.role === 'super_admin' || user?.role === 'engineer') && (
+                <Button color="inherit" {...navButtonProps('/bridge')}>
+                  Мост
+                </Button>
+              )}
+              {(user?.role === 'super_admin' || user?.role === 'org_admin') && (
+                <Button color="inherit" {...navButtonProps('/users')}>
+                  Пользователи
+                </Button>
+              )}
             </>
-          )}
-          {(user?.role === 'super_admin' || user?.role === 'engineer') && (
-            <Button color="inherit" {...navButtonProps('/bridge')}>
-              Мост
-            </Button>
-          )}
-          {(user?.role === 'super_admin' || user?.role === 'org_admin') && (
-            <Button color="inherit" {...navButtonProps('/users')}>
-              Пользователи
-            </Button>
           )}
           <Box sx={{ flexGrow: 1 }} />
           <Tooltip title={mode === 'dark' ? 'Светлая тема' : 'Тёмная тема'}>
@@ -121,6 +155,40 @@ export function DashboardLayout() {
           </Menu>
         </Toolbar>
       </AppBar>
+      <Drawer anchor="left" open={isMobile && drawerOpen} onClose={() => setDrawerOpen(false)}>
+        <Box sx={{ width: 240 }} role="presentation" onClick={() => setDrawerOpen(false)}>
+          <List>
+            <ListItemButton component={RouterLink} to="/" selected={isActive('/')}>
+              <ListItemText primary="Peers" />
+            </ListItemButton>
+            {(user?.role === 'super_admin' || user?.role === 'engineer') && (
+              <ListItemButton component={RouterLink} to="/dashboard" selected={isActive('/dashboard')}>
+                <ListItemText primary="Дашборд" />
+              </ListItemButton>
+            )}
+            {user?.role === 'super_admin' && (
+              <>
+                <ListItemButton component={RouterLink} to="/servers" selected={isActive('/servers')}>
+                  <ListItemText primary="Серверы" />
+                </ListItemButton>
+                <ListItemButton component={RouterLink} to="/organizations" selected={isActive('/organizations')}>
+                  <ListItemText primary="Клиенты" />
+                </ListItemButton>
+              </>
+            )}
+            {(user?.role === 'super_admin' || user?.role === 'engineer') && (
+              <ListItemButton component={RouterLink} to="/bridge" selected={isActive('/bridge')}>
+                <ListItemText primary="Мост" />
+              </ListItemButton>
+            )}
+            {(user?.role === 'super_admin' || user?.role === 'org_admin') && (
+              <ListItemButton component={RouterLink} to="/users" selected={isActive('/users')}>
+                <ListItemText primary="Пользователи" />
+              </ListItemButton>
+            )}
+          </List>
+        </Box>
+      </Drawer>
       <Container sx={{ mt: 4, mb: 4 }}>
         <Outlet />
       </Container>

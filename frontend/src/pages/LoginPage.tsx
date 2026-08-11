@@ -26,8 +26,8 @@ export function LoginPage() {
   }
 
   return (
-    <Box display="flex" alignItems="center" justifyContent="center" minHeight="100vh" bgcolor="grey.100">
-      <Paper sx={{ p: 4, width: 360 }} elevation={3}>
+    <Box display="flex" alignItems="center" justifyContent="center" minHeight="100vh" bgcolor="grey.100" px={2}>
+      <Paper sx={{ p: { xs: 3, sm: 4 }, width: '100%', maxWidth: 360 }} elevation={3}>
         <Typography variant="h5" mb={3} textAlign="center">
           VPN Manager
         </Typography>

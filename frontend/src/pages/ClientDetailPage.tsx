@@ -11,6 +11,7 @@ import {
   Table,
   TableBody,
   TableCell,
+  TableContainer,
   TableHead,
   TableRow,
   TextField,
@@ -154,7 +155,7 @@ export function ClientDetailPage() {
         <Typography variant="subtitle1" mb={2}>
           Клиент
         </Typography>
-        <Stack direction="row" spacing={2} alignItems="flex-start">
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ xs: 'stretch', sm: 'flex-start' }}>
           <TextField label="Название" value={name} onChange={(e) => setName(e.target.value)} required />
           <Button
             variant="contained"
@@ -298,6 +299,7 @@ export function ClientDetailPage() {
             </Button>
           </Stack>
         )}
+        <TableContainer sx={{ overflowX: 'auto' }}>
         <Table size="small">
           <TableHead>
             <TableRow>
@@ -325,12 +327,14 @@ export function ClientDetailPage() {
             )}
           </TableBody>
         </Table>
+        </TableContainer>
       </Paper>
 
       <Paper sx={{ p: 2 }}>
         <Typography variant="subtitle1" mb={2}>
           Peers
         </Typography>
+        <TableContainer sx={{ overflowX: 'auto' }}>
         <Table size="small">
           <TableHead>
             <TableRow>
@@ -356,6 +360,7 @@ export function ClientDetailPage() {
             )}
           </TableBody>
         </Table>
+        </TableContainer>
       </Paper>
     </Stack>
   );

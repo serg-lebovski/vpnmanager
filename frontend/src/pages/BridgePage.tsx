@@ -296,7 +296,7 @@ function ProtocolRow({
   helperText: string;
 }) {
   return (
-    <Stack direction="row" spacing={2} alignItems="center">
+    <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" useFlexGap>
       <FormControlLabel
         sx={{ minWidth: 160 }}
         control={<Checkbox checked={state.enabled} onChange={(e) => onChange({ ...state, enabled: e.target.checked })} />}
@@ -497,7 +497,7 @@ function BridgeCard({
 
   return (
     <Paper sx={{ p: 2 }}>
-      <Stack direction="row" justifyContent="space-between" alignItems="flex-start">
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} justifyContent="space-between" alignItems="flex-start">
         <Box flex={1}>
           {isEditing ? (
             <Stack spacing={1.5} mb={1}>
@@ -575,7 +575,7 @@ function BridgeCard({
             </Typography>
           )}
         </Box>
-        <Stack direction="row" spacing={1} alignItems="center">
+        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
           <TextField
             select
             size="small"
@@ -728,7 +728,7 @@ function BridgeCard({
                   const value = e.target.value;
                   setCandidatePriority((prev) => ({ ...prev, [c.id]: value === '' ? '' : Number(value) }));
                 }}
-                sx={{ minWidth: 320 }}
+                sx={{ minWidth: { xs: 0, sm: 320 }, flex: { xs: 1, sm: 'unset' } }}
               >
                 <MenuItem value="">Не участвует</MenuItem>
                 {candidates.map((_, idx) => (

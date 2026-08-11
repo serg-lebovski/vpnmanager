@@ -7,6 +7,7 @@ import {
   Table,
   TableBody,
   TableCell,
+  TableContainer,
   TableHead,
   TableRow,
   TextField,
@@ -82,6 +83,7 @@ export function OrganizationsPage() {
       </Paper>
 
       <Paper sx={{ p: 2 }}>
+        <TableContainer sx={{ overflowX: 'auto' }}>
         <Table size="small">
           <TableHead>
             <TableRow>
@@ -126,6 +128,7 @@ export function OrganizationsPage() {
             )}
           </TableBody>
         </Table>
+        </TableContainer>
       </Paper>
     </Stack>
   );

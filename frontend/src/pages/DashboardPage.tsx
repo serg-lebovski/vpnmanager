@@ -14,6 +14,7 @@ import {
   Table,
   TableBody,
   TableCell,
+  TableContainer,
   TableHead,
   TableRow,
   Tooltip,
@@ -260,7 +261,8 @@ function TrafficSection() {
       <Typography variant="body2" color="text.secondary" mb={1}>
         По клиентам{serverFilter ? ' (на выбранном сервере)' : ''} — за период «{rangeLabels[range]}»
       </Typography>
-      <Table size="small" sx={{ mb: 3 }}>
+      <TableContainer sx={{ overflowX: 'auto', mb: 3 }}>
+      <Table size="small">
         <TableHead>
           <TableRow>
             <TableCell>Клиент</TableCell>
@@ -285,12 +287,14 @@ function TrafficSection() {
           )}
         </TableBody>
       </Table>
+      </TableContainer>
 
       <Typography variant="body2" color="text.secondary" mb={1}>
         По серверам (включая self-серверы, несущие мосты){orgFilter ? ' — только выбранный клиент' : ''} — за период
         «{rangeLabels[range]}»
       </Typography>
-      <Table size="small" sx={{ mb: 3 }}>
+      <TableContainer sx={{ overflowX: 'auto', mb: 3 }}>
+      <Table size="small">
         <TableHead>
           <TableRow>
             <TableCell>Сервер</TableCell>
@@ -315,11 +319,13 @@ function TrafficSection() {
           )}
         </TableBody>
       </Table>
+      </TableContainer>
 
       <Typography variant="body2" color="text.secondary" mb={1}>
         По peers — за период «{rangeLabels[range]}»
       </Typography>
-      <Table size="small" sx={{ mb: 3 }}>
+      <TableContainer sx={{ overflowX: 'auto', mb: 3 }}>
+      <Table size="small">
         <TableHead>
           <TableRow>
             <TableCell>Peer</TableCell>
@@ -348,10 +354,12 @@ function TrafficSection() {
           )}
         </TableBody>
       </Table>
+      </TableContainer>
 
       <Typography variant="body2" color="text.secondary" mb={1}>
         Помесячно (последние 6 месяцев), по серверам{orgFilter ? ' — только выбранный клиент' : ''}
       </Typography>
+      <TableContainer sx={{ overflowX: 'auto' }}>
       <Table size="small">
         <TableHead>
           <TableRow>
@@ -379,6 +387,7 @@ function TrafficSection() {
           )}
         </TableBody>
       </Table>
+      </TableContainer>
     </Paper>
   );
 }
@@ -439,6 +448,7 @@ export function DashboardPage() {
         <Typography variant="subtitle1" mb={2}>
           Трафик активных peers
         </Typography>
+        <TableContainer sx={{ overflowX: 'auto' }}>
         <Table size="small">
           <TableHead>
             <TableRow>
@@ -470,6 +480,7 @@ export function DashboardPage() {
             )}
           </TableBody>
         </Table>
+        </TableContainer>
       </Paper>
 
       {timestamp && (

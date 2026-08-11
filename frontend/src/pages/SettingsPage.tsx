@@ -350,7 +350,7 @@ export function SettingsPage() {
           </Button>
         </Stack>
 
-        <Stack direction="row" spacing={3} alignItems="center" mt={2}>
+        <Stack direction="row" spacing={3} alignItems="center" mt={2} flexWrap="wrap" useFlexGap>
           <Stack direction="row" spacing={1} alignItems="center">
             <Typography variant="body2">HTTP</Typography>
             <Switch
@@ -502,7 +502,7 @@ export function SettingsPage() {
           восстановления серверы будут отмечены как требующие ввода пароля заново (страница
           «Серверы»).
         </Typography>
-        <Stack direction="row" spacing={2} alignItems="center">
+        <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" useFlexGap>
           <Button component="label" variant="outlined" disabled={!!(restoreProgress && !restoreProgress.done)}>
             Выбрать файл
             <input type="file" accept=".sql" hidden onChange={(e) => setRestoreFile(e.target.files?.[0] ?? null)} />
