@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { Organization } from '../organizations/organization.entity';
 import { PeersModule } from '../peers/peers.module';
+import { TelegramBotLog } from './telegram-bot-log.entity';
 import { TelegramBotService } from './telegram-bot.service';
 import { TelegramBroadcast } from './telegram-broadcast.entity';
 import { TelegramRegistration } from './telegram-registration.entity';
@@ -10,7 +11,11 @@ import { TelegramRegistrationsController } from './telegram-registrations.contro
 import { TelegramRegistrationsService } from './telegram-registrations.service';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([TelegramRegistration, TelegramBroadcast, Organization]), NotificationsModule, PeersModule],
+  imports: [
+    TypeOrmModule.forFeature([TelegramRegistration, TelegramBroadcast, TelegramBotLog, Organization]),
+    NotificationsModule,
+    PeersModule,
+  ],
   controllers: [TelegramRegistrationsController],
   providers: [TelegramBotService, TelegramRegistrationsService],
 })

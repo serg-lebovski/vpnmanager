@@ -1,9 +1,10 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { TelegramRegistrationStatus } from '../common/enums';
+import { TelegramBotLogLevel, TelegramRegistrationStatus } from '../common/enums';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PeersService } from '../peers/peers.service';
+import { TelegramBotLog } from './telegram-bot-log.entity';
 import { TelegramBotService } from './telegram-bot.service';
 import { TelegramBroadcast, TelegramBroadcastDelivery } from './telegram-broadcast.entity';
 import { TelegramRegistration } from './telegram-registration.entity';
@@ -34,10 +35,15 @@ export class TelegramRegistrationsService {
   constructor(
     @InjectRepository(TelegramRegistration) private readonly registrationsRepository: Repository<TelegramRegistration>,
     @InjectRepository(TelegramBroadcast) private readonly broadcastsRepository: Repository<TelegramBroadcast>,
+    @InjectRepository(TelegramBotLog) private readonly logsRepository: Repository<TelegramBotLog>,
     private readonly peersService: PeersService,
     private readonly notificationsService: NotificationsService,
     private readonly telegramBotService: TelegramBotService,
   ) {}
+
+  async listLogs(limit = 200): Promise<TelegramBotLog[]> {
+    return this.logsRepository.find({ order: { createdAt: 'DESC' }, take: limit });
+  }
 
   async findAll(): Promise<TelegramRegistrationListItem[]> {
     const registrations = await this.registrationsRepository.find({
@@ -63,18 +69,32 @@ export class TelegramRegistrationsService {
     }
     registration.status = TelegramRegistrationStatus.APPROVED;
     await this.registrationsRepository.save(registration);
+    await this.logsRepository.insert({
+      level: TelegramBotLogLevel.INFO,
+      message: `Заявка подтверждена суперадмином: ${registration.fullName}`,
+      chatId: registration.telegramChatId,
+    });
     await this.telegramBotService.notifyApproved(registration.telegramChatId);
   }
 
-  // Отзывает все peers регистрации на сервере (не полагается только на ON DELETE SET NULL —
-  // иначе peer остался бы активным на upstream/self-сервере осиротевшим) и затем удаляет
-  // саму заявку.
-  async remove(id: string): Promise<void> {
+  // revokePeers=true (по умолчанию): отзывает все peers регистрации на сервере (не
+  // полагается только на ON DELETE SET NULL — иначе peer остался бы активным на
+  // upstream/self-сервере осиротевшим) и затем удаляет саму заявку. revokePeers=false —
+  // явный выбор суперадмина оставить уже выданные peers работать как обычные (просто
+  // теряют привязку к заявке через ON DELETE SET NULL на Peer.telegramRegistrationId).
+  async remove(id: string, revokePeers: boolean): Promise<void> {
     const registration = await this.registrationsRepository.findOne({ where: { id } });
     if (!registration) {
       throw new NotFoundException('Заявка не найдена');
     }
-    await this.peersService.revokeAllPeersForTelegramRegistration(id);
+    if (revokePeers) {
+      await this.peersService.revokeAllPeersForTelegramRegistration(id);
+    }
+    await this.logsRepository.insert({
+      level: TelegramBotLogLevel.INFO,
+      message: `Заявка удалена суперадмином: ${registration.fullName} (peers ${revokePeers ? 'отозваны' : 'оставлены'})`,
+      chatId: registration.telegramChatId,
+    });
     await this.registrationsRepository.remove(registration);
   }
 

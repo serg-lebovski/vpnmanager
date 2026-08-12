@@ -69,6 +69,21 @@ export class NotificationsService {
     return decryptSecret(settings.telegramBotTokenEnc);
   }
 
+  // Приветствие для тех, кто впервые пишет боту /start — редактируется в Настройках
+  // Telegram-бота; свой дефолт здесь, а не в БД, чтобы не хранить один и тот же текст
+  // дважды (в схеме и в коде).
+  async getWelcomeMessage(): Promise<string> {
+    const settings = await this.settingsRepository.findOne({ where: { id: 1 } });
+    return settings?.telegramWelcomeMessage?.trim() || 'Добро пожаловать! Этот бот поможет вам получить доступ к VPN.';
+  }
+
+  // Текст по кнопке "ℹ️ Информация" — целиком на усмотрение администратора, поэтому дефолт
+  // честно говорит, что текст ещё не задан, а не выдумывает содержание за суперадмина.
+  async getInfoMessage(): Promise<string> {
+    const settings = await this.settingsRepository.findOne({ where: { id: 1 } });
+    return settings?.telegramInfoMessage?.trim() || 'Дополнительная информация пока не добавлена администратором.';
+  }
+
   // Отправка в ПРОИЗВОЛЬНЫЙ чат (не фиксированный telegramChatId настроек) — используется
   // ботом самостоятельной регистрации (telegram-bot/) для ответов конкретным
   // пользователям и для рассылки. В отличие от sendMessage — бросает ошибку наружу,

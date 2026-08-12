@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/enums';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
@@ -24,9 +24,12 @@ export class TelegramRegistrationsController {
     return this.telegramRegistrationsService.approve(id);
   }
 
+  // revokePeers по умолчанию true (безопасное поведение по умолчанию — не оставлять
+  // работающие peers без присмотра) — фронтенд всегда передаёт его явно после выбора
+  // суперадмина в диалоге подтверждения.
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.telegramRegistrationsService.remove(id);
+  remove(@Param('id') id: string, @Query('revokePeers') revokePeers?: string) {
+    return this.telegramRegistrationsService.remove(id, revokePeers !== 'false');
   }
 
   @Post('broadcast')
@@ -42,5 +45,10 @@ export class TelegramRegistrationsController {
   @Delete('broadcasts/:id')
   deleteBroadcast(@Param('id') id: string) {
     return this.telegramRegistrationsService.deleteBroadcast(id);
+  }
+
+  @Get('logs')
+  listLogs() {
+    return this.telegramRegistrationsService.listLogs();
   }
 }

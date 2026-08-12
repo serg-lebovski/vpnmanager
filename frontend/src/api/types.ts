@@ -51,6 +51,16 @@ export interface TelegramBroadcast {
   createdAt: string;
 }
 
+export type TelegramBotLogLevel = 'info' | 'warn' | 'error';
+
+export interface TelegramBotLogEntry {
+  id: string;
+  level: TelegramBotLogLevel;
+  message: string;
+  chatId: string | null;
+  createdAt: string;
+}
+
 export interface AppUser {
   id: string;
   email: string;

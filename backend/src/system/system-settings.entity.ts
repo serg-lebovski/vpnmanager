@@ -45,6 +45,17 @@ export class SystemSettings {
   @Column({ name: 'telegram_bridge_id', type: 'uuid', nullable: true })
   telegramBridgeId: string | null;
 
+  // Первое сообщение, которое видит человек, впервые написавший боту /start, ДО запроса
+  // названия организации — редактируется суперадмином (см. TelegramBotPage.tsx). null —
+  // TelegramBotService подставляет дефолтный текст сам, а не хранит его тут дважды.
+  @Column({ name: 'telegram_welcome_message', type: 'text', nullable: true })
+  telegramWelcomeMessage: string | null;
+
+  // Свободный текст, который бот присылает по кнопке "ℹ️ Информация" из главного меню —
+  // произвольные инструкции/контакты поддержки и т.п., целиком на усмотрение суперадмина.
+  @Column({ name: 'telegram_info_message', type: 'text', nullable: true })
+  telegramInfoMessage: string | null;
+
   @UpdateDateColumn({ name: 'updated_at' })
   updatedAt: Date;
 }

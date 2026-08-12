@@ -93,6 +93,12 @@ export class SettingsService {
     if (dto.telegramBridgeId !== undefined) {
       settings.telegramBridgeId = dto.telegramBridgeId;
     }
+    if (dto.telegramWelcomeMessage !== undefined) {
+      settings.telegramWelcomeMessage = dto.telegramWelcomeMessage;
+    }
+    if (dto.telegramInfoMessage !== undefined) {
+      settings.telegramInfoMessage = dto.telegramInfoMessage;
+    }
 
     const saved = await this.settingsRepository.save(settings);
     setCorsAllowedDomain(saved.domain);

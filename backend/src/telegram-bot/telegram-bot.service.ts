@@ -3,16 +3,19 @@ import { Interval } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as QRCode from 'qrcode';
 import { Repository } from 'typeorm';
-import { PeerDeviceType, TelegramRegistrationStatus, VpnProtocol } from '../common/enums';
+import { PeerDeviceType, TelegramBotLogLevel, TelegramRegistrationStatus, VpnProtocol } from '../common/enums';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Organization } from '../organizations/organization.entity';
 import { PeersService } from '../peers/peers.service';
+import { TelegramBotLog } from './telegram-bot-log.entity';
 import { TelegramRegistration } from './telegram-registration.entity';
 
 const POLL_INTERVAL_MS = 3_000;
 const API_TIMEOUT_MS = 10_000;
 const MENU_PHONE_LABEL = '📱 Телефон';
 const MENU_PC_LABEL = '💻 ПК';
+const MENU_INFO_LABEL = 'ℹ️ Информация';
+const MENU_CHANGE_PROTOCOL_LABEL = '🔁 Сменить протокол';
 
 type DraftStep = 'awaiting_org_name' | 'awaiting_inn' | 'awaiting_fio';
 
@@ -33,6 +36,10 @@ interface PeerRequest {
   protocol?: VpnProtocol;
   upstreamOptions?: Array<{ key: string; label: string }>;
   upstreamKey?: string;
+  // true — запрос пришёл с кнопки "Сменить протокол": пользователь уже явно осознаёт, что
+  // текущий конфиг для этого устройства будет заменён, отдельное "уже есть, перевыпустить?"
+  // подтверждение (как при обычном запросе через "Телефон"/"ПК") избыточно.
+  explicitReissue?: boolean;
 }
 
 interface TelegramUpdate {
@@ -59,9 +66,23 @@ export class TelegramBotService {
   constructor(
     @InjectRepository(TelegramRegistration) private readonly registrationsRepository: Repository<TelegramRegistration>,
     @InjectRepository(Organization) private readonly organizationsRepository: Repository<Organization>,
+    @InjectRepository(TelegramBotLog) private readonly logsRepository: Repository<TelegramBotLog>,
     private readonly notificationsService: NotificationsService,
     private readonly peersService: PeersService,
   ) {}
+
+  // Пишет и в docker logs (как раньше), и в БД, чтобы событие было видно в панели (вкладка
+  // Telegram) без захода по SSH. chatId — для контекста "чья это заявка/запрос", не FK
+  // (заявка могла быть уже удалена к моменту просмотра лога).
+  private async log(level: TelegramBotLogLevel, message: string, chatId?: string): Promise<void> {
+    const logMethod = level === TelegramBotLogLevel.ERROR ? 'error' : level === TelegramBotLogLevel.WARN ? 'warn' : 'log';
+    this.logger[logMethod](chatId ? `[${chatId}] ${message}` : message);
+    try {
+      await this.logsRepository.insert({ level, message, chatId: chatId ?? null });
+    } catch (error) {
+      this.logger.warn(`Не удалось записать событие в журнал Telegram-бота: ${(error as Error).message}`);
+    }
+  }
 
   @Interval(POLL_INTERVAL_MS)
   private async poll(): Promise<void> {
@@ -142,7 +163,46 @@ export class TelegramBotService {
       return;
     }
 
+    if (text === MENU_INFO_LABEL) {
+      const info = await this.notificationsService.getInfoMessage();
+      await this.notificationsService.sendToChat(chatId, info);
+      return;
+    }
+
+    if (text === MENU_CHANGE_PROTOCOL_LABEL) {
+      await this.startChangeProtocol(chatId, registration);
+      return;
+    }
+
     await this.sendMainMenu(chatId);
+  }
+
+  // Определяет, для какого устройства менять протокол: если существующий конфиг только
+  // один — сразу переходим к выбору протокола, если оба — спрашиваем явно, если ни одного —
+  // менять пока нечего (сначала обычная выдача через "Телефон"/"ПК").
+  private async startChangeProtocol(chatId: string, registration: TelegramRegistration): Promise<void> {
+    const existingPeers = await this.peersService.findActivePeersForTelegramRegistration(registration.id);
+    const devices = existingPeers.map((peer) => peer.deviceType).filter((d): d is PeerDeviceType => d !== null);
+    if (devices.length === 0) {
+      await this.notificationsService.sendToChat(
+        chatId,
+        'У вас пока нет ни одного конфига — сначала получите его через «Телефон» или «ПК».',
+      );
+      return;
+    }
+    if (devices.length === 1) {
+      this.peerRequests.set(chatId, { deviceType: devices[0], explicitReissue: true });
+      await this.promptProtocolChoice(chatId);
+      return;
+    }
+    await this.notificationsService.sendToChat(chatId, 'Для какого устройства сменить протокол?', {
+      inline_keyboard: [
+        [
+          { text: '📱 Телефон', callback_data: 'changedevice:phone' },
+          { text: '💻 ПК', callback_data: 'changedevice:pc' },
+        ],
+      ],
+    });
   }
 
   private async handleStart(chatId: string, telegramUsername: string | null): Promise<void> {
@@ -156,7 +216,9 @@ export class TelegramBotService {
       return;
     }
     this.drafts.set(chatId, { step: 'awaiting_org_name', telegramUsername });
-    await this.notificationsService.sendToChat(chatId, 'Здравствуйте! Введите точное название вашей организации.');
+    const welcome = await this.notificationsService.getWelcomeMessage();
+    await this.notificationsService.sendToChat(chatId, welcome);
+    await this.notificationsService.sendToChat(chatId, 'Введите точное название вашей организации.');
   }
 
   private async handleDraftStep(chatId: string, draft: Draft, text: string): Promise<void> {
@@ -171,6 +233,11 @@ export class TelegramBotService {
       const organization = await this.organizationsRepository.findOne({ where: { inn: text } });
       if (!organization || organization.name.trim().toLowerCase() !== (draft.orgName ?? '').trim().toLowerCase()) {
         this.drafts.delete(chatId);
+        await this.log(
+          TelegramBotLogLevel.WARN,
+          `Не удалось сопоставить организацию: название «${draft.orgName}», ИНН «${text}»`,
+          chatId,
+        );
         await this.notificationsService.sendToChat(
           chatId,
           'Не нашёл организацию с таким названием и ИНН. Проверьте данные и начните заново с /start.',
@@ -193,6 +260,7 @@ export class TelegramBotService {
       });
       await this.registrationsRepository.save(registration);
       this.drafts.delete(chatId);
+      await this.log(TelegramBotLogLevel.INFO, `Новая заявка на регистрацию: ${text}`, chatId);
       await this.notificationsService.sendToChat(chatId, 'Заявка отправлена. Ожидайте подтверждения администратора.');
     }
   }
@@ -204,7 +272,11 @@ export class TelegramBotService {
   // ничего вспоминать вроде /start, кнопки просто всегда под рукой.
   private async sendMainMenu(chatId: string): Promise<void> {
     await this.notificationsService.sendToChat(chatId, 'Выберите, для какого устройства получить конфиг:', {
-      keyboard: [[{ text: MENU_PHONE_LABEL }, { text: MENU_PC_LABEL }]],
+      keyboard: [
+        [{ text: MENU_PHONE_LABEL }, { text: MENU_PC_LABEL }],
+        [{ text: MENU_CHANGE_PROTOCOL_LABEL }],
+        [{ text: MENU_INFO_LABEL }],
+      ],
       resize_keyboard: true,
       is_persistent: true,
     });
@@ -247,6 +319,16 @@ export class TelegramBotService {
       }
       request.protocol = protocolMatch[1] === 'amneziawg' ? VpnProtocol.AMNEZIAWG : VpnProtocol.WIREGUARD;
       await this.proceedAfterProtocol(chatId, registration, organization, request);
+      return;
+    }
+
+    const changeDeviceMatch = data.match(/^changedevice:(phone|pc)$/);
+    if (changeDeviceMatch) {
+      this.peerRequests.set(chatId, {
+        deviceType: changeDeviceMatch[1] === 'phone' ? PeerDeviceType.PHONE : PeerDeviceType.PC,
+        explicitReissue: true,
+      });
+      await this.promptProtocolChoice(chatId);
       return;
     }
 
@@ -311,7 +393,14 @@ export class TelegramBotService {
   ): Promise<void> {
     request.upstreamKey = upstreamKey;
     const existingPeers = await this.peersService.findActivePeersForTelegramRegistration(registration.id);
-    if (existingPeers.some((peer) => peer.deviceType === request.deviceType)) {
+    const hasExisting = existingPeers.some((peer) => peer.deviceType === request.deviceType);
+    // Запрос со "Сменить протокол" уже спросил подтверждение неявно (сама кнопка означает
+    // "заменить текущий конфиг") — не спрашивать второй раз.
+    if (hasExisting && request.explicitReissue) {
+      await this.issuePeer(chatId, registration, organization, request, true);
+      return;
+    }
+    if (hasExisting) {
       await this.notificationsService.sendToChat(
         chatId,
         'У вас уже есть конфиг для этого устройства. Перевыпустить? Старый конфиг перестанет работать.',
@@ -344,8 +433,13 @@ export class TelegramBotService {
       await this.notificationsService.sendDocumentToChat(chatId, filename, content);
       const png = await QRCode.toBuffer(content, { type: 'png', width: 400 });
       await this.notificationsService.sendPhotoToChat(chatId, png, 'QR-код для быстрого подключения');
+      await this.log(
+        TelegramBotLogLevel.INFO,
+        `${reissue ? 'Перевыпущен' : 'Выдан'} peer «${filename.replace(/\.conf$/, '')}» (${request.protocol}, ${request.deviceType})`,
+        chatId,
+      );
     } catch (error) {
-      this.logger.warn(`Не удалось выдать peer для чата ${chatId}: ${(error as Error).message}`);
+      await this.log(TelegramBotLogLevel.ERROR, `Не удалось выдать peer: ${(error as Error).message}`, chatId);
       await this.notificationsService.sendToChat(chatId, `Не удалось создать конфиг: ${(error as Error).message}`);
     } finally {
       this.peerRequests.delete(chatId);

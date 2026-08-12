@@ -39,4 +39,12 @@ export class UpdateSettingsDto {
   @ValidateIf((_, value) => value !== null)
   @IsOptional()
   telegramBridgeId?: string | null;
+
+  @IsString()
+  @IsOptional()
+  telegramWelcomeMessage?: string;
+
+  @IsString()
+  @IsOptional()
+  telegramInfoMessage?: string;
 }

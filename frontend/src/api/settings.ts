@@ -11,6 +11,8 @@ export interface SystemSettings {
   telegramEnabled: boolean;
   telegramChatId: string | null;
   telegramBridgeId: string | null;
+  telegramWelcomeMessage: string | null;
+  telegramInfoMessage: string | null;
   updatedAt: string;
 }
 
@@ -29,6 +31,8 @@ export interface UpdateSettingsInput {
   telegramBotToken?: string;
   telegramChatId?: string;
   telegramBridgeId?: string | null;
+  telegramWelcomeMessage?: string;
+  telegramInfoMessage?: string;
 }
 
 export async function updateSettings(input: UpdateSettingsInput): Promise<SystemSettings> {
