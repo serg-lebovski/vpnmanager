@@ -55,23 +55,25 @@ export function ClientDetailPage() {
   const selectableServers = servers?.filter((s) => !s.isSelf);
 
   const [name, setName] = useState('');
+  const [inn, setInn] = useState('');
   const [allowedServerIds, setAllowedServerIds] = useState<string[]>([]);
   const [blockedBridgeIds, setBlockedBridgeIds] = useState<string[]>([]);
   useEffect(() => {
     if (organization) {
       setName(organization.name);
+      setInn(organization.inn ?? '');
       setAllowedServerIds(organization.allowedServerIds);
       setBlockedBridgeIds(organization.blockedBridgeIds);
     }
   }, [organization]);
 
   const renameMutation = useMutation({
-    mutationFn: () => updateOrganization(id!, { name }),
+    mutationFn: () => updateOrganization(id!, { name, inn: inn.trim() || undefined }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['organizations'] });
       setRenameError(null);
     },
-    onError: (err) => setRenameError(getErrorMessage(err, 'Не удалось переименовать клиента')),
+    onError: (err) => setRenameError(getErrorMessage(err, 'Не удалось сохранить изменения')),
   });
   const [renameError, setRenameError] = useState<string | null>(null);
 
@@ -157,9 +159,10 @@ export function ClientDetailPage() {
         </Typography>
         <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ xs: 'stretch', sm: 'flex-start' }}>
           <TextField label="Название" value={name} onChange={(e) => setName(e.target.value)} required />
+          <TextField label="ИНН" value={inn} onChange={(e) => setInn(e.target.value)} />
           <Button
             variant="contained"
-            disabled={renameMutation.isPending || name === organization.name}
+            disabled={renameMutation.isPending || (name === organization.name && inn === (organization.inn ?? ''))}
             onClick={() => renameMutation.mutate()}
           >
             Сохранить

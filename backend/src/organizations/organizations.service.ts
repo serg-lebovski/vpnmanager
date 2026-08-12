@@ -30,7 +30,13 @@ export class OrganizationsService {
     if (existingOrg) {
       throw new ConflictException('Организация с таким именем уже существует');
     }
-    return this.organizationsRepository.save(this.organizationsRepository.create({ name: dto.name }));
+    if (dto.inn) {
+      const existingInn = await this.organizationsRepository.findOne({ where: { inn: dto.inn } });
+      if (existingInn) {
+        throw new ConflictException('Организация с таким ИНН уже существует');
+      }
+    }
+    return this.organizationsRepository.save(this.organizationsRepository.create({ name: dto.name, inn: dto.inn ?? null }));
   }
 
   async update(id: string, dto: UpdateOrganizationDto): Promise<Organization> {
@@ -41,6 +47,13 @@ export class OrganizationsService {
         throw new ConflictException('Организация с таким именем уже существует');
       }
       organization.name = dto.name;
+    }
+    if (dto.inn !== undefined && dto.inn !== organization.inn) {
+      const existingInn = await this.organizationsRepository.findOne({ where: { inn: dto.inn } });
+      if (existingInn) {
+        throw new ConflictException('Организация с таким ИНН уже существует');
+      }
+      organization.inn = dto.inn;
     }
     if (dto.allowedServerIds !== undefined) {
       organization.allowedServerIds = dto.allowedServerIds;

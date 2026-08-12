@@ -12,6 +12,7 @@ import { OrganizationsPage } from './pages/OrganizationsPage';
 import { PeersPage } from './pages/PeersPage';
 import { ServersPage } from './pages/ServersPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { TelegramBotPage } from './pages/TelegramBotPage';
 import { UsersPage } from './pages/UsersPage';
 
 export default function App() {
@@ -36,6 +37,7 @@ export default function App() {
               <Route path="/organizations/:id" element={<ClientDetailPage />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/audit-log" element={<AuditLogPage />} />
+              <Route path="/telegram-bot" element={<TelegramBotPage />} />
             </Route>
             <Route element={<ProtectedRoute allowedRoles={['super_admin', 'org_admin']} />}>
               <Route path="/users" element={<UsersPage />} />

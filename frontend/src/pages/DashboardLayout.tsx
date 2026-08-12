@@ -92,6 +92,9 @@ export function DashboardLayout() {
                   <Button color="inherit" {...navButtonProps('/organizations')}>
                     Клиенты
                   </Button>
+                  <Button color="inherit" {...navButtonProps('/telegram-bot')}>
+                    Telegram
+                  </Button>
                 </>
               )}
               {(user?.role === 'super_admin' || user?.role === 'engineer') && (
@@ -173,6 +176,9 @@ export function DashboardLayout() {
                 </ListItemButton>
                 <ListItemButton component={RouterLink} to="/organizations" selected={isActive('/organizations')}>
                   <ListItemText primary="Клиенты" />
+                </ListItemButton>
+                <ListItemButton component={RouterLink} to="/telegram-bot" selected={isActive('/telegram-bot')}>
+                  <ListItemText primary="Telegram" />
                 </ListItemButton>
               </>
             )}

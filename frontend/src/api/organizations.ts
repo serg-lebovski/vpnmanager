@@ -8,6 +8,7 @@ export async function fetchOrganizations(): Promise<Organization[]> {
 
 export interface CreateOrganizationInput {
   name: string;
+  inn?: string;
 }
 
 export async function createOrganization(input: CreateOrganizationInput): Promise<Organization> {
@@ -22,6 +23,7 @@ export async function fetchOrganization(id: string): Promise<Organization> {
 
 export interface UpdateOrganizationInput {
   name?: string;
+  inn?: string;
   allowedServerIds?: string[];
   blockedBridgeIds?: string[];
 }

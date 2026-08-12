@@ -1,7 +1,8 @@
 import { Column, CreateDateColumn, Entity, Index, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
-import { PeerSource, PeerStatus } from '../common/enums';
+import { PeerDeviceType, PeerSource, PeerStatus } from '../common/enums';
 import { Organization } from '../organizations/organization.entity';
 import { ServerProtocol } from '../servers/server-protocol.entity';
+import { TelegramRegistration } from '../telegram-bot/telegram-registration.entity';
 
 // Индексы ниже — Postgres НЕ создаёт их автоматически для FK-колонок (в отличие от PK).
 // serverProtocolId фильтруется в каждом syncServerPeers/pickServerProtocol; status+expiresAt
@@ -12,6 +13,7 @@ import { ServerProtocol } from '../servers/server-protocol.entity';
 @Index(['status', 'expiresAt'])
 @Index(['organizationId'])
 @Index(['createdByUserId'])
+@Index(['telegramRegistrationId'])
 export class Peer {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -67,6 +69,20 @@ export class Peer {
   // PeersService.update).
   @Column({ name: 'expires_at', type: 'timestamptz', nullable: true })
   expiresAt: Date | null;
+
+  // Заполняются только для peers, выданных через Telegram-бота (см. telegram-bot/) — null
+  // для всех остальных (created вручную/через API, imported, bridge upstream). Наличие
+  // telegramRegistrationId само по себе уже маркирует "создан через бота", отдельного
+  // PeerSource для этого не заводили.
+  @ManyToOne(() => TelegramRegistration, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'telegram_registration_id' })
+  telegramRegistration: TelegramRegistration | null;
+
+  @Column({ name: 'telegram_registration_id', type: 'uuid', nullable: true })
+  telegramRegistrationId: string | null;
+
+  @Column({ name: 'device_type', type: 'enum', enum: PeerDeviceType, nullable: true })
+  deviceType: PeerDeviceType | null;
 
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;

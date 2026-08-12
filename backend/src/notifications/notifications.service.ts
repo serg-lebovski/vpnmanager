@@ -57,4 +57,88 @@ export class NotificationsService {
       throw new Error(`Telegram API вернул ошибку ${response.status}: ${await response.text()}`);
     }
   }
+
+  // Расшифрованный токен бота — используется TelegramBotService для long-polling
+  // getUpdates (тот же бот, что и для алертов, отдельного токена не заводим). null, если
+  // бот ещё не настроен в Настройках — поллер сам пропускает тик, ничего не бросая.
+  async getDecryptedBotToken(): Promise<string | null> {
+    const settings = await this.settingsRepository.findOne({ where: { id: 1 } });
+    if (!settings?.telegramBotTokenEnc) {
+      return null;
+    }
+    return decryptSecret(settings.telegramBotTokenEnc);
+  }
+
+  // Отправка в ПРОИЗВОЛЬНЫЙ чат (не фиксированный telegramChatId настроек) — используется
+  // ботом самостоятельной регистрации (telegram-bot/) для ответов конкретным
+  // пользователям и для рассылки. В отличие от sendMessage — бросает ошибку наружу,
+  // вызывающий код сам решает, best-effort это или нет (рассылка, например, ловит ошибку
+  // на каждого получателя отдельно, чтобы один заблокировавший бота не сорвал остальных).
+  async sendToChat(chatId: string, text: string, replyMarkup?: unknown): Promise<void> {
+    const token = await this.requireBotToken();
+    await this.post(token, 'sendMessage', { chat_id: chatId, text, reply_markup: replyMarkup });
+  }
+
+  // Убирает "часики" на нажатой inline-кнопке в клиенте Telegram — best-effort, не должно
+  // ронять обработку самого нажатия, если бот на секунду не успел ответить вовремя.
+  async answerCallbackQuery(callbackQueryId: string): Promise<void> {
+    try {
+      const token = await this.requireBotToken();
+      await this.post(token, 'answerCallbackQuery', { callback_query_id: callbackQueryId });
+    } catch (error) {
+      this.logger.warn(`Не удалось ответить на callback_query: ${(error as Error).message}`);
+    }
+  }
+
+  // Текстовый файл как документ (клиентский .conf) — Telegram Bot API требует multipart
+  // для файлов, JSON (как в deliver/sendToChat) годится только для текста.
+  async sendDocumentToChat(chatId: string, filename: string, content: string): Promise<void> {
+    const token = await this.requireBotToken();
+    const form = new FormData();
+    form.append('chat_id', chatId);
+    form.append('document', new Blob([content], { type: 'text/plain' }), filename);
+    await this.postForm(token, 'sendDocument', form);
+  }
+
+  async sendPhotoToChat(chatId: string, png: Buffer, caption?: string): Promise<void> {
+    const token = await this.requireBotToken();
+    const form = new FormData();
+    form.append('chat_id', chatId);
+    if (caption) {
+      form.append('caption', caption);
+    }
+    form.append('photo', new Blob([new Uint8Array(png)], { type: 'image/png' }), 'qr.png');
+    await this.postForm(token, 'sendPhoto', form);
+  }
+
+  private async requireBotToken(): Promise<string> {
+    const token = await this.getDecryptedBotToken();
+    if (!token) {
+      throw new Error('Токен Telegram-бота не настроен');
+    }
+    return token;
+  }
+
+  private async post(token: string, method: string, body: unknown): Promise<void> {
+    const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(TELEGRAM_API_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      throw new Error(`Telegram API вернул ошибку ${response.status}: ${await response.text()}`);
+    }
+  }
+
+  private async postForm(token: string, method: string, form: FormData): Promise<void> {
+    const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+      method: 'POST',
+      body: form,
+      signal: AbortSignal.timeout(TELEGRAM_API_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      throw new Error(`Telegram API вернул ошибку ${response.status}: ${await response.text()}`);
+    }
+  }
 }

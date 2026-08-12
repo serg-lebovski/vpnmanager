@@ -6,6 +6,11 @@ export class UpdateOrganizationDto {
   @IsOptional()
   name?: string;
 
+  @IsString()
+  @MinLength(1)
+  @IsOptional()
+  inn?: string;
+
   // Полная замена списка (тот же паттерн, что Bridge.bypassDestinations/upstreamCandidates)
   // — какие обычные серверы можно выбрать напрямую (без моста) при создании peer'а.
   @IsArray()

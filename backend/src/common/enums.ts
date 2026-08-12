@@ -65,3 +65,19 @@ export enum BridgeStatus {
   ACTIVE = 'active',
   ERROR = 'error',
 }
+
+// Заявка на самостоятельную регистрацию через Telegram-бота (см. telegram-bot/) — до
+// подтверждения суперадмином бот не выдаёт peers (ИНН публично известен через ЕГРЮЛ, сам
+// по себе не доказывает, что пишет сотрудник именно этой организации).
+export enum TelegramRegistrationStatus {
+  PENDING = 'pending',
+  APPROVED = 'approved',
+}
+
+// Только для peers, созданных через Telegram-бота (см. Peer.deviceType) — бот выдаёт не
+// больше одного peer на тип устройства, "перевыпуск" снимает старый и создаёт новый того
+// же типа.
+export enum PeerDeviceType {
+  PHONE = 'phone',
+  PC = 'pc',
+}

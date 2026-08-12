@@ -17,6 +17,7 @@ import { PeersModule } from './peers/peers.module';
 import { ServersModule } from './servers/servers.module';
 import { SshModule } from './ssh/ssh.module';
 import { SystemModule } from './system/system.module';
+import { TelegramBotModule } from './telegram-bot/telegram-bot.module';
 import { UsersModule } from './users/users.module';
 import { VpnModule } from './vpn/vpn.module';
 
@@ -58,6 +59,7 @@ import { VpnModule } from './vpn/vpn.module';
     BridgesModule,
     SystemModule,
     DashboardModule,
+    TelegramBotModule,
   ],
   controllers: [AppController],
   providers: [

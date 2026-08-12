@@ -5,12 +5,13 @@ import { DataSource, In, IsNull, LessThanOrEqual, MoreThan, Not, Repository } fr
 import { Bridge } from '../bridges/bridge.entity';
 import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { decryptSecret, encryptSecret } from '../common/encryption.util';
-import { PeerSource, PeerStatus, Role, ServerProtocolStatus } from '../common/enums';
+import { PeerDeviceType, PeerSource, PeerStatus, Role, ServerProtocolStatus } from '../common/enums';
 import { LoadBalancerService } from '../load-balancer/load-balancer.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Organization } from '../organizations/organization.entity';
 import { ServerProtocol } from '../servers/server-protocol.entity';
 import { Server } from '../servers/server.entity';
+import { TelegramRegistration } from '../telegram-bot/telegram-registration.entity';
 import { PeerSpec } from '../vpn/vpn-driver.interface';
 import { VpnProvisioningService } from '../vpn/vpn-provisioning.service';
 import { buildClientConfig } from './config-generator.util';
@@ -321,6 +322,14 @@ export class PeersService {
 
   async getDownloadableConfig(requester: AuthenticatedUser, id: string): Promise<{ filename: string; content: string }> {
     const peer = await this.findOneScoped(requester, id);
+    return this.buildDownloadableConfig(peer);
+  }
+
+  // Вынесено из getDownloadableConfig, чтобы этим же путём (расшифровка + подмена
+  // Endpoint на Bridge.domainName при наличии) мог пользоваться и Telegram-бот
+  // (telegram-bot/telegram-bot.service.ts) — там peer уже известен напрямую, без HTTP-
+  // контекста и без AuthenticatedUser, которого требует findOneScoped.
+  private async buildDownloadableConfig(peer: Peer): Promise<{ filename: string; content: string }> {
     if (!peer.privateKeyEnc) {
       throw new BadRequestException(
         'Для этого peer приватный ключ недоступен (импортирован из уже существующей настройки VPN). Отзовите его и создайте новый через сервис.',
@@ -339,6 +348,97 @@ export class PeersService {
     const endpointServer = bridge?.domainName ? { ...server, host: bridge.domainName } : server;
     const content = buildClientConfig(peer, privateKey, endpointServer, serverProtocol, presharedKey);
     return { filename: `${peer.name.replace(/[^a-zA-Z0-9-_]/g, '_')}.conf`, content };
+  }
+
+  // --- Telegram-бот (telegram-bot/) — создание/перевыпуск peer без AuthenticatedUser ---
+
+  // Первый доступный организации мост (общий или свой, минус blockedBridgeIds), иначе
+  // авто-баланс среди allowedServerIds — тот же дух, что у org_user без явного выбора
+  // моста/сервера в PeersService.create, только без HTTP-контекста и без права выбора
+  // (у бота нет UI для этого, решаем за пользователя сами).
+  private async pickServerProtocolForOrganization(organization: Organization, protocol: CreatePeerDto['protocol']): Promise<ServerProtocol> {
+    const bridges = await this.bridgesRepository.find({
+      where: [{ organizationId: IsNull() }, { organizationId: organization.id }],
+    });
+    const bridge = bridges.find((b) => !organization.blockedBridgeIds.includes(b.id));
+    if (bridge) {
+      return this.findBridgeClientProtocolByBridge(bridge, protocol);
+    }
+    if (organization.allowedServerIds.length === 0) {
+      throw new BadRequestException('Для вашей организации ещё не настроен доступ ни к одному серверу или мосту');
+    }
+    return this.loadBalancerService.pickServerProtocol(protocol, organization.allowedServerIds);
+  }
+
+  private async findBridgeClientProtocolByBridge(bridge: Bridge, protocol: CreatePeerDto['protocol']): Promise<ServerProtocol> {
+    const serverProtocolId = protocol === 'wireguard' ? bridge.wireguardClientProtocolId : bridge.amneziawgClientProtocolId;
+    if (!serverProtocolId) {
+      throw new BadRequestException(`На этом мосту не установлен протокол ${protocol}`);
+    }
+    const serverProtocol = await this.serverProtocolsRepository.findOne({
+      where: { id: serverProtocolId, status: ServerProtocolStatus.ACTIVE },
+    });
+    if (!serverProtocol) {
+      throw new BadRequestException('Клиентский интерфейс моста не установлен или неактивен');
+    }
+    return serverProtocol;
+  }
+
+  async createForTelegramRegistration(
+    registration: TelegramRegistration,
+    organization: Organization,
+    protocol: CreatePeerDto['protocol'],
+    deviceType: PeerDeviceType,
+  ): Promise<{ filename: string; content: string }> {
+    const serverProtocol = await this.pickServerProtocolForOrganization(organization, protocol);
+    const deviceLabel = deviceType === PeerDeviceType.PHONE ? 'телефон' : 'ПК';
+    const peer = await this.createInternal(serverProtocol, {
+      organizationId: organization.id,
+      name: `${registration.fullName} — ${deviceLabel}`,
+      source: PeerSource.CREATED,
+      createdByUserId: null,
+    });
+    peer.telegramRegistrationId = registration.id;
+    peer.deviceType = deviceType;
+    await this.peersRepository.save(peer);
+    return this.buildDownloadableConfig(peer);
+  }
+
+  async reissueForTelegramRegistration(
+    registration: TelegramRegistration,
+    organization: Organization,
+    protocol: CreatePeerDto['protocol'],
+    deviceType: PeerDeviceType,
+  ): Promise<{ filename: string; content: string }> {
+    const existing = await this.peersRepository.findOne({
+      where: { telegramRegistrationId: registration.id, deviceType, status: PeerStatus.ACTIVE },
+    });
+    if (existing) {
+      await this.revokeInternal(existing);
+      await this.peersRepository.remove(existing);
+    }
+    return this.createForTelegramRegistration(registration, organization, protocol, deviceType);
+  }
+
+  // Для отображения "уже есть peer для этого устройства?" в диалоге бота и для отзыва всех
+  // peers организации при удалении её регистрации суперадмином.
+  async findActivePeersForTelegramRegistration(registrationId: string): Promise<Peer[]> {
+    return this.peersRepository.find({ where: { telegramRegistrationId: registrationId, status: PeerStatus.ACTIVE } });
+  }
+
+  // Вызывается при удалении заявки суперадмином (TelegramRegistrationsController) — снимает
+  // с сервера все peers этой регистрации перед удалением самой записи, а не полагается
+  // только на ON DELETE SET NULL (иначе peer остался бы активным на сервере осиротевшим).
+  async revokeAllPeersForTelegramRegistration(registrationId: string): Promise<void> {
+    const peers = await this.findActivePeersForTelegramRegistration(registrationId);
+    for (const peer of peers) {
+      try {
+        await this.revokeInternal(peer);
+        await this.peersRepository.remove(peer);
+      } catch (error) {
+        this.logger.warn(`Не удалось отозвать peer "${peer.name}" при удалении Telegram-регистрации: ${(error as Error).message}`);
+      }
+    }
   }
 
   async importScannedPeers(serverProtocolId: string): Promise<number> {

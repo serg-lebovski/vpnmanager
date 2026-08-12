@@ -33,6 +33,7 @@ export function OrganizationsPage() {
   const peersWithoutClient = peerCountByOrgId.get(null) ?? 0;
 
   const [name, setName] = useState('');
+  const [inn, setInn] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const createMutation = useMutation({
@@ -40,6 +41,7 @@ export function OrganizationsPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['organizations'] });
       setName('');
+      setInn('');
       setError(null);
     },
     onError: (err) => setError(getErrorMessage(err, 'Не удалось создать организацию')),
@@ -52,7 +54,7 @@ export function OrganizationsPage() {
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    createMutation.mutate({ name });
+    createMutation.mutate({ name, inn: inn.trim() || undefined });
   }
 
   return (
@@ -66,6 +68,12 @@ export function OrganizationsPage() {
         <form onSubmit={handleSubmit}>
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems="flex-start">
             <TextField label="Название" value={name} onChange={(e) => setName(e.target.value)} required />
+            <TextField
+              label="ИНН"
+              value={inn}
+              onChange={(e) => setInn(e.target.value)}
+              helperText="Для самостоятельной регистрации через Telegram-бота"
+            />
             <Button type="submit" variant="contained" disabled={createMutation.isPending}>
               Создать
             </Button>
