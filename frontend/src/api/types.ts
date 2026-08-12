@@ -43,6 +43,14 @@ export interface TelegramRegistration {
   createdAt: string;
 }
 
+export interface TelegramBroadcast {
+  id: string;
+  text: string;
+  pinned: boolean;
+  recipientCount: number;
+  createdAt: string;
+}
+
 export interface AppUser {
   id: string;
   email: string;

@@ -74,9 +74,26 @@ export class NotificationsService {
   // пользователям и для рассылки. В отличие от sendMessage — бросает ошибку наружу,
   // вызывающий код сам решает, best-effort это или нет (рассылка, например, ловит ошибку
   // на каждого получателя отдельно, чтобы один заблокировавший бота не сорвал остальных).
-  async sendToChat(chatId: string, text: string, replyMarkup?: unknown): Promise<void> {
+  // Возвращает message_id отправленного сообщения — нужен рассылке (telegram-bot/), чтобы
+  // потом иметь возможность закрепить/удалить именно это сообщение в конкретном чате.
+  async sendToChat(chatId: string, text: string, replyMarkup?: unknown): Promise<number> {
     const token = await this.requireBotToken();
-    await this.post(token, 'sendMessage', { chat_id: chatId, text, reply_markup: replyMarkup });
+    const body = await this.post(token, 'sendMessage', { chat_id: chatId, text, reply_markup: replyMarkup });
+    return (body as { result: { message_id: number } }).result.message_id;
+  }
+
+  // disable_notification — закрепление не должно ещё раз пинговать пользователя, он уже
+  // получил уведомление о самом сообщении.
+  async pinChatMessage(chatId: string, messageId: number): Promise<void> {
+    const token = await this.requireBotToken();
+    await this.post(token, 'pinChatMessage', { chat_id: chatId, message_id: messageId, disable_notification: true });
+  }
+
+  // Используется при удалении сохранённой рассылки (TelegramRegistrationsService) — снимает
+  // сообщение из ЧАТА КОНКРЕТНОГО получателя, не только из истории на нашей стороне.
+  async deleteMessage(chatId: string, messageId: number): Promise<void> {
+    const token = await this.requireBotToken();
+    await this.post(token, 'deleteMessage', { chat_id: chatId, message_id: messageId });
   }
 
   // Убирает "часики" на нажатой inline-кнопке в клиенте Telegram — best-effort, не должно
@@ -119,7 +136,7 @@ export class NotificationsService {
     return token;
   }
 
-  private async post(token: string, method: string, body: unknown): Promise<void> {
+  private async post(token: string, method: string, body: unknown): Promise<unknown> {
     const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -129,6 +146,7 @@ export class NotificationsService {
     if (!response.ok) {
       throw new Error(`Telegram API вернул ошибку ${response.status}: ${await response.text()}`);
     }
+    return response.json();
   }
 
   private async postForm(token: string, method: string, form: FormData): Promise<void> {

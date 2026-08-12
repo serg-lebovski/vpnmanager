@@ -31,6 +31,16 @@ export class TelegramRegistrationsController {
 
   @Post('broadcast')
   broadcast(@Body() dto: BroadcastMessageDto) {
-    return this.telegramRegistrationsService.broadcast(dto.text);
+    return this.telegramRegistrationsService.broadcast(dto.text, dto.pin ?? false);
+  }
+
+  @Get('broadcasts')
+  listBroadcasts() {
+    return this.telegramRegistrationsService.listBroadcasts();
+  }
+
+  @Delete('broadcasts/:id')
+  deleteBroadcast(@Param('id') id: string) {
+    return this.telegramRegistrationsService.deleteBroadcast(id);
   }
 }

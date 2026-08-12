@@ -357,22 +357,52 @@ export class PeersService {
 
   // --- Telegram-бот (telegram-bot/) — создание/перевыпуск peer без AuthenticatedUser ---
 
-  // Первый доступный организации мост (общий или свой, минус blockedBridgeIds), иначе
-  // авто-баланс среди allowedServerIds — тот же дух, что у org_user без явного выбора
-  // моста/сервера в PeersService.create, только без HTTP-контекста и без права выбора
-  // (у бота нет UI для этого, решаем за пользователя сами).
-  private async pickServerProtocolForOrganization(organization: Organization, protocol: CreatePeerDto['protocol']): Promise<ServerProtocol> {
+  // Список вариантов "куда подключиться" для организации: мосты (общие+свои, минус
+  // blockedBridgeIds) и, если разрешено явно, прямые серверы (allowedServerIds) — тот же
+  // набор источников, что доступен org_user/org_admin в обычной форме создания peer'а
+  // (см. create()), только собранный целиком, а не выбранный за пользователя. key —
+  // непрозрачный идентификатор ("bridge:<id>"/"server:<id>"), передаётся обратно в
+  // resolveUpstreamOption при фактическом создании peer'а.
+  async listUpstreamOptions(organization: Organization, protocol: CreatePeerDto['protocol']): Promise<Array<{ key: string; label: string }>> {
+    const options: Array<{ key: string; label: string }> = [];
     const bridges = await this.bridgesRepository.find({
       where: [{ organizationId: IsNull() }, { organizationId: organization.id }],
     });
-    const bridge = bridges.find((b) => !organization.blockedBridgeIds.includes(b.id));
-    if (bridge) {
+    for (const bridge of bridges) {
+      if (organization.blockedBridgeIds.includes(bridge.id)) {
+        continue;
+      }
+      const serverProtocolId = protocol === 'wireguard' ? bridge.wireguardClientProtocolId : bridge.amneziawgClientProtocolId;
+      if (!serverProtocolId) {
+        continue;
+      }
+      const active = await this.serverProtocolsRepository.exists({ where: { id: serverProtocolId, status: ServerProtocolStatus.ACTIVE } });
+      if (active) {
+        options.push({ key: `bridge:${bridge.id}`, label: `Мост «${bridge.name}»` });
+      }
+    }
+    if (organization.allowedServerIds.length > 0) {
+      const directProtocols = await this.serverProtocolsRepository.find({
+        where: { protocol, status: ServerProtocolStatus.ACTIVE, serverId: In(organization.allowedServerIds) },
+        relations: ['server'],
+      });
+      for (const sp of directProtocols) {
+        options.push({ key: `server:${sp.serverId}`, label: `Напрямую: ${sp.server.name}` });
+      }
+    }
+    return options;
+  }
+
+  private async resolveUpstreamOption(organization: Organization, protocol: CreatePeerDto['protocol'], key: string): Promise<ServerProtocol> {
+    const [kind, id] = key.split(':');
+    if (kind === 'bridge') {
+      const bridge = await this.bridgesRepository.findOneOrFail({ where: { id } });
       return this.findBridgeClientProtocolByBridge(bridge, protocol);
     }
-    if (organization.allowedServerIds.length === 0) {
-      throw new BadRequestException('Для вашей организации ещё не настроен доступ ни к одному серверу или мосту');
+    if (kind === 'server') {
+      return this.findActiveServerProtocolByServer(id, protocol);
     }
-    return this.loadBalancerService.pickServerProtocol(protocol, organization.allowedServerIds);
+    throw new BadRequestException('Некорректный выбор сервера');
   }
 
   private async findBridgeClientProtocolByBridge(bridge: Bridge, protocol: CreatePeerDto['protocol']): Promise<ServerProtocol> {
@@ -389,13 +419,19 @@ export class PeersService {
     return serverProtocol;
   }
 
+  // upstreamKey — явный выбор пользователя (см. listUpstreamOptions), если бот уже спросил
+  // (несколько доступных вариантов). Не задан — берём первый доступный мост, иначе
+  // авто-баланс среди allowedServerIds (единственный вариант или бот решил не спрашивать).
   async createForTelegramRegistration(
     registration: TelegramRegistration,
     organization: Organization,
     protocol: CreatePeerDto['protocol'],
     deviceType: PeerDeviceType,
+    upstreamKey?: string,
   ): Promise<{ filename: string; content: string }> {
-    const serverProtocol = await this.pickServerProtocolForOrganization(organization, protocol);
+    const serverProtocol = upstreamKey
+      ? await this.resolveUpstreamOption(organization, protocol, upstreamKey)
+      : await this.pickServerProtocolForOrganization(organization, protocol);
     const deviceLabel = deviceType === PeerDeviceType.PHONE ? 'телефон' : 'ПК';
     const peer = await this.createInternal(serverProtocol, {
       organizationId: organization.id,
@@ -409,11 +445,28 @@ export class PeersService {
     return this.buildDownloadableConfig(peer);
   }
 
+  // Фолбэк, когда upstreamKey не передан: первый доступный мост, иначе авто-баланс среди
+  // allowedServerIds — тот же дух, что у org_user без явного выбора моста/сервера в create().
+  private async pickServerProtocolForOrganization(organization: Organization, protocol: CreatePeerDto['protocol']): Promise<ServerProtocol> {
+    const bridges = await this.bridgesRepository.find({
+      where: [{ organizationId: IsNull() }, { organizationId: organization.id }],
+    });
+    const bridge = bridges.find((b) => !organization.blockedBridgeIds.includes(b.id));
+    if (bridge) {
+      return this.findBridgeClientProtocolByBridge(bridge, protocol);
+    }
+    if (organization.allowedServerIds.length === 0) {
+      throw new BadRequestException('Для вашей организации ещё не настроен доступ ни к одному серверу или мосту');
+    }
+    return this.loadBalancerService.pickServerProtocol(protocol, organization.allowedServerIds);
+  }
+
   async reissueForTelegramRegistration(
     registration: TelegramRegistration,
     organization: Organization,
     protocol: CreatePeerDto['protocol'],
     deviceType: PeerDeviceType,
+    upstreamKey?: string,
   ): Promise<{ filename: string; content: string }> {
     const existing = await this.peersRepository.findOne({
       where: { telegramRegistrationId: registration.id, deviceType, status: PeerStatus.ACTIVE },
@@ -422,7 +475,7 @@ export class PeersService {
       await this.revokeInternal(existing);
       await this.peersRepository.remove(existing);
     }
-    return this.createForTelegramRegistration(registration, organization, protocol, deviceType);
+    return this.createForTelegramRegistration(registration, organization, protocol, deviceType, upstreamKey);
   }
 
   // Для отображения "уже есть peer для этого устройства?" в диалоге бота и для отзыва всех

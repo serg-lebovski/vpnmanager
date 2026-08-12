@@ -1,7 +1,9 @@
 import {
   Alert,
   Button,
+  Checkbox,
   Chip,
+  FormControlLabel,
   Paper,
   Stack,
   Table,
@@ -19,7 +21,9 @@ import { getErrorMessage } from '../api/errors';
 import {
   approveTelegramRegistration,
   broadcastTelegramMessage,
+  deleteTelegramBroadcast,
   deleteTelegramRegistration,
+  fetchTelegramBroadcasts,
   fetchTelegramRegistrations,
 } from '../api/telegramRegistrations';
 
@@ -50,19 +54,30 @@ export function TelegramBotPage() {
   });
 
   const [broadcastText, setBroadcastText] = useState('');
+  const [broadcastPin, setBroadcastPin] = useState(false);
   const [broadcastResult, setBroadcastResult] = useState<string | null>(null);
   const [broadcastError, setBroadcastError] = useState<string | null>(null);
   const broadcastMutation = useMutation({
-    mutationFn: () => broadcastTelegramMessage(broadcastText),
+    mutationFn: () => broadcastTelegramMessage(broadcastText, broadcastPin),
     onSuccess: (result) => {
       setBroadcastResult(`Отправлено: ${result.sent}${result.failed > 0 ? `, не удалось: ${result.failed}` : ''}`);
       setBroadcastError(null);
       setBroadcastText('');
+      queryClient.invalidateQueries({ queryKey: ['telegram-broadcasts'] });
     },
     onError: (err) => {
       setBroadcastError(getErrorMessage(err, 'Не удалось отправить рассылку'));
       setBroadcastResult(null);
     },
+  });
+
+  const { data: broadcasts, isLoading: broadcastsLoading } = useQuery({
+    queryKey: ['telegram-broadcasts'],
+    queryFn: fetchTelegramBroadcasts,
+  });
+  const deleteBroadcastMutation = useMutation({
+    mutationFn: deleteTelegramBroadcast,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['telegram-broadcasts'] }),
   });
 
   return (
@@ -128,6 +143,10 @@ export function TelegramBotPage() {
             value={broadcastText}
             onChange={(e) => setBroadcastText(e.target.value)}
           />
+          <FormControlLabel
+            control={<Checkbox checked={broadcastPin} onChange={(e) => setBroadcastPin(e.target.checked)} />}
+            label="Закрепить сообщение в чате у получателей"
+          />
           <Button
             variant="contained"
             sx={{ alignSelf: 'flex-start' }}
@@ -139,6 +158,54 @@ export function TelegramBotPage() {
           {broadcastResult && <Alert severity="success">{broadcastResult}</Alert>}
           {broadcastError && <Alert severity="error">{broadcastError}</Alert>}
         </Stack>
+      </Paper>
+
+      <Paper sx={{ p: 2 }}>
+        <Typography variant="subtitle1" mb={2}>
+          История рассылок
+        </Typography>
+        <Typography variant="body2" color="text.secondary" mb={2}>
+          Удаление рассылки убирает сообщение из чата у всех получателей, не только из этого
+          списка.
+        </Typography>
+        <TableContainer sx={{ overflowX: 'auto' }}>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Текст</TableCell>
+                <TableCell align="right">Получателей</TableCell>
+                <TableCell>Закреплено</TableCell>
+                <TableCell>Отправлено</TableCell>
+                <TableCell align="right">Действия</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {broadcasts?.map((b) => (
+                <TableRow key={b.id}>
+                  <TableCell sx={{ maxWidth: 320, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{b.text}</TableCell>
+                  <TableCell align="right">{b.recipientCount}</TableCell>
+                  <TableCell>{b.pinned ? 'да' : '—'}</TableCell>
+                  <TableCell>{new Date(b.createdAt).toLocaleString()}</TableCell>
+                  <TableCell align="right">
+                    <Button
+                      size="small"
+                      color="error"
+                      onClick={() => deleteBroadcastMutation.mutate(b.id)}
+                      disabled={deleteBroadcastMutation.isPending}
+                    >
+                      Удалить
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+              {!broadcastsLoading && (broadcasts?.length ?? 0) === 0 && (
+                <TableRow>
+                  <TableCell colSpan={5}>Рассылок пока не было</TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </TableContainer>
       </Paper>
     </Stack>
   );

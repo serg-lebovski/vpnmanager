@@ -11,6 +11,8 @@ import { TelegramRegistration } from './telegram-registration.entity';
 
 const POLL_INTERVAL_MS = 3_000;
 const API_TIMEOUT_MS = 10_000;
+const MENU_PHONE_LABEL = '📱 Телефон';
+const MENU_PC_LABEL = '💻 ПК';
 
 type DraftStep = 'awaiting_org_name' | 'awaiting_inn' | 'awaiting_fio';
 
@@ -19,6 +21,18 @@ interface Draft {
   telegramUsername: string | null;
   orgName?: string;
   organizationId?: string;
+}
+
+// Состояние текущего запроса конфига (устройство → протокол → сервер/мост, если вариантов
+// больше одного → подтверждение перевыпуска) — держим в памяти по chat id вместо того, чтобы
+// пытаться пропихнуть все эти данные через callback_data (у Telegram там лимит 64 байта, а
+// вариантов серверов может быть несколько с длинными uuid). Тот же принцип, что и у drafts
+// регистрации — переживает только текущий процесс backend.
+interface PeerRequest {
+  deviceType: PeerDeviceType;
+  protocol?: VpnProtocol;
+  upstreamOptions?: Array<{ key: string; label: string }>;
+  upstreamKey?: string;
 }
 
 interface TelegramUpdate {
@@ -36,9 +50,10 @@ export class TelegramBotService {
   private readonly logger = new Logger(TelegramBotService.name);
   // offset и черновики диалогов — только в памяти процесса (тот же trade-off, что у
   // BridgeFailoverService.stateByServerId/PeersService.appliedExpiry): рестарт backend
-  // прерывает диалог посреди регистрации, пользователь начинает заново с /start.
+  // прерывает диалог посреди регистрации/запроса конфига, пользователь начинает заново.
   private offset = 0;
   private readonly drafts = new Map<string, Draft>();
+  private readonly peerRequests = new Map<string, PeerRequest>();
   private polling = false;
 
   constructor(
@@ -118,6 +133,15 @@ export class TelegramBotService {
       await this.notificationsService.sendToChat(chatId, 'Ваша заявка ещё не подтверждена администратором.');
       return;
     }
+
+    // Кнопки постоянной клавиатуры (sendMainMenu) приходят как обычный текст — не через
+    // callback_query — поэтому обрабатываются здесь же, а не только в handleCallback.
+    if (text === MENU_PHONE_LABEL || text === MENU_PC_LABEL) {
+      this.peerRequests.set(chatId, { deviceType: text === MENU_PHONE_LABEL ? PeerDeviceType.PHONE : PeerDeviceType.PC });
+      await this.promptProtocolChoice(chatId);
+      return;
+    }
+
     await this.sendMainMenu(chatId);
   }
 
@@ -173,12 +197,28 @@ export class TelegramBotService {
     }
   }
 
+  // Постоянная клавиатура (не inline) — в отличие от inline-кнопок, привязанных к
+  // конкретному сообщению и пропадающих из вида при прокрутке/после нажатия, эта остаётся
+  // внизу чата всегда, пока явно не заменить/не убрать (remove_keyboard). Отправляется один
+  // раз при подтверждении регистрации (notifyApproved) — дальше пользователю не нужно
+  // ничего вспоминать вроде /start, кнопки просто всегда под рукой.
   private async sendMainMenu(chatId: string): Promise<void> {
     await this.notificationsService.sendToChat(chatId, 'Выберите, для какого устройства получить конфиг:', {
+      keyboard: [[{ text: MENU_PHONE_LABEL }, { text: MENU_PC_LABEL }]],
+      resize_keyboard: true,
+      is_persistent: true,
+    });
+  }
+
+  // Выбор протокола — уже одноразовый inline-выбор под конкретным сообщением (это нормально:
+  // это не основная навигация, а разовое уточнение к текущему запросу). deviceType к этому
+  // моменту уже лежит в peerRequests — callback_data достаточно короткого фиксированного вида.
+  private async promptProtocolChoice(chatId: string): Promise<void> {
+    await this.notificationsService.sendToChat(chatId, 'Выберите протокол:', {
       inline_keyboard: [
         [
-          { text: '📱 Телефон', callback_data: 'device:phone' },
-          { text: '💻 ПК', callback_data: 'device:pc' },
+          { text: 'AmneziaWG', callback_data: 'protocol:amneziawg' },
+          { text: 'WireGuard', callback_data: 'protocol:wireguard' },
         ],
       ],
     });
@@ -195,74 +235,120 @@ export class TelegramBotService {
       return;
     }
     const organization = await this.organizationsRepository.findOneOrFail({ where: { id: registration.organizationId } });
+    const request = this.peerRequests.get(chatId);
 
-    if (data === 'device:phone' || data === 'device:pc') {
-      const deviceType = data === 'device:phone' ? 'phone' : 'pc';
-      await this.notificationsService.sendToChat(chatId, 'Выберите протокол:', {
-        inline_keyboard: [
-          [
-            { text: 'AmneziaWG', callback_data: `protocol:${deviceType}:amneziawg` },
-            { text: 'WireGuard', callback_data: `protocol:${deviceType}:wireguard` },
-          ],
-        ],
-      });
-      return;
-    }
-
-    const protocolMatch = data.match(/^protocol:(phone|pc):(amneziawg|wireguard)$/);
+    const protocolMatch = data.match(/^protocol:(amneziawg|wireguard)$/);
     if (protocolMatch) {
-      const deviceType = protocolMatch[1] === 'phone' ? PeerDeviceType.PHONE : PeerDeviceType.PC;
-      const protocol = protocolMatch[2] === 'amneziawg' ? VpnProtocol.AMNEZIAWG : VpnProtocol.WIREGUARD;
-      const existingPeers = await this.peersService.findActivePeersForTelegramRegistration(registration.id);
-      if (existingPeers.some((peer) => peer.deviceType === deviceType)) {
-        await this.notificationsService.sendToChat(
-          chatId,
-          'У вас уже есть конфиг для этого устройства. Перевыпустить? Старый конфиг перестанет работать.',
-          {
-            inline_keyboard: [
-              [
-                { text: 'Да, перевыпустить', callback_data: `reissue:${protocolMatch[1]}:${protocolMatch[2]}:yes` },
-                { text: 'Отмена', callback_data: `reissue:${protocolMatch[1]}:${protocolMatch[2]}:no` },
-              ],
-            ],
-          },
-        );
+      // request отсутствует, если backend перезапускался между нажатием кнопки устройства и
+      // этим шагом — восстановить контекст неоткуда, просим начать заново явно, а не молчать.
+      if (!request) {
+        await this.notificationsService.sendToChat(chatId, 'Сессия запроса устарела, нажмите «Телефон»/«ПК» ещё раз.');
         return;
       }
-      await this.issuePeer(chatId, registration, organization, protocol, deviceType, false);
+      request.protocol = protocolMatch[1] === 'amneziawg' ? VpnProtocol.AMNEZIAWG : VpnProtocol.WIREGUARD;
+      await this.proceedAfterProtocol(chatId, registration, organization, request);
       return;
     }
 
-    const reissueMatch = data.match(/^reissue:(phone|pc):(amneziawg|wireguard):(yes|no)$/);
-    if (reissueMatch) {
-      if (reissueMatch[3] === 'no') {
-        await this.notificationsService.sendToChat(chatId, 'Отменено.');
+    const upstreamMatch = data.match(/^upstream:(\d+)$/);
+    if (upstreamMatch && request?.upstreamOptions) {
+      const option = request.upstreamOptions[Number(upstreamMatch[1])];
+      if (!option) {
+        await this.notificationsService.sendToChat(chatId, 'Этот вариант больше недоступен, начните заново.');
+        this.peerRequests.delete(chatId);
         return;
       }
-      const deviceType = reissueMatch[1] === 'phone' ? PeerDeviceType.PHONE : PeerDeviceType.PC;
-      const protocol = reissueMatch[2] === 'amneziawg' ? VpnProtocol.AMNEZIAWG : VpnProtocol.WIREGUARD;
-      await this.issuePeer(chatId, registration, organization, protocol, deviceType, true);
+      await this.confirmOrIssue(chatId, registration, organization, request, option.key);
+      return;
     }
+
+    if (data === 'reissue:yes' || data === 'reissue:no') {
+      if (data === 'reissue:no') {
+        await this.notificationsService.sendToChat(chatId, 'Отменено.');
+        this.peerRequests.delete(chatId);
+        return;
+      }
+      if (!request?.protocol) {
+        await this.notificationsService.sendToChat(chatId, 'Сессия запроса устарела, начните заново.');
+        return;
+      }
+      await this.issuePeer(chatId, registration, organization, request, true);
+    }
+  }
+
+  // Один доступный вариант сервера/моста (типичный случай) — пропускаем шаг выбора и сразу
+  // создаём/проверяем перевыпуск; несколько — спрашиваем явно ("мост «X»"/"напрямую: Y").
+  private async proceedAfterProtocol(
+    chatId: string,
+    registration: TelegramRegistration,
+    organization: Organization,
+    request: PeerRequest,
+  ): Promise<void> {
+    const options = await this.peersService.listUpstreamOptions(organization, request.protocol!);
+    if (options.length === 0) {
+      await this.notificationsService.sendToChat(chatId, 'Для вашей организации ещё не настроен доступ ни к одному серверу или мосту.');
+      this.peerRequests.delete(chatId);
+      return;
+    }
+    if (options.length === 1) {
+      await this.confirmOrIssue(chatId, registration, organization, request, options[0].key);
+      return;
+    }
+    request.upstreamOptions = options;
+    await this.notificationsService.sendToChat(chatId, 'Выберите сервер:', {
+      inline_keyboard: options.map((option, index) => [{ text: option.label, callback_data: `upstream:${index}` }]),
+    });
+  }
+
+  // upstreamKey уже известен (единственный вариант или явный выбор) — осталось только
+  // спросить подтверждение, если для этого устройства уже есть конфиг, либо выдать сразу.
+  private async confirmOrIssue(
+    chatId: string,
+    registration: TelegramRegistration,
+    organization: Organization,
+    request: PeerRequest,
+    upstreamKey: string,
+  ): Promise<void> {
+    request.upstreamKey = upstreamKey;
+    const existingPeers = await this.peersService.findActivePeersForTelegramRegistration(registration.id);
+    if (existingPeers.some((peer) => peer.deviceType === request.deviceType)) {
+      await this.notificationsService.sendToChat(
+        chatId,
+        'У вас уже есть конфиг для этого устройства. Перевыпустить? Старый конфиг перестанет работать.',
+        {
+          inline_keyboard: [
+            [
+              { text: 'Да, перевыпустить', callback_data: 'reissue:yes' },
+              { text: 'Отмена', callback_data: 'reissue:no' },
+            ],
+          ],
+        },
+      );
+      return;
+    }
+    await this.issuePeer(chatId, registration, organization, request, false);
   }
 
   private async issuePeer(
     chatId: string,
     registration: TelegramRegistration,
     organization: Organization,
-    protocol: VpnProtocol,
-    deviceType: PeerDeviceType,
+    request: PeerRequest,
     reissue: boolean,
   ): Promise<void> {
+    const upstreamKey = request.upstreamKey;
     try {
       const { filename, content } = reissue
-        ? await this.peersService.reissueForTelegramRegistration(registration, organization, protocol, deviceType)
-        : await this.peersService.createForTelegramRegistration(registration, organization, protocol, deviceType);
+        ? await this.peersService.reissueForTelegramRegistration(registration, organization, request.protocol!, request.deviceType, upstreamKey)
+        : await this.peersService.createForTelegramRegistration(registration, organization, request.protocol!, request.deviceType, upstreamKey);
       await this.notificationsService.sendDocumentToChat(chatId, filename, content);
       const png = await QRCode.toBuffer(content, { type: 'png', width: 400 });
       await this.notificationsService.sendPhotoToChat(chatId, png, 'QR-код для быстрого подключения');
     } catch (error) {
       this.logger.warn(`Не удалось выдать peer для чата ${chatId}: ${(error as Error).message}`);
       await this.notificationsService.sendToChat(chatId, `Не удалось создать конфиг: ${(error as Error).message}`);
+    } finally {
+      this.peerRequests.delete(chatId);
     }
   }
 

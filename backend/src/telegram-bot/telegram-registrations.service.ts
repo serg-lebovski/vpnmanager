@@ -5,6 +5,7 @@ import { TelegramRegistrationStatus } from '../common/enums';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PeersService } from '../peers/peers.service';
 import { TelegramBotService } from './telegram-bot.service';
+import { TelegramBroadcast, TelegramBroadcastDelivery } from './telegram-broadcast.entity';
 import { TelegramRegistration } from './telegram-registration.entity';
 
 export interface TelegramRegistrationListItem {
@@ -18,12 +19,21 @@ export interface TelegramRegistrationListItem {
   createdAt: Date;
 }
 
+export interface TelegramBroadcastListItem {
+  id: string;
+  text: string;
+  pinned: boolean;
+  recipientCount: number;
+  createdAt: Date;
+}
+
 @Injectable()
 export class TelegramRegistrationsService {
   private readonly logger = new Logger(TelegramRegistrationsService.name);
 
   constructor(
     @InjectRepository(TelegramRegistration) private readonly registrationsRepository: Repository<TelegramRegistration>,
+    @InjectRepository(TelegramBroadcast) private readonly broadcastsRepository: Repository<TelegramBroadcast>,
     private readonly peersService: PeersService,
     private readonly notificationsService: NotificationsService,
     private readonly telegramBotService: TelegramBotService,
@@ -69,20 +79,63 @@ export class TelegramRegistrationsService {
   }
 
   // Best-effort по каждому получателю отдельно — один заблокировавший бота пользователь не
-  // должен обрывать рассылку остальным подтверждённым.
-  async broadcast(text: string): Promise<{ sent: number; failed: number }> {
+  // должен обрывать рассылку остальным подтверждённым. Закрепление (pin) — тоже best-effort
+  // на получателя: неудачный pin не должен считаться неудачной доставкой сообщения. Каждая
+  // успешная доставка (chat_id+message_id) сохраняется в TelegramBroadcast.deliveries — без
+  // этого удалить/открепить уже отправленное позже было бы нечем.
+  async broadcast(text: string, pin: boolean): Promise<{ sent: number; failed: number }> {
     const approved = await this.registrationsRepository.find({ where: { status: TelegramRegistrationStatus.APPROVED } });
+    const deliveries: TelegramBroadcastDelivery[] = [];
     let sent = 0;
     let failed = 0;
     for (const registration of approved) {
       try {
-        await this.notificationsService.sendToChat(registration.telegramChatId, text);
+        const messageId = await this.notificationsService.sendToChat(registration.telegramChatId, text);
+        deliveries.push({ chatId: registration.telegramChatId, messageId });
         sent++;
+        if (pin) {
+          try {
+            await this.notificationsService.pinChatMessage(registration.telegramChatId, messageId);
+          } catch (error) {
+            this.logger.warn(`Не удалось закрепить сообщение в чате ${registration.telegramChatId}: ${(error as Error).message}`);
+          }
+        }
       } catch (error) {
         failed++;
         this.logger.warn(`Не удалось отправить рассылку чату ${registration.telegramChatId}: ${(error as Error).message}`);
       }
     }
+    const broadcast = this.broadcastsRepository.create({ text, pinned: pin, deliveries });
+    await this.broadcastsRepository.save(broadcast);
     return { sent, failed };
+  }
+
+  async listBroadcasts(): Promise<TelegramBroadcastListItem[]> {
+    const broadcasts = await this.broadcastsRepository.find({ order: { createdAt: 'DESC' } });
+    return broadcasts.map((b) => ({
+      id: b.id,
+      text: b.text,
+      pinned: b.pinned,
+      recipientCount: b.deliveries.length,
+      createdAt: b.createdAt,
+    }));
+  }
+
+  // Снимает сообщение из чата КАЖДОГО получателя (не только запись из своей истории) —
+  // best-effort на получателя: получатель мог сам удалить чат с ботом или заблокировать
+  // его, это не должно мешать удалить остальным и саму запись рассылки.
+  async deleteBroadcast(id: string): Promise<void> {
+    const broadcast = await this.broadcastsRepository.findOne({ where: { id } });
+    if (!broadcast) {
+      throw new NotFoundException('Рассылка не найдена');
+    }
+    for (const delivery of broadcast.deliveries) {
+      try {
+        await this.notificationsService.deleteMessage(delivery.chatId, delivery.messageId);
+      } catch (error) {
+        this.logger.warn(`Не удалось удалить сообщение рассылки в чате ${delivery.chatId}: ${(error as Error).message}`);
+      }
+    }
+    await this.broadcastsRepository.remove(broadcast);
   }
 }
