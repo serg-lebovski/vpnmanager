@@ -8,6 +8,16 @@ import { CreatePeerDto } from './dto/create-peer.dto';
 import { UpdatePeerDto } from './dto/update-peer.dto';
 import { PeersService } from './peers.service';
 
+// HTTP-заголовки — только Latin-1/ASCII на уровне байт; сырая кириллица в filename="..."
+// либо обрубается до мусора при отправке, либо браузер не может её разобрать — скачивание
+// молча не срабатывает (пойманный вживую регресс: имена peers из Telegram-бота — кириллица,
+// см. buildDownloadableConfig). Отдаём и ASCII-фолбэк (для совсем старых клиентов), и
+// RFC 5987/6266 filename*=UTF-8''... — так его показывают все современные браузеры.
+function contentDispositionHeader(filename: string): string {
+  const asciiFallback = filename.replace(/[^\x20-\x7E]/g, '_') || 'peer.conf';
+  return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+}
+
 @Controller('peers')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class PeersController {
@@ -51,7 +61,7 @@ export class PeersController {
   async downloadConfig(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Res() res: Response) {
     const { filename, content } = await this.peersService.getDownloadableConfig(user, id);
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Disposition', contentDispositionHeader(filename));
     res.send(content);
   }
 
