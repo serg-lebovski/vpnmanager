@@ -61,6 +61,16 @@ export interface TelegramBotLogEntry {
   createdAt: string;
 }
 
+export interface TelegramContentPost {
+  id: string;
+  title: string | null;
+  body: string;
+  // data:-URI (data:image/...;base64,...) — так же превью на фронтенде, без отдельного
+  // запроса за картинкой.
+  images: string[];
+  createdAt: string;
+}
+
 export interface AppUser {
   id: string;
   email: string;

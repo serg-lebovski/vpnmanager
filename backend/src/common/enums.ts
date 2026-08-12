@@ -90,3 +90,12 @@ export enum TelegramBotLogLevel {
   WARN = 'warn',
   ERROR = 'error',
 }
+
+// Новости (растущая лента, последние сверху в панели/снизу в чате) и инструкции
+// (немного статичных карточек — Windows/iPhone/Android и т.п., отправляются боту целиком) —
+// одинаковая форма контента (заголовок+текст+картинки, см. TelegramContentPost), разное
+// назначение и разная кнопка в меню бота.
+export enum TelegramContentKind {
+  NEWS = 'news',
+  INSTRUCTION = 'instruction',
+}

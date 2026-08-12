@@ -132,14 +132,17 @@ export class NotificationsService {
     await this.postForm(token, 'sendDocument', form);
   }
 
-  async sendPhotoToChat(chatId: string, png: Buffer, caption?: string): Promise<void> {
+  // mimeType/filename — по умолчанию под исходный случай использования (QR-код, всегда
+  // PNG); картинки новостей/инструкций (TelegramBotService.sendContentFeed) приходят от
+  // администратора в произвольном формате, передают его явно.
+  async sendPhotoToChat(chatId: string, image: Buffer, caption?: string, mimeType = 'image/png', filename = 'photo.png'): Promise<void> {
     const token = await this.requireBotToken();
     const form = new FormData();
     form.append('chat_id', chatId);
     if (caption) {
       form.append('caption', caption);
     }
-    form.append('photo', new Blob([new Uint8Array(png)], { type: 'image/png' }), 'qr.png');
+    form.append('photo', new Blob([new Uint8Array(image)], { type: mimeType }), filename);
     await this.postForm(token, 'sendPhoto', form);
   }
 

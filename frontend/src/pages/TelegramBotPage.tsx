@@ -1,5 +1,7 @@
+import CloseIcon from '@mui/icons-material/Close';
 import {
   Alert,
+  Box,
   Button,
   Checkbox,
   Chip,
@@ -9,6 +11,7 @@ import {
   DialogContentText,
   DialogTitle,
   FormControlLabel,
+  IconButton,
   Paper,
   Stack,
   Table,
@@ -25,6 +28,15 @@ import { useEffect, useState } from 'react';
 import { getErrorMessage } from '../api/errors';
 import { fetchSettings, updateSettings } from '../api/settings';
 import {
+  CreateTelegramContentInput,
+  createTelegramInstruction,
+  createTelegramNews,
+  deleteTelegramInstruction,
+  deleteTelegramNews,
+  fetchTelegramInstructions,
+  fetchTelegramNews,
+} from '../api/telegramContent';
+import {
   approveTelegramRegistration,
   broadcastTelegramMessage,
   deleteTelegramBroadcast,
@@ -33,7 +45,154 @@ import {
   fetchTelegramBroadcasts,
   fetchTelegramRegistrations,
 } from '../api/telegramRegistrations';
-import { TelegramRegistration } from '../api/types';
+import { TelegramContentPost, TelegramRegistration } from '../api/types';
+
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+function readFileAsDataUri(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+interface ContentSectionProps {
+  heading: string;
+  description: string;
+  items: TelegramContentPost[] | undefined;
+  isLoading: boolean;
+  onCreate: (input: CreateTelegramContentInput) => void;
+  isCreating: boolean;
+  onDelete: (id: string) => void;
+  isDeleting: boolean;
+  emptyText: string;
+}
+
+// Общая форма+лента для новостей и инструкций — у них одинаковая структура контента
+// (заголовок+текст+картинки), различается только назначение и то, как их отдаёт бот.
+function ContentSection({
+  heading,
+  description,
+  items,
+  isLoading,
+  onCreate,
+  isCreating,
+  onDelete,
+  isDeleting,
+  emptyText,
+}: ContentSectionProps) {
+  const [title, setTitle] = useState('');
+  const [body, setBody] = useState('');
+  const [images, setImages] = useState<string[]>([]);
+  const [imageError, setImageError] = useState<string | null>(null);
+
+  const handleFiles = async (fileList: FileList | null) => {
+    if (!fileList) {
+      return;
+    }
+    setImageError(null);
+    for (const file of Array.from(fileList)) {
+      if (file.size > MAX_IMAGE_BYTES) {
+        setImageError(`Файл «${file.name}» больше 5 МБ — пропущен.`);
+        continue;
+      }
+      const dataUri = await readFileAsDataUri(file);
+      setImages((prev) => [...prev, dataUri]);
+    }
+  };
+
+  const handleSubmit = () => {
+    onCreate({ title: title.trim() || undefined, body, images });
+    setTitle('');
+    setBody('');
+    setImages([]);
+    setImageError(null);
+  };
+
+  return (
+    <Paper sx={{ p: 2 }}>
+      <Typography variant="subtitle1" mb={0.5}>
+        {heading}
+      </Typography>
+      <Typography variant="body2" color="text.secondary" mb={2}>
+        {description}
+      </Typography>
+      <Stack spacing={1.5} sx={{ maxWidth: 480, mb: 3 }}>
+        <TextField label="Заголовок (необязательно)" value={title} onChange={(e) => setTitle(e.target.value)} />
+        <TextField
+          label="Текст (ссылки можно вставлять прямо в текст — бот покажет их кликабельными)"
+          multiline
+          minRows={3}
+          maxRows={10}
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+        />
+        <Button component="label" variant="outlined" sx={{ alignSelf: 'flex-start' }}>
+          Прикрепить картинки
+          <input type="file" accept="image/*" multiple hidden onChange={(e) => handleFiles(e.target.files)} />
+        </Button>
+        {images.length > 0 && (
+          <Stack direction="row" spacing={1} flexWrap="wrap">
+            {images.map((img, index) => (
+              <Box key={index} sx={{ position: 'relative' }}>
+                <Box component="img" src={img} alt="" sx={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 1 }} />
+                <IconButton
+                  size="small"
+                  onClick={() => setImages((prev) => prev.filter((_, i) => i !== index))}
+                  sx={{ position: 'absolute', top: -10, right: -10, bgcolor: 'background.paper', boxShadow: 1 }}
+                >
+                  <CloseIcon fontSize="small" />
+                </IconButton>
+              </Box>
+            ))}
+          </Stack>
+        )}
+        {imageError && <Alert severity="warning">{imageError}</Alert>}
+        <Button variant="contained" sx={{ alignSelf: 'flex-start' }} disabled={!body.trim() || isCreating} onClick={handleSubmit}>
+          Опубликовать
+        </Button>
+      </Stack>
+      <Stack spacing={1.5}>
+        {items?.map((post) => (
+          <Paper key={post.id} variant="outlined" sx={{ p: 1.5 }}>
+            <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
+              <Box sx={{ minWidth: 0 }}>
+                {post.title && (
+                  <Typography variant="subtitle2" sx={{ wordBreak: 'break-word' }}>
+                    {post.title}
+                  </Typography>
+                )}
+                <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                  {post.body}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {new Date(post.createdAt).toLocaleString()}
+                </Typography>
+              </Box>
+              <Button size="small" color="error" onClick={() => onDelete(post.id)} disabled={isDeleting} sx={{ flexShrink: 0 }}>
+                Удалить
+              </Button>
+            </Stack>
+            {post.images.length > 0 && (
+              <Stack direction="row" spacing={1} mt={1} flexWrap="wrap">
+                {post.images.map((img, index) => (
+                  <Box key={index} component="img" src={img} alt="" sx={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 1 }} />
+                ))}
+              </Stack>
+            )}
+          </Paper>
+        ))}
+        {!isLoading && (items?.length ?? 0) === 0 && (
+          <Typography variant="body2" color="text.secondary">
+            {emptyText}
+          </Typography>
+        )}
+      </Stack>
+    </Paper>
+  );
+}
 
 const statusLabels: Record<string, string> = {
   pending: 'Ожидает подтверждения',
@@ -80,6 +239,29 @@ export function TelegramBotPage() {
       setTextsError(getErrorMessage(err, 'Не удалось сохранить тексты бота'));
       setTextsSaved(false);
     },
+  });
+
+  const { data: news, isLoading: newsLoading } = useQuery({ queryKey: ['telegram-news'], queryFn: fetchTelegramNews });
+  const createNewsMutation = useMutation({
+    mutationFn: createTelegramNews,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['telegram-news'] }),
+  });
+  const deleteNewsMutation = useMutation({
+    mutationFn: deleteTelegramNews,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['telegram-news'] }),
+  });
+
+  const { data: instructions, isLoading: instructionsLoading } = useQuery({
+    queryKey: ['telegram-instructions'],
+    queryFn: fetchTelegramInstructions,
+  });
+  const createInstructionMutation = useMutation({
+    mutationFn: createTelegramInstruction,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['telegram-instructions'] }),
+  });
+  const deleteInstructionMutation = useMutation({
+    mutationFn: deleteTelegramInstruction,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['telegram-instructions'] }),
   });
 
   const approveMutation = useMutation({
@@ -171,6 +353,30 @@ export function TelegramBotPage() {
           {textsError && <Alert severity="error">{textsError}</Alert>}
         </Stack>
       </Paper>
+
+      <ContentSection
+        heading="Новости"
+        description="Кнопка «📰 Новости» в боте показывает последние 5 постов (плюс картинки отдельными сообщениями)."
+        items={news}
+        isLoading={newsLoading}
+        onCreate={(input) => createNewsMutation.mutate(input)}
+        isCreating={createNewsMutation.isPending}
+        onDelete={(id) => deleteNewsMutation.mutate(id)}
+        isDeleting={deleteNewsMutation.isPending}
+        emptyText="Новостей пока нет"
+      />
+
+      <ContentSection
+        heading="Инструкции"
+        description="Кнопка «📘 Инструкции» в боте показывает все карточки целиком, в порядке публикации."
+        items={instructions}
+        isLoading={instructionsLoading}
+        onCreate={(input) => createInstructionMutation.mutate(input)}
+        isCreating={createInstructionMutation.isPending}
+        onDelete={(id) => deleteInstructionMutation.mutate(id)}
+        isDeleting={deleteInstructionMutation.isPending}
+        emptyText="Инструкций пока нет"
+      />
 
       <Paper sx={{ p: 2 }}>
         <Typography variant="subtitle1" mb={2}>

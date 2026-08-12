@@ -3,11 +3,12 @@ import { Interval } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as QRCode from 'qrcode';
 import { ILike, Repository } from 'typeorm';
-import { PeerDeviceType, TelegramBotLogLevel, TelegramRegistrationStatus, VpnProtocol } from '../common/enums';
+import { PeerDeviceType, TelegramBotLogLevel, TelegramContentKind, TelegramRegistrationStatus, VpnProtocol } from '../common/enums';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Organization } from '../organizations/organization.entity';
 import { PeersService } from '../peers/peers.service';
 import { TelegramBotLog } from './telegram-bot-log.entity';
+import { TelegramContentService } from './telegram-content.service';
 import { TelegramRegistration } from './telegram-registration.entity';
 
 const POLL_INTERVAL_MS = 3_000;
@@ -16,6 +17,9 @@ const MENU_PHONE_LABEL = '📱 Телефон';
 const MENU_PC_LABEL = '💻 ПК';
 const MENU_INFO_LABEL = 'ℹ️ Информация';
 const MENU_CHANGE_PROTOCOL_LABEL = '🔁 Сменить протокол';
+const MENU_NEWS_LABEL = '📰 Новости';
+const MENU_INSTRUCTIONS_LABEL = '📘 Инструкции';
+const NEWS_FEED_LIMIT = 5;
 
 type DraftStep = 'awaiting_org' | 'awaiting_fio';
 
@@ -68,6 +72,7 @@ export class TelegramBotService {
     @InjectRepository(TelegramBotLog) private readonly logsRepository: Repository<TelegramBotLog>,
     private readonly notificationsService: NotificationsService,
     private readonly peersService: PeersService,
+    private readonly telegramContentService: TelegramContentService,
   ) {}
 
   // Пишет и в docker logs (как раньше), и в БД, чтобы событие было видно в панели (вкладка
@@ -173,7 +178,53 @@ export class TelegramBotService {
       return;
     }
 
+    if (text === MENU_NEWS_LABEL) {
+      await this.sendContentFeed(chatId, TelegramContentKind.NEWS, NEWS_FEED_LIMIT, 'Пока новостей нет.');
+      return;
+    }
+
+    if (text === MENU_INSTRUCTIONS_LABEL) {
+      await this.sendContentFeed(chatId, TelegramContentKind.INSTRUCTION, undefined, 'Инструкции пока не добавлены.');
+      return;
+    }
+
     await this.sendMainMenu(chatId);
+  }
+
+  // Новости — последние NEWS_FEED_LIMIT штук (лента может расти неограниченно, отправлять
+  // всё целиком каждый раз не нужно); инструкции — все сразу (limit=undefined, их обычно
+  // немного, и это не растущая лента, а справочный набор карточек). Каждый пост — отдельное
+  // текстовое сообщение (без ограничения на длину caption) плюс картинки отдельными
+  // сообщениями following — тот же sendPhotoToChat, что и для QR-кода.
+  private async sendContentFeed(
+    chatId: string,
+    kind: TelegramContentKind,
+    limit: number | undefined,
+    emptyText: string,
+  ): Promise<void> {
+    const posts = await this.telegramContentService.listForBot(kind, limit);
+    if (posts.length === 0) {
+      await this.notificationsService.sendToChat(chatId, emptyText);
+      return;
+    }
+    for (const post of posts) {
+      const text = post.title ? `${post.title}\n\n${post.body}` : post.body;
+      await this.notificationsService.sendToChat(chatId, text);
+      for (const image of post.images) {
+        const parsed = this.parseImageDataUri(image);
+        if (parsed) {
+          await this.notificationsService.sendPhotoToChat(chatId, parsed.buffer, undefined, parsed.mimeType);
+        }
+      }
+    }
+  }
+
+  private parseImageDataUri(dataUri: string): { buffer: Buffer; mimeType: string } | null {
+    const match = dataUri.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+    if (!match) {
+      return null;
+    }
+    return { buffer: Buffer.from(match[2], 'base64'), mimeType: match[1] };
   }
 
   // Определяет, для какого устройства менять протокол: если существующий конфиг только
@@ -269,6 +320,7 @@ export class TelegramBotService {
       keyboard: [
         [{ text: MENU_PHONE_LABEL }, { text: MENU_PC_LABEL }],
         [{ text: MENU_CHANGE_PROTOCOL_LABEL }],
+        [{ text: MENU_NEWS_LABEL }, { text: MENU_INSTRUCTIONS_LABEL }],
         [{ text: MENU_INFO_LABEL }],
       ],
       resize_keyboard: true,
