@@ -347,7 +347,12 @@ export class PeersService {
     });
     const endpointServer = bridge?.domainName ? { ...server, host: bridge.domainName } : server;
     const content = buildClientConfig(peer, privateKey, endpointServer, serverProtocol, presharedKey);
-    return { filename: `${peer.name.replace(/[^a-zA-Z0-9-_]/g, '_')}.conf`, content };
+    // \p{L}/\p{N} — буква/цифра ЛЮБОГО алфавита, не только латиница — иначе кириллическое
+    // имя (например, ФИО из Telegram-бота) целиком превращалось бы в подчёркивания и файл
+    // приходил бы клиенту фактически без видимого названия. Соседние небезопасные символы
+    // схлопываются в одно "_", чтобы не плодить "Иванов___Иван".
+    const safeName = peer.name.replace(/[^\p{L}\p{N}_-]+/gu, '_');
+    return { filename: `${safeName}.conf`, content };
   }
 
   // --- Telegram-бот (telegram-bot/) — создание/перевыпуск peer без AuthenticatedUser ---

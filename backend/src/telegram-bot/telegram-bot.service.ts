@@ -197,7 +197,22 @@ export class TelegramBotService {
     const organization = await this.organizationsRepository.findOneOrFail({ where: { id: registration.organizationId } });
 
     if (data === 'device:phone' || data === 'device:pc') {
-      const deviceType = data === 'device:phone' ? PeerDeviceType.PHONE : PeerDeviceType.PC;
+      const deviceType = data === 'device:phone' ? 'phone' : 'pc';
+      await this.notificationsService.sendToChat(chatId, 'Выберите протокол:', {
+        inline_keyboard: [
+          [
+            { text: 'AmneziaWG', callback_data: `protocol:${deviceType}:amneziawg` },
+            { text: 'WireGuard', callback_data: `protocol:${deviceType}:wireguard` },
+          ],
+        ],
+      });
+      return;
+    }
+
+    const protocolMatch = data.match(/^protocol:(phone|pc):(amneziawg|wireguard)$/);
+    if (protocolMatch) {
+      const deviceType = protocolMatch[1] === 'phone' ? PeerDeviceType.PHONE : PeerDeviceType.PC;
+      const protocol = protocolMatch[2] === 'amneziawg' ? VpnProtocol.AMNEZIAWG : VpnProtocol.WIREGUARD;
       const existingPeers = await this.peersService.findActivePeersForTelegramRegistration(registration.id);
       if (existingPeers.some((peer) => peer.deviceType === deviceType)) {
         await this.notificationsService.sendToChat(
@@ -206,26 +221,27 @@ export class TelegramBotService {
           {
             inline_keyboard: [
               [
-                { text: 'Да, перевыпустить', callback_data: `reissue:${deviceType}:yes` },
-                { text: 'Отмена', callback_data: `reissue:${deviceType}:no` },
+                { text: 'Да, перевыпустить', callback_data: `reissue:${protocolMatch[1]}:${protocolMatch[2]}:yes` },
+                { text: 'Отмена', callback_data: `reissue:${protocolMatch[1]}:${protocolMatch[2]}:no` },
               ],
             ],
           },
         );
         return;
       }
-      await this.issuePeer(chatId, registration, organization, deviceType, false);
+      await this.issuePeer(chatId, registration, organization, protocol, deviceType, false);
       return;
     }
 
-    const reissueMatch = data.match(/^reissue:(phone|pc):(yes|no)$/);
+    const reissueMatch = data.match(/^reissue:(phone|pc):(amneziawg|wireguard):(yes|no)$/);
     if (reissueMatch) {
-      const deviceType = reissueMatch[1] === 'phone' ? PeerDeviceType.PHONE : PeerDeviceType.PC;
-      if (reissueMatch[2] === 'no') {
+      if (reissueMatch[3] === 'no') {
         await this.notificationsService.sendToChat(chatId, 'Отменено.');
         return;
       }
-      await this.issuePeer(chatId, registration, organization, deviceType, true);
+      const deviceType = reissueMatch[1] === 'phone' ? PeerDeviceType.PHONE : PeerDeviceType.PC;
+      const protocol = reissueMatch[2] === 'amneziawg' ? VpnProtocol.AMNEZIAWG : VpnProtocol.WIREGUARD;
+      await this.issuePeer(chatId, registration, organization, protocol, deviceType, true);
     }
   }
 
@@ -233,13 +249,14 @@ export class TelegramBotService {
     chatId: string,
     registration: TelegramRegistration,
     organization: Organization,
+    protocol: VpnProtocol,
     deviceType: PeerDeviceType,
     reissue: boolean,
   ): Promise<void> {
     try {
       const { filename, content } = reissue
-        ? await this.peersService.reissueForTelegramRegistration(registration, organization, VpnProtocol.AMNEZIAWG, deviceType)
-        : await this.peersService.createForTelegramRegistration(registration, organization, VpnProtocol.AMNEZIAWG, deviceType);
+        ? await this.peersService.reissueForTelegramRegistration(registration, organization, protocol, deviceType)
+        : await this.peersService.createForTelegramRegistration(registration, organization, protocol, deviceType);
       await this.notificationsService.sendDocumentToChat(chatId, filename, content);
       const png = await QRCode.toBuffer(content, { type: 'png', width: 400 });
       await this.notificationsService.sendPhotoToChat(chatId, png, 'QR-код для быстрого подключения');
