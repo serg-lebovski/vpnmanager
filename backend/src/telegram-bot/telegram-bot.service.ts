@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as QRCode from 'qrcode';
-import { Repository } from 'typeorm';
+import { ILike, Repository } from 'typeorm';
 import { PeerDeviceType, TelegramBotLogLevel, TelegramRegistrationStatus, VpnProtocol } from '../common/enums';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Organization } from '../organizations/organization.entity';
@@ -17,12 +17,11 @@ const MENU_PC_LABEL = '💻 ПК';
 const MENU_INFO_LABEL = 'ℹ️ Информация';
 const MENU_CHANGE_PROTOCOL_LABEL = '🔁 Сменить протокол';
 
-type DraftStep = 'awaiting_org_name' | 'awaiting_inn' | 'awaiting_fio';
+type DraftStep = 'awaiting_org' | 'awaiting_fio';
 
 interface Draft {
   step: DraftStep;
   telegramUsername: string | null;
-  orgName?: string;
   organizationId?: string;
 }
 
@@ -215,32 +214,27 @@ export class TelegramBotService {
       }
       return;
     }
-    this.drafts.set(chatId, { step: 'awaiting_org_name', telegramUsername });
+    this.drafts.set(chatId, { step: 'awaiting_org', telegramUsername });
     const welcome = await this.notificationsService.getWelcomeMessage();
     await this.notificationsService.sendToChat(chatId, welcome);
-    await this.notificationsService.sendToChat(chatId, 'Введите точное название вашей организации.');
+    await this.notificationsService.sendToChat(chatId, 'Введите название вашей организации или её ИНН.');
   }
 
   private async handleDraftStep(chatId: string, draft: Draft, text: string): Promise<void> {
-    if (draft.step === 'awaiting_org_name') {
-      draft.orgName = text;
-      draft.step = 'awaiting_inn';
-      await this.notificationsService.sendToChat(chatId, 'Теперь введите ИНН организации.');
-      return;
-    }
-
-    if (draft.step === 'awaiting_inn') {
-      const organization = await this.organizationsRepository.findOne({ where: { inn: text } });
-      if (!organization || organization.name.trim().toLowerCase() !== (draft.orgName ?? '').trim().toLowerCase()) {
+    if (draft.step === 'awaiting_org') {
+      const query = text.trim();
+      // Один и тот же ввод пробуем и как ИНН (точное совпадение), и как название
+      // (без учёта регистра) — пользователю не нужно вводить оба поля подряд, достаточно
+      // того, что он точно знает.
+      const organization =
+        (await this.organizationsRepository.findOne({ where: { inn: query } })) ??
+        (await this.organizationsRepository.findOne({ where: { name: ILike(query) } }));
+      if (!organization) {
         this.drafts.delete(chatId);
-        await this.log(
-          TelegramBotLogLevel.WARN,
-          `Не удалось сопоставить организацию: название «${draft.orgName}», ИНН «${text}»`,
-          chatId,
-        );
+        await this.log(TelegramBotLogLevel.WARN, `Не удалось найти организацию по запросу «${query}»`, chatId);
         await this.notificationsService.sendToChat(
           chatId,
-          'Не нашёл организацию с таким названием и ИНН. Проверьте данные и начните заново с /start.',
+          'Не нашёл организацию с таким названием или ИНН. Проверьте данные и начните заново с /start.',
         );
         return;
       }
