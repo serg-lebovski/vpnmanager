@@ -1,5 +1,9 @@
 import CloseIcon from '@mui/icons-material/Close';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
   Box,
   Button,
@@ -59,7 +63,6 @@ function readFileAsDataUri(file: File): Promise<string> {
 }
 
 interface ContentSectionProps {
-  heading: string;
   description: string;
   items: TelegramContentPost[] | undefined;
   isLoading: boolean;
@@ -73,7 +76,6 @@ interface ContentSectionProps {
 // Общая форма+лента для новостей и инструкций — у них одинаковая структура контента
 // (заголовок+текст+картинки), различается только назначение и то, как их отдаёт бот.
 function ContentSection({
-  heading,
   description,
   items,
   isLoading,
@@ -112,10 +114,7 @@ function ContentSection({
   };
 
   return (
-    <Paper sx={{ p: 2 }}>
-      <Typography variant="subtitle1" mb={0.5}>
-        {heading}
-      </Typography>
+    <Box sx={{ width: '100%' }}>
       <Typography variant="body2" color="text.secondary" mb={2}>
         {description}
       </Typography>
@@ -190,7 +189,7 @@ function ContentSection({
           </Typography>
         )}
       </Stack>
-    </Paper>
+    </Box>
   );
 }
 
@@ -316,70 +315,6 @@ export function TelegramBotPage() {
 
       <Paper sx={{ p: 2 }}>
         <Typography variant="subtitle1" mb={2}>
-          Тексты бота
-        </Typography>
-        <Stack spacing={1.5} sx={{ maxWidth: 480 }}>
-          <TextField
-            label="Приветствие (первое сообщение на /start)"
-            multiline
-            minRows={2}
-            maxRows={6}
-            value={welcomeMessage}
-            onChange={(e) => {
-              setWelcomeMessage(e.target.value);
-              setTextsSaved(false);
-            }}
-          />
-          <TextField
-            label="Дополнительная информация (кнопка «ℹ️ Информация»)"
-            multiline
-            minRows={2}
-            maxRows={6}
-            value={infoMessage}
-            onChange={(e) => {
-              setInfoMessage(e.target.value);
-              setTextsSaved(false);
-            }}
-          />
-          <Button
-            variant="outlined"
-            sx={{ alignSelf: 'flex-start' }}
-            disabled={saveTextsMutation.isPending}
-            onClick={() => saveTextsMutation.mutate()}
-          >
-            Сохранить
-          </Button>
-          {textsSaved && <Alert severity="success">Тексты сохранены.</Alert>}
-          {textsError && <Alert severity="error">{textsError}</Alert>}
-        </Stack>
-      </Paper>
-
-      <ContentSection
-        heading="Новости"
-        description="Кнопка «📰 Новости» в боте показывает последние 5 постов (плюс картинки отдельными сообщениями)."
-        items={news}
-        isLoading={newsLoading}
-        onCreate={(input) => createNewsMutation.mutate(input)}
-        isCreating={createNewsMutation.isPending}
-        onDelete={(id) => deleteNewsMutation.mutate(id)}
-        isDeleting={deleteNewsMutation.isPending}
-        emptyText="Новостей пока нет"
-      />
-
-      <ContentSection
-        heading="Инструкции"
-        description="Кнопка «📘 Инструкции» в боте показывает все карточки целиком, в порядке публикации."
-        items={instructions}
-        isLoading={instructionsLoading}
-        onCreate={(input) => createInstructionMutation.mutate(input)}
-        isCreating={createInstructionMutation.isPending}
-        onDelete={(id) => deleteInstructionMutation.mutate(id)}
-        isDeleting={deleteInstructionMutation.isPending}
-        emptyText="Инструкций пока нет"
-      />
-
-      <Paper sx={{ p: 2 }}>
-        <Typography variant="subtitle1" mb={2}>
           Регистрации
         </Typography>
         <TableContainer sx={{ overflowX: 'auto' }}>
@@ -424,118 +359,202 @@ export function TelegramBotPage() {
         </TableContainer>
       </Paper>
 
-      <Paper sx={{ p: 2 }}>
-        <Typography variant="subtitle1" mb={2}>
-          Рассылка подтверждённым пользователям
-        </Typography>
-        <Stack spacing={1.5} sx={{ maxWidth: 480 }}>
-          <TextField
-            label="Текст сообщения"
-            multiline
-            minRows={3}
-            maxRows={8}
-            value={broadcastText}
-            onChange={(e) => setBroadcastText(e.target.value)}
-          />
-          <FormControlLabel
-            control={<Checkbox checked={broadcastPin} onChange={(e) => setBroadcastPin(e.target.checked)} />}
-            label="Закрепить сообщение в чате у получателей"
-          />
-          <Button
-            variant="contained"
-            sx={{ alignSelf: 'flex-start' }}
-            disabled={!broadcastText.trim() || broadcastMutation.isPending}
-            onClick={() => broadcastMutation.mutate()}
-          >
-            Отправить всем подтверждённым
-          </Button>
-          {broadcastResult && <Alert severity="success">{broadcastResult}</Alert>}
-          {broadcastError && <Alert severity="error">{broadcastError}</Alert>}
-        </Stack>
-      </Paper>
+      <Accordion>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Typography variant="subtitle1">Тексты бота</Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Stack spacing={1.5} sx={{ maxWidth: 480 }}>
+            <TextField
+              label="Приветствие (первое сообщение на /start)"
+              multiline
+              minRows={2}
+              maxRows={6}
+              value={welcomeMessage}
+              onChange={(e) => {
+                setWelcomeMessage(e.target.value);
+                setTextsSaved(false);
+              }}
+            />
+            <TextField
+              label="Дополнительная информация (кнопка «ℹ️ Информация»)"
+              multiline
+              minRows={2}
+              maxRows={6}
+              value={infoMessage}
+              onChange={(e) => {
+                setInfoMessage(e.target.value);
+                setTextsSaved(false);
+              }}
+            />
+            <Button
+              variant="outlined"
+              sx={{ alignSelf: 'flex-start' }}
+              disabled={saveTextsMutation.isPending}
+              onClick={() => saveTextsMutation.mutate()}
+            >
+              Сохранить
+            </Button>
+            {textsSaved && <Alert severity="success">Тексты сохранены.</Alert>}
+            {textsError && <Alert severity="error">{textsError}</Alert>}
+          </Stack>
+        </AccordionDetails>
+      </Accordion>
 
-      <Paper sx={{ p: 2 }}>
-        <Typography variant="subtitle1" mb={2}>
-          История рассылок
-        </Typography>
-        <Typography variant="body2" color="text.secondary" mb={2}>
-          Удаление рассылки убирает сообщение из чата у всех получателей, не только из этого
-          списка.
-        </Typography>
-        <TableContainer sx={{ overflowX: 'auto' }}>
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell>Текст</TableCell>
-                <TableCell align="right">Получателей</TableCell>
-                <TableCell>Закреплено</TableCell>
-                <TableCell>Отправлено</TableCell>
-                <TableCell align="right">Действия</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {broadcasts?.map((b) => (
-                <TableRow key={b.id}>
-                  <TableCell sx={{ maxWidth: 320, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{b.text}</TableCell>
-                  <TableCell align="right">{b.recipientCount}</TableCell>
-                  <TableCell>{b.pinned ? 'да' : '—'}</TableCell>
-                  <TableCell>{new Date(b.createdAt).toLocaleString()}</TableCell>
-                  <TableCell align="right">
-                    <Button
-                      size="small"
-                      color="error"
-                      onClick={() => deleteBroadcastMutation.mutate(b.id)}
-                      disabled={deleteBroadcastMutation.isPending}
-                    >
-                      Удалить
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
-              {!broadcastsLoading && (broadcasts?.length ?? 0) === 0 && (
-                <TableRow>
-                  <TableCell colSpan={5}>Рассылок пока не было</TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </TableContainer>
-      </Paper>
+      <Accordion>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Typography variant="subtitle1">Новости</Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          <ContentSection
+            description="Кнопка «📰 Новости» в боте показывает последние 5 постов (плюс картинки отдельными сообщениями)."
+            items={news}
+            isLoading={newsLoading}
+            onCreate={(input) => createNewsMutation.mutate(input)}
+            isCreating={createNewsMutation.isPending}
+            onDelete={(id) => deleteNewsMutation.mutate(id)}
+            isDeleting={deleteNewsMutation.isPending}
+            emptyText="Новостей пока нет"
+          />
+        </AccordionDetails>
+      </Accordion>
 
-      <Paper sx={{ p: 2 }}>
-        <Typography variant="subtitle1" mb={2}>
-          Журнал бота
-        </Typography>
-        <TableContainer sx={{ overflowX: 'auto', maxHeight: 480 }}>
-          <Table size="small" stickyHeader>
-            <TableHead>
-              <TableRow>
-                <TableCell>Время</TableCell>
-                <TableCell>Уровень</TableCell>
-                <TableCell>Chat ID</TableCell>
-                <TableCell>Сообщение</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {logs?.map((entry) => (
-                <TableRow key={entry.id}>
-                  <TableCell sx={{ whiteSpace: 'nowrap' }}>{new Date(entry.createdAt).toLocaleString()}</TableCell>
-                  <TableCell>
-                    <Chip size="small" label={entry.level} color={logLevelColor[entry.level]} />
-                  </TableCell>
-                  <TableCell>{entry.chatId ?? '—'}</TableCell>
-                  <TableCell sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{entry.message}</TableCell>
-                </TableRow>
-              ))}
-              {!logsLoading && (logs?.length ?? 0) === 0 && (
+      <Accordion>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Typography variant="subtitle1">Инструкции</Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          <ContentSection
+            description="Кнопка «📘 Инструкции» в боте показывает все карточки целиком, в порядке публикации."
+            items={instructions}
+            isLoading={instructionsLoading}
+            onCreate={(input) => createInstructionMutation.mutate(input)}
+            isCreating={createInstructionMutation.isPending}
+            onDelete={(id) => deleteInstructionMutation.mutate(id)}
+            isDeleting={deleteInstructionMutation.isPending}
+            emptyText="Инструкций пока нет"
+          />
+        </AccordionDetails>
+      </Accordion>
+
+      <Accordion>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Typography variant="subtitle1">Рассылка подтверждённым пользователям</Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Stack spacing={1.5} sx={{ maxWidth: 480 }}>
+            <TextField
+              label="Текст сообщения"
+              multiline
+              minRows={3}
+              maxRows={8}
+              value={broadcastText}
+              onChange={(e) => setBroadcastText(e.target.value)}
+            />
+            <FormControlLabel
+              control={<Checkbox checked={broadcastPin} onChange={(e) => setBroadcastPin(e.target.checked)} />}
+              label="Закрепить сообщение в чате у получателей"
+            />
+            <Button
+              variant="contained"
+              sx={{ alignSelf: 'flex-start' }}
+              disabled={!broadcastText.trim() || broadcastMutation.isPending}
+              onClick={() => broadcastMutation.mutate()}
+            >
+              Отправить всем подтверждённым
+            </Button>
+            {broadcastResult && <Alert severity="success">{broadcastResult}</Alert>}
+            {broadcastError && <Alert severity="error">{broadcastError}</Alert>}
+          </Stack>
+        </AccordionDetails>
+      </Accordion>
+
+      <Accordion>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Typography variant="subtitle1">История рассылок</Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Typography variant="body2" color="text.secondary" mb={2}>
+            Удаление рассылки убирает сообщение из чата у всех получателей, не только из этого
+            списка.
+          </Typography>
+          <TableContainer sx={{ overflowX: 'auto' }}>
+            <Table size="small">
+              <TableHead>
                 <TableRow>
-                  <TableCell colSpan={4}>Записей пока нет</TableCell>
+                  <TableCell>Текст</TableCell>
+                  <TableCell align="right">Получателей</TableCell>
+                  <TableCell>Закреплено</TableCell>
+                  <TableCell>Отправлено</TableCell>
+                  <TableCell align="right">Действия</TableCell>
                 </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </TableContainer>
-      </Paper>
+              </TableHead>
+              <TableBody>
+                {broadcasts?.map((b) => (
+                  <TableRow key={b.id}>
+                    <TableCell sx={{ maxWidth: 320, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{b.text}</TableCell>
+                    <TableCell align="right">{b.recipientCount}</TableCell>
+                    <TableCell>{b.pinned ? 'да' : '—'}</TableCell>
+                    <TableCell>{new Date(b.createdAt).toLocaleString()}</TableCell>
+                    <TableCell align="right">
+                      <Button
+                        size="small"
+                        color="error"
+                        onClick={() => deleteBroadcastMutation.mutate(b.id)}
+                        disabled={deleteBroadcastMutation.isPending}
+                      >
+                        Удалить
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {!broadcastsLoading && (broadcasts?.length ?? 0) === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={5}>Рассылок пока не было</TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </AccordionDetails>
+      </Accordion>
+
+      <Accordion>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Typography variant="subtitle1">Журнал бота</Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          <TableContainer sx={{ overflowX: 'auto', maxHeight: 480 }}>
+            <Table size="small" stickyHeader>
+              <TableHead>
+                <TableRow>
+                  <TableCell>Время</TableCell>
+                  <TableCell>Уровень</TableCell>
+                  <TableCell>Chat ID</TableCell>
+                  <TableCell>Сообщение</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {logs?.map((entry) => (
+                  <TableRow key={entry.id}>
+                    <TableCell sx={{ whiteSpace: 'nowrap' }}>{new Date(entry.createdAt).toLocaleString()}</TableCell>
+                    <TableCell>
+                      <Chip size="small" label={entry.level} color={logLevelColor[entry.level]} />
+                    </TableCell>
+                    <TableCell>{entry.chatId ?? '—'}</TableCell>
+                    <TableCell sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{entry.message}</TableCell>
+                  </TableRow>
+                ))}
+                {!logsLoading && (logs?.length ?? 0) === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={4}>Записей пока нет</TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </AccordionDetails>
+      </Accordion>
 
       <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
         <DialogTitle>Удалить заявку «{deleteTarget?.fullName}»?</DialogTitle>
