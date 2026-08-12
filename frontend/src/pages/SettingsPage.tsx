@@ -212,6 +212,7 @@ export function SettingsPage() {
   const [telegramBridgeId, setTelegramBridgeId] = useState('');
   const [telegramError, setTelegramError] = useState<string | null>(null);
   const [telegramTestMessage, setTelegramTestMessage] = useState<string | null>(null);
+  const [telegramSaved, setTelegramSaved] = useState(false);
 
   useEffect(() => {
     if (settings) {
@@ -235,6 +236,7 @@ export function SettingsPage() {
       refetchSettings();
       setTelegramBotToken('');
       setTelegramError(null);
+      setTelegramSaved(true);
     },
     onError: (err) => setTelegramError(getErrorMessage(err, 'Не удалось сохранить настройки Telegram')),
   });
@@ -442,13 +444,25 @@ export function SettingsPage() {
           </TextField>
         </Stack>
         <Stack direction="row" spacing={2} mt={2}>
-          <Button variant="outlined" disabled={saveTelegramMutation.isPending} onClick={() => saveTelegramMutation.mutate()}>
+          <Button
+            variant="outlined"
+            disabled={saveTelegramMutation.isPending}
+            onClick={() => {
+              setTelegramSaved(false);
+              saveTelegramMutation.mutate();
+            }}
+          >
             Сохранить
           </Button>
           <Button disabled={testTelegramMutation.isPending} onClick={() => testTelegramMutation.mutate()}>
             Отправить тестовое сообщение
           </Button>
         </Stack>
+        {telegramSaved && (
+          <Alert severity="success" sx={{ mt: 2 }} onClose={() => setTelegramSaved(false)}>
+            Настройки Telegram сохранены.
+          </Alert>
+        )}
         {telegramTestMessage && (
           <Alert severity="success" sx={{ mt: 2 }} onClose={() => setTelegramTestMessage(null)}>
             {telegramTestMessage}
