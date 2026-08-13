@@ -48,3 +48,10 @@ export async function issuePortalConfig(
   const { data } = await portalClient.post<PortalConfigResult>(`/telegram-portal/${token}/config`, input);
   return data;
 }
+
+// Повторное скачивание уже выданного конфига — ничего не меняет на сервере (в отличие от
+// issuePortalConfig, которая при существующем устройстве перевыпускает и инвалидирует старый).
+export async function downloadPortalConfig(token: string, deviceType: PeerDeviceType): Promise<PortalConfigResult> {
+  const { data } = await portalClient.get<PortalConfigResult>(`/telegram-portal/${token}/config/${deviceType}`);
+  return data;
+}

@@ -130,6 +130,22 @@ export class TelegramPortalService {
       message: `${hasExisting ? 'Перевыпущен' : 'Выдан'} peer через веб-портал: «${result.filename.replace(/\.conf$/, '')}»`,
       chatId: null,
     });
+    return this.withQr(result);
+  }
+
+  // Повторное скачивание УЖЕ выданного конфига (кнопка «Скачать» рядом с уже выданным
+  // устройством в PortalPage.tsx) — в отличие от issueConfig не трогает ключи/сервер, просто
+  // ещё раз отдаёт то же самое содержимое + QR.
+  async downloadConfig(token: string, deviceType: PeerDeviceType): Promise<{ filename: string; content: string; qrDataUri: string }> {
+    const registration = await this.findByToken(token);
+    if (registration.status !== TelegramRegistrationStatus.APPROVED) {
+      throw new ForbiddenException('Заявка ещё не подтверждена администратором');
+    }
+    const result = await this.peersService.getDownloadableConfigForTelegramRegistration(registration.id, deviceType);
+    return this.withQr(result);
+  }
+
+  private async withQr(result: { filename: string; content: string }): Promise<{ filename: string; content: string; qrDataUri: string }> {
     const png = await QRCode.toBuffer(result.content, { type: 'png', width: 400 });
     return { ...result, qrDataUri: `data:image/png;base64,${png.toString('base64')}` };
   }

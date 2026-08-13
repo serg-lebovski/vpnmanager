@@ -19,6 +19,7 @@ import { FormEvent, ReactNode, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { getErrorMessage } from '../api/errors';
 import {
+  downloadPortalConfig,
   fetchPortalStatus,
   fetchPortalUpstreamOptions,
   issuePortalConfig,
@@ -128,7 +129,17 @@ function PortalStatusView({ token }: { token: string }) {
   const statusQuery = useQuery({ queryKey: ['portal-status', token], queryFn: () => fetchPortalStatus(token) });
   const [issueDialog, setIssueDialog] = useState<IssueDialogState | null>(null);
   const [issueError, setIssueError] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   const [result, setResult] = useState<{ filename: string; content: string; qrDataUri: string } | null>(null);
+
+  const downloadMutation = useMutation({
+    mutationFn: (deviceType: PeerDeviceType) => downloadPortalConfig(token, deviceType),
+    onSuccess: (data) => {
+      setResult(data);
+      setDownloadError(null);
+    },
+    onError: (err) => setDownloadError(getErrorMessage(err, 'Не удалось скачать конфиг')),
+  });
 
   const upstreamOptionsQuery = useQuery({
     queryKey: ['portal-upstream-options', token, issueDialog?.protocol],
@@ -206,27 +217,43 @@ function PortalStatusView({ token }: { token: string }) {
             const device = status.devices.find((d) => d.deviceType === deviceType);
             return (
               <Paper key={deviceType} variant="outlined" sx={{ p: 1.5 }}>
-                <Stack direction="row" justifyContent="space-between" alignItems="center">
+                <Stack direction="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" rowGap={1}>
                   <Box>
                     <Typography variant="subtitle2">{deviceLabels[deviceType]}</Typography>
                     <Typography variant="caption" color="text.secondary">
                       {device ? `Выдан: ${new Date(device.createdAt).toLocaleString()}` : 'Ещё не выдан'}
                     </Typography>
                   </Box>
-                  <Button
-                    size="small"
-                    variant={device ? 'outlined' : 'contained'}
-                    onClick={() => {
-                      setIssueError(null);
-                      setIssueDialog({ deviceType, isReissue: !!device, protocol: 'amneziawg' });
-                    }}
-                  >
-                    {device ? 'Перевыпустить' : 'Получить'}
-                  </Button>
+                  <Stack direction="row" spacing={1}>
+                    {device && (
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        disabled={downloadMutation.isPending}
+                        onClick={() => {
+                          setDownloadError(null);
+                          downloadMutation.mutate(deviceType);
+                        }}
+                      >
+                        Скачать
+                      </Button>
+                    )}
+                    <Button
+                      size="small"
+                      variant={device ? 'outlined' : 'contained'}
+                      onClick={() => {
+                        setIssueError(null);
+                        setIssueDialog({ deviceType, isReissue: !!device, protocol: 'amneziawg' });
+                      }}
+                    >
+                      {device ? 'Перевыпустить' : 'Получить'}
+                    </Button>
+                  </Stack>
                 </Stack>
               </Paper>
             );
           })}
+          {downloadError && <Alert severity="error">{downloadError}</Alert>}
         </Stack>
       )}
 

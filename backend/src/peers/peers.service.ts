@@ -484,6 +484,23 @@ export class PeersService {
     return this.peersRepository.find({ where: { telegramRegistrationId: registrationId, status: PeerStatus.ACTIVE } });
   }
 
+  // Повторное скачивание УЖЕ выданного конфига без перевыпуска (см. кнопку «Скачать» в
+  // PortalPage.tsx) — в отличие от createForTelegramRegistration/reissueForTelegramRegistration
+  // не трогает ключи и сервер, просто ещё раз строит .conf+имя из уже сохранённого peer'а тем
+  // же buildDownloadableConfig, что и обычное скачивание в панели.
+  async getDownloadableConfigForTelegramRegistration(
+    registrationId: string,
+    deviceType: PeerDeviceType,
+  ): Promise<{ filename: string; content: string }> {
+    const peer = await this.peersRepository.findOne({
+      where: { telegramRegistrationId: registrationId, deviceType, status: PeerStatus.ACTIVE },
+    });
+    if (!peer) {
+      throw new NotFoundException('Конфиг для этого устройства ещё не выдан');
+    }
+    return this.buildDownloadableConfig(peer);
+  }
+
   // Вызывается при удалении заявки суперадмином (TelegramRegistrationsController) — снимает
   // с сервера все peers этой регистрации перед удалением самой записи, а не полагается
   // только на ON DELETE SET NULL (иначе peer остался бы активным на сервере осиротевшим).

@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
-import { VpnProtocol } from '../common/enums';
+import { PeerDeviceType, VpnProtocol } from '../common/enums';
 import { IssuePortalConfigDto } from './dto/issue-portal-config.dto';
 import { RegisterViaPortalDto } from './dto/register-via-portal.dto';
 import { TelegramPortalService } from './telegram-portal.service';
@@ -33,5 +33,12 @@ export class TelegramPortalController {
   @Post(':token/config')
   issueConfig(@Param('token') token: string, @Body() dto: IssuePortalConfigDto) {
     return this.telegramPortalService.issueConfig(token, dto);
+  }
+
+  // Повторное скачивание уже выданного конфига — в отличие от POST .../config не трогает
+  // ключи/сервер, GET осознанно (идемпотентно, ничего не меняет).
+  @Get(':token/config/:deviceType')
+  downloadConfig(@Param('token') token: string, @Param('deviceType') deviceType: PeerDeviceType) {
+    return this.telegramPortalService.downloadConfig(token, deviceType);
   }
 }
