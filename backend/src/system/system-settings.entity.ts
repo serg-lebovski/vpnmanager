@@ -51,11 +51,6 @@ export class SystemSettings {
   @Column({ name: 'telegram_welcome_message', type: 'text', nullable: true })
   telegramWelcomeMessage: string | null;
 
-  // Свободный текст, который бот присылает по кнопке "ℹ️ Информация" из главного меню —
-  // произвольные инструкции/контакты поддержки и т.п., целиком на усмотрение суперадмина.
-  @Column({ name: 'telegram_info_message', type: 'text', nullable: true })
-  telegramInfoMessage: string | null;
-
   @UpdateDateColumn({ name: 'updated_at' })
   updatedAt: Date;
 }

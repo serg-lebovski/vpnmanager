@@ -77,11 +77,17 @@ export class NotificationsService {
     return settings?.telegramWelcomeMessage?.trim() || 'Добро пожаловать! Этот бот поможет вам получить доступ к VPN.';
   }
 
-  // Текст по кнопке "ℹ️ Информация" — целиком на усмотрение администратора, поэтому дефолт
-  // честно говорит, что текст ещё не задан, а не выдумывает содержание за суперадмина.
-  async getInfoMessage(): Promise<string> {
+  // Публичный адрес панели (для ссылки веб-портала, см. TelegramBotService.sendPortalLink) —
+  // null, если домен ещё не настроен во «Домен и HTTPS» (например, панель доступна только
+  // по IP) — тогда сформировать надёжную внешнюю ссылку не из чего, вызывающий код сам
+  // решает, как сообщить об этом пользователю.
+  async getPanelBaseUrl(): Promise<string | null> {
     const settings = await this.settingsRepository.findOne({ where: { id: 1 } });
-    return settings?.telegramInfoMessage?.trim() || 'Дополнительная информация пока не добавлена администратором.';
+    if (!settings?.domain) {
+      return null;
+    }
+    const scheme = settings.httpsEnabled ? 'https' : 'http';
+    return `${scheme}://${settings.domain}`;
   }
 
   // Отправка в ПРОИЗВОЛЬНЫЙ чат (не фиксированный telegramChatId настроек) — используется

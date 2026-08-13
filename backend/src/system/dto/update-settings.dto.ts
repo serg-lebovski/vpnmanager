@@ -43,8 +43,4 @@ export class UpdateSettingsDto {
   @IsString()
   @IsOptional()
   telegramWelcomeMessage?: string;
-
-  @IsString()
-  @IsOptional()
-  telegramInfoMessage?: string;
 }

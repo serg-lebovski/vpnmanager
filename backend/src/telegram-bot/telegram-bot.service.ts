@@ -17,7 +17,7 @@ const POLL_INTERVAL_MS = 3_000;
 const API_TIMEOUT_MS = 10_000;
 const MENU_PHONE_LABEL = '📱 Телефон';
 const MENU_PC_LABEL = '💻 ПК';
-const MENU_INFO_LABEL = 'ℹ️ Информация';
+const MENU_PORTAL_LABEL = '🌐 Доступ к порталу';
 const MENU_CHANGE_PROTOCOL_LABEL = '🔁 Сменить протокол';
 const MENU_NEWS_LABEL = '📰 Новости';
 const MENU_INSTRUCTIONS_LABEL = '📘 Инструкции';
@@ -170,9 +170,8 @@ export class TelegramBotService {
       return;
     }
 
-    if (text === MENU_INFO_LABEL) {
-      const info = await this.notificationsService.getInfoMessage();
-      await this.notificationsService.sendToChat(chatId, info);
+    if (text === MENU_PORTAL_LABEL) {
+      await this.promptPortalLink(chatId);
       return;
     }
 
@@ -256,6 +255,42 @@ export class TelegramBotService {
         ],
       ],
     });
+  }
+
+  private async promptPortalLink(chatId: string): Promise<void> {
+    await this.notificationsService.sendToChat(
+      chatId,
+      'Ссылка на веб-портал — запасной способ скачать/перевыпустить ваши конфиги, если Telegram вдруг перестанет работать.',
+      {
+        inline_keyboard: [
+          [{ text: 'Получить ссылку', callback_data: 'portallink:get' }],
+          [{ text: 'Получить новую ссылку', callback_data: 'portallink:new' }],
+        ],
+      },
+    );
+  }
+
+  // forceNew=false ("получить ссылку") — существующий токен, если уже есть, иначе
+  // генерируем впервые. forceNew=true ("получить новую ссылку") — всегда перевыпускает
+  // токен: старая ссылка перестаёт работать (тот же принцип, что и у admin-эндпоинта
+  // GET .../portal-link, только этот путь ещё и умеет форсировать замену).
+  private async sendPortalLink(chatId: string, registration: TelegramRegistration, forceNew: boolean): Promise<void> {
+    if (forceNew || !registration.webToken) {
+      registration.webToken = randomUUID();
+      await this.registrationsRepository.save(registration);
+      await this.log(TelegramBotLogLevel.INFO, `${forceNew ? 'Перевыпущена' : 'Выдана'} ссылка веб-портала`, chatId);
+    }
+    const base = await this.notificationsService.getPanelBaseUrl();
+    if (!base) {
+      await this.notificationsService.sendToChat(
+        chatId,
+        'Домен панели ещё не настроен администратором — сформировать ссылку пока нельзя.',
+      );
+      return;
+    }
+    const url = `${base}/portal/${registration.webToken}`;
+    const prefix = forceNew ? 'Новая ссылка выдана, старая больше не действует:\n\n' : '';
+    await this.notificationsService.sendToChat(chatId, `${prefix}${url}`);
   }
 
   // payload — из /start <payload>, если бота открыли по персональной ссылке веб-портала
@@ -349,7 +384,7 @@ export class TelegramBotService {
         [{ text: MENU_PHONE_LABEL }, { text: MENU_PC_LABEL }],
         [{ text: MENU_CHANGE_PROTOCOL_LABEL }],
         [{ text: MENU_NEWS_LABEL }, { text: MENU_INSTRUCTIONS_LABEL }],
-        [{ text: MENU_INFO_LABEL }],
+        [{ text: MENU_PORTAL_LABEL }],
       ],
       resize_keyboard: true,
       is_persistent: true,
@@ -393,6 +428,12 @@ export class TelegramBotService {
       }
       request.protocol = protocolMatch[1] === 'amneziawg' ? VpnProtocol.AMNEZIAWG : VpnProtocol.WIREGUARD;
       await this.proceedAfterProtocol(chatId, registration, organization, request);
+      return;
+    }
+
+    const portalLinkMatch = data.match(/^portallink:(get|new)$/);
+    if (portalLinkMatch) {
+      await this.sendPortalLink(chatId, registration, portalLinkMatch[1] === 'new');
       return;
     }
 

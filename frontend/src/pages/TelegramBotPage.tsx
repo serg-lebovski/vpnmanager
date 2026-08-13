@@ -219,17 +219,15 @@ export function TelegramBotPage() {
 
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: fetchSettings });
   const [welcomeMessage, setWelcomeMessage] = useState('');
-  const [infoMessage, setInfoMessage] = useState('');
   const [textsSaved, setTextsSaved] = useState(false);
   const [textsError, setTextsError] = useState<string | null>(null);
   useEffect(() => {
     if (settings) {
       setWelcomeMessage(settings.telegramWelcomeMessage ?? '');
-      setInfoMessage(settings.telegramInfoMessage ?? '');
     }
   }, [settings]);
   const saveTextsMutation = useMutation({
-    mutationFn: () => updateSettings({ telegramWelcomeMessage: welcomeMessage, telegramInfoMessage: infoMessage }),
+    mutationFn: () => updateSettings({ telegramWelcomeMessage: welcomeMessage }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] });
       setTextsSaved(true);
@@ -396,17 +394,6 @@ export function TelegramBotPage() {
               value={welcomeMessage}
               onChange={(e) => {
                 setWelcomeMessage(e.target.value);
-                setTextsSaved(false);
-              }}
-            />
-            <TextField
-              label="Дополнительная информация (кнопка «ℹ️ Информация»)"
-              multiline
-              minRows={2}
-              maxRows={6}
-              value={infoMessage}
-              onChange={(e) => {
-                setInfoMessage(e.target.value);
                 setTextsSaved(false);
               }}
             />
