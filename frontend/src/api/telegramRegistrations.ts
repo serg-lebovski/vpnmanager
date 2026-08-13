@@ -32,3 +32,11 @@ export async function fetchTelegramBotLogs(): Promise<TelegramBotLogEntry[]> {
   const { data } = await apiClient.get<TelegramBotLogEntry[]>('/telegram-registrations/logs');
   return data;
 }
+
+// webToken — генерируется лениво на бэкенде при первом запросе; полный URL собираем здесь
+// из текущего origin панели (бэкенд не обязан знать, по какому домену/IP она сейчас
+// доступна снаружи).
+export async function fetchTelegramPortalLink(id: string): Promise<string> {
+  const { data } = await apiClient.get<{ webToken: string }>(`/telegram-registrations/${id}/portal-link`);
+  return `${window.location.origin}/portal/${data.webToken}`;
+}

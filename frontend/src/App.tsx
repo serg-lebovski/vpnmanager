@@ -10,6 +10,7 @@ import { DashboardPage } from './pages/DashboardPage';
 import { LoginPage } from './pages/LoginPage';
 import { OrganizationsPage } from './pages/OrganizationsPage';
 import { PeersPage } from './pages/PeersPage';
+import { PortalPage } from './pages/PortalPage';
 import { ServersPage } from './pages/ServersPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TelegramBotPage } from './pages/TelegramBotPage';
@@ -23,6 +24,11 @@ export default function App() {
       <BackendStatusBanner />
       <Routes>
         <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage />} />
+        {/* Публичный веб-портал самостоятельной регистрации/доступа к конфигам — для
+            клиентов без Telegram (см. TelegramPortalService на бэкенде). Вне ProtectedRoute
+            намеренно: доступ защищён самим токеном в URL, а не JWT-сессией панели. */}
+        <Route path="/portal" element={<PortalPage />} />
+        <Route path="/portal/:token" element={<PortalPage />} />
 
         <Route element={<ProtectedRoute />}>
           <Route element={<DashboardLayout />}>

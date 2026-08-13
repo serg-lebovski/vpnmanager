@@ -1,5 +1,6 @@
 export type Role = 'super_admin' | 'org_admin' | 'org_user' | 'engineer';
 export type VpnProtocol = 'wireguard' | 'amneziawg';
+export type PeerDeviceType = 'phone' | 'pc';
 type ServerStatus = 'unknown' | 'online' | 'offline';
 export type ServerProtocolStatus = 'not_installed' | 'installing' | 'active' | 'error';
 type PeerSource = 'created' | 'imported' | 'bridge_upstream';
@@ -34,7 +35,9 @@ export type TelegramRegistrationStatus = 'pending' | 'approved';
 
 export interface TelegramRegistration {
   id: string;
-  telegramChatId: string;
+  // null — заявка заведена через веб-портал и Telegram ещё не привязан (см.
+  // TelegramRegistration.webToken на бэкенде).
+  telegramChatId: string | null;
   telegramUsername: string | null;
   organizationId: string;
   organizationName: string;

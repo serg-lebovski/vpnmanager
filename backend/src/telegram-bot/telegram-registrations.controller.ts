@@ -24,6 +24,15 @@ export class TelegramRegistrationsController {
     return this.telegramRegistrationsService.approve(id);
   }
 
+  // Персональная ссылка веб-портала (для клиентов без доступа к Telegram) — генерируется
+  // лениво по первому запросу, если у заявки токена ещё нет (см. TelegramRegistration.
+  // webToken). Возвращает только сам токен — полный URL (домен/IP панели) собирает фронтенд
+  // из своего текущего origin, бэкенд не обязан знать, как панель сейчас доступна снаружи.
+  @Get(':id/portal-link')
+  getPortalLink(@Param('id') id: string) {
+    return this.telegramRegistrationsService.getPortalLink(id);
+  }
+
   // revokePeers по умолчанию true (безопасное поведение по умолчанию — не оставлять
   // работающие peers без присмотра) — фронтенд всегда передаёт его явно после выбора
   // суперадмина в диалоге подтверждения.

@@ -1,12 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
+import { randomUUID } from 'crypto';
 import * as QRCode from 'qrcode';
-import { ILike, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 import { PeerDeviceType, TelegramBotLogLevel, TelegramContentKind, TelegramRegistrationStatus, VpnProtocol } from '../common/enums';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Organization } from '../organizations/organization.entity';
 import { PeersService } from '../peers/peers.service';
+import { findOrganizationByQuery } from './organization-lookup.util';
 import { TelegramBotLog } from './telegram-bot-log.entity';
 import { TelegramContentService } from './telegram-content.service';
 import { TelegramRegistration } from './telegram-registration.entity';
@@ -138,8 +140,9 @@ export class TelegramBotService {
     const chatId = String(message.chat.id);
     const text = message.text.trim();
 
-    if (text === '/start') {
-      await this.handleStart(chatId, message.chat.username ?? null);
+    const startMatch = text.match(/^\/start(?:\s+(\S+))?$/);
+    if (startMatch) {
+      await this.handleStart(chatId, message.chat.username ?? null, startMatch[1]);
       return;
     }
 
@@ -255,7 +258,11 @@ export class TelegramBotService {
     });
   }
 
-  private async handleStart(chatId: string, telegramUsername: string | null): Promise<void> {
+  // payload — из /start <payload>, если бота открыли по персональной ссылке веб-портала
+  // (t.me/<бот>?start=<webToken>, см. TelegramPortalService/PortalPage.tsx) — привязываем
+  // ЭТОТ чат к уже существующей веб-заявке вместо того, чтобы начинать регистрацию с нуля
+  // (иначе один и тот же человек завёл бы вторую отдельную заявку и второй набор peers).
+  private async handleStart(chatId: string, telegramUsername: string | null, payload?: string): Promise<void> {
     const existing = await this.registrationsRepository.findOne({ where: { telegramChatId: chatId } });
     if (existing) {
       if (existing.status === TelegramRegistrationStatus.APPROVED) {
@@ -265,6 +272,27 @@ export class TelegramBotService {
       }
       return;
     }
+
+    if (payload) {
+      const linked = await this.registrationsRepository.findOne({ where: { webToken: payload } });
+      if (linked && !linked.telegramChatId) {
+        linked.telegramChatId = chatId;
+        linked.telegramUsername = telegramUsername;
+        await this.registrationsRepository.save(linked);
+        await this.log(TelegramBotLogLevel.INFO, `Telegram привязан к веб-заявке: ${linked.fullName}`, chatId);
+        if (linked.status === TelegramRegistrationStatus.APPROVED) {
+          await this.notificationsService.sendToChat(chatId, 'Telegram успешно привязан к вашей заявке.');
+          await this.sendMainMenu(chatId);
+        } else {
+          await this.notificationsService.sendToChat(
+            chatId,
+            'Telegram привязан к вашей заявке. Она всё ещё ожидает подтверждения администратора.',
+          );
+        }
+        return;
+      }
+    }
+
     this.drafts.set(chatId, { step: 'awaiting_org', telegramUsername });
     const welcome = await this.notificationsService.getWelcomeMessage();
     await this.notificationsService.sendToChat(chatId, welcome);
@@ -274,12 +302,7 @@ export class TelegramBotService {
   private async handleDraftStep(chatId: string, draft: Draft, text: string): Promise<void> {
     if (draft.step === 'awaiting_org') {
       const query = text.trim();
-      // Один и тот же ввод пробуем и как ИНН (точное совпадение), и как название
-      // (без учёта регистра) — пользователю не нужно вводить оба поля подряд, достаточно
-      // того, что он точно знает.
-      const organization =
-        (await this.organizationsRepository.findOne({ where: { inn: query } })) ??
-        (await this.organizationsRepository.findOne({ where: { name: ILike(query) } }));
+      const organization = await findOrganizationByQuery(this.organizationsRepository, query);
       if (!organization) {
         this.drafts.delete(chatId);
         await this.log(TelegramBotLogLevel.WARN, `Не удалось найти организацию по запросу «${query}»`, chatId);
@@ -302,6 +325,11 @@ export class TelegramBotService {
         organizationId: draft.organizationId!,
         fullName: text,
         status: TelegramRegistrationStatus.PENDING,
+        // Токен веб-портала — сразу и бот-заявкам тоже: даже клиент, зарегистрировавшийся
+        // через Telegram, получает бесплатный запасной способ достучаться до конфигов, если
+        // Telegram у него потом перестанет работать (ссылку можно выдать из «Регистрации» в
+        // панели, GET .../portal-link).
+        webToken: randomUUID(),
       });
       await this.registrationsRepository.save(registration);
       this.drafts.delete(chatId);
@@ -494,7 +522,13 @@ export class TelegramBotService {
 
   // Вызывается TelegramRegistrationsService при подтверждении заявки суперадмином —
   // best-effort, неудачная отправка не должна блокировать само подтверждение.
-  async notifyApproved(chatId: string): Promise<void> {
+  // chatId — null, если заявка заведена через веб-портал и Telegram ещё не привязан (см.
+  // TelegramRegistration.webToken) — тогда уведомлять нечего, клиент узнаёт об одобрении
+  // на странице портала.
+  async notifyApproved(chatId: string | null): Promise<void> {
+    if (!chatId) {
+      return;
+    }
     try {
       await this.notificationsService.sendToChat(chatId, 'Ваша регистрация подтверждена!');
       await this.sendMainMenu(chatId);

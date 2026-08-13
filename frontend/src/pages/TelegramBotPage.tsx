@@ -47,6 +47,7 @@ import {
   deleteTelegramRegistration,
   fetchTelegramBotLogs,
   fetchTelegramBroadcasts,
+  fetchTelegramPortalLink,
   fetchTelegramRegistrations,
 } from '../api/telegramRegistrations';
 import { TelegramContentPost, TelegramRegistration } from '../api/types';
@@ -276,6 +277,20 @@ export function TelegramBotPage() {
     },
   });
 
+  const [portalLinkMessage, setPortalLinkMessage] = useState<string | null>(null);
+  const copyPortalLinkMutation = useMutation({
+    mutationFn: fetchTelegramPortalLink,
+    onSuccess: async (url) => {
+      try {
+        await navigator.clipboard.writeText(url);
+        setPortalLinkMessage(`Ссылка скопирована: ${url}`);
+      } catch {
+        setPortalLinkMessage(`Ссылка портала: ${url}`);
+      }
+    },
+    onError: (err) => setPortalLinkMessage(getErrorMessage(err, 'Не удалось получить ссылку портала')),
+  });
+
   const [broadcastText, setBroadcastText] = useState('');
   const [broadcastPin, setBroadcastPin] = useState(false);
   const [broadcastResult, setBroadcastResult] = useState<string | null>(null);
@@ -333,7 +348,7 @@ export function TelegramBotPage() {
                 <TableRow key={r.id}>
                   <TableCell>{r.fullName}</TableCell>
                   <TableCell>{r.organizationName}</TableCell>
-                  <TableCell>{r.telegramUsername ? `@${r.telegramUsername}` : r.telegramChatId}</TableCell>
+                  <TableCell>{r.telegramUsername ? `@${r.telegramUsername}` : r.telegramChatId ?? '— (веб-портал)'}</TableCell>
                   <TableCell>
                     <Chip size="small" label={statusLabels[r.status] ?? r.status} color={statusColor[r.status]} />
                   </TableCell>
@@ -343,6 +358,9 @@ export function TelegramBotPage() {
                         Подтвердить
                       </Button>
                     )}
+                    <Button size="small" onClick={() => copyPortalLinkMutation.mutate(r.id)} disabled={copyPortalLinkMutation.isPending}>
+                      Ссылка портала
+                    </Button>
                     <Button size="small" color="error" onClick={() => setDeleteTarget(r)}>
                       Удалить
                     </Button>
@@ -357,6 +375,11 @@ export function TelegramBotPage() {
             </TableBody>
           </Table>
         </TableContainer>
+        {portalLinkMessage && (
+          <Alert severity="info" sx={{ mt: 2, wordBreak: 'break-all' }} onClose={() => setPortalLinkMessage(null)}>
+            {portalLinkMessage}
+          </Alert>
+        )}
       </Paper>
 
       <Accordion>

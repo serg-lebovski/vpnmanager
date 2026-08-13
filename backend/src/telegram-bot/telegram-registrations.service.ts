@@ -1,6 +1,7 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { randomUUID } from 'crypto';
+import { IsNull, Not, Repository } from 'typeorm';
 import { TelegramBotLogLevel, TelegramRegistrationStatus } from '../common/enums';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PeersService } from '../peers/peers.service';
@@ -11,7 +12,7 @@ import { TelegramRegistration } from './telegram-registration.entity';
 
 export interface TelegramRegistrationListItem {
   id: string;
-  telegramChatId: string;
+  telegramChatId: string | null;
   telegramUsername: string | null;
   organizationId: string;
   organizationName: string;
@@ -62,6 +63,21 @@ export class TelegramRegistrationsService {
     }));
   }
 
+  // Персональная ссылка веб-портала (/portal/<token>) для заявок без доступа к Telegram —
+  // ленивая генерация: заявки, заведённые ДО появления этой функции, токена ещё не имеют
+  // (см. TelegramRegistration.webToken), получают его по первому запросу отсюда.
+  async getPortalLink(id: string): Promise<{ webToken: string }> {
+    const registration = await this.registrationsRepository.findOne({ where: { id } });
+    if (!registration) {
+      throw new NotFoundException('Заявка не найдена');
+    }
+    if (!registration.webToken) {
+      registration.webToken = randomUUID();
+      await this.registrationsRepository.save(registration);
+    }
+    return { webToken: registration.webToken };
+  }
+
   async approve(id: string): Promise<void> {
     const registration = await this.registrationsRepository.findOne({ where: { id } });
     if (!registration) {
@@ -104,25 +120,31 @@ export class TelegramRegistrationsService {
   // успешная доставка (chat_id+message_id) сохраняется в TelegramBroadcast.deliveries — без
   // этого удалить/открепить уже отправленное позже было бы нечем.
   async broadcast(text: string, pin: boolean): Promise<{ sent: number; failed: number }> {
-    const approved = await this.registrationsRepository.find({ where: { status: TelegramRegistrationStatus.APPROVED } });
+    // Рассылка — только Telegram; заявки, заведённые через веб-портал и ещё не привязавшие
+    // чат (telegramChatId IS NULL), физически некуда отправлять — не считаем их ни sent,
+    // ни failed, они просто не участвуют.
+    const approved = await this.registrationsRepository.find({
+      where: { status: TelegramRegistrationStatus.APPROVED, telegramChatId: Not(IsNull()) },
+    });
     const deliveries: TelegramBroadcastDelivery[] = [];
     let sent = 0;
     let failed = 0;
     for (const registration of approved) {
+      const chatId = registration.telegramChatId!;
       try {
-        const messageId = await this.notificationsService.sendToChat(registration.telegramChatId, text);
-        deliveries.push({ chatId: registration.telegramChatId, messageId });
+        const messageId = await this.notificationsService.sendToChat(chatId, text);
+        deliveries.push({ chatId, messageId });
         sent++;
         if (pin) {
           try {
-            await this.notificationsService.pinChatMessage(registration.telegramChatId, messageId);
+            await this.notificationsService.pinChatMessage(chatId, messageId);
           } catch (error) {
-            this.logger.warn(`Не удалось закрепить сообщение в чате ${registration.telegramChatId}: ${(error as Error).message}`);
+            this.logger.warn(`Не удалось закрепить сообщение в чате ${chatId}: ${(error as Error).message}`);
           }
         }
       } catch (error) {
         failed++;
-        this.logger.warn(`Не удалось отправить рассылку чату ${registration.telegramChatId}: ${(error as Error).message}`);
+        this.logger.warn(`Не удалось отправить рассылку чату ${chatId}: ${(error as Error).message}`);
       }
     }
     const broadcast = this.broadcastsRepository.create({ text, pinned: pin, deliveries });

@@ -146,6 +146,24 @@ export class NotificationsService {
     await this.postForm(token, 'sendPhoto', form);
   }
 
+  // @username бота — для deep-link веб-портала (t.me/<username>?start=<webToken>, см.
+  // TelegramPortalService/PortalPage.tsx). Не кэшируется (страница портала открывается
+  // нечасто, а смена токена бота должна отражаться сразу, без рестарта) — null, если бот не
+  // настроен или Telegram API недоступен, вызывающий код просто не показывает кнопку.
+  async getBotUsername(): Promise<string | null> {
+    const token = await this.getDecryptedBotToken();
+    if (!token) {
+      return null;
+    }
+    try {
+      const body = (await this.post(token, 'getMe', {})) as { result: { username: string } };
+      return body.result.username;
+    } catch (error) {
+      this.logger.warn(`Не удалось определить username бота: ${(error as Error).message}`);
+      return null;
+    }
+  }
+
   private async requireBotToken(): Promise<string> {
     const token = await this.getDecryptedBotToken();
     if (!token) {
