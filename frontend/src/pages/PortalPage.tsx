@@ -25,6 +25,7 @@ import {
   issuePortalConfig,
   PortalUpstreamOption,
   registerPortal,
+  requestPortalMtProxy,
 } from '../api/telegramPortal';
 import { PeerDeviceType, VpnProtocol } from '../api/types';
 
@@ -126,11 +127,28 @@ interface IssueDialogState {
 
 function PortalStatusView({ token }: { token: string }) {
   const queryClient = useQueryClient();
-  const statusQuery = useQuery({ queryKey: ['portal-status', token], queryFn: () => fetchPortalStatus(token) });
+  const statusQuery = useQuery({
+    queryKey: ['portal-status', token],
+    queryFn: () => fetchPortalStatus(token),
+    // Пока Telegram не привязан (или проксируется временная сессия) — опрашиваем почаще,
+    // чтобы страница сама отразила прогресс (пользователь настроил прокси/сделал /start в
+    // боте) без ручного обновления. Как только всё готово — обычный редкий опрос не нужен.
+    refetchInterval: (query) => (query.state.data?.linkedToTelegram ? false : 5_000),
+  });
   const [issueDialog, setIssueDialog] = useState<IssueDialogState | null>(null);
   const [issueError, setIssueError] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [mtProxyError, setMtProxyError] = useState<string | null>(null);
   const [result, setResult] = useState<{ filename: string; content: string; qrDataUri: string } | null>(null);
+
+  const mtProxyMutation = useMutation({
+    mutationFn: () => requestPortalMtProxy(token),
+    onSuccess: () => {
+      setMtProxyError(null);
+      queryClient.invalidateQueries({ queryKey: ['portal-status', token] });
+    },
+    onError: (err) => setMtProxyError(getErrorMessage(err, 'Не удалось выдать временный доступ')),
+  });
 
   const downloadMutation = useMutation({
     mutationFn: (deviceType: PeerDeviceType) => downloadPortalConfig(token, deviceType),
@@ -205,13 +223,59 @@ function PortalStatusView({ token }: { token: string }) {
         </Alert>
       )}
 
-      {status.botDeepLink && (
-        <Button href={status.botDeepLink} target="_blank" rel="noopener" variant="outlined" fullWidth sx={{ mb: 2 }}>
-          {status.linkedToTelegram ? 'Открыть бота в Telegram' : 'Привязать Telegram (необязательно)'}
-        </Button>
+      {status.linkedToTelegram ? (
+        status.botDeepLink && (
+          <Button href={status.botDeepLink} target="_blank" rel="noopener" variant="outlined" fullWidth sx={{ mb: 2 }}>
+            Открыть бота в Telegram
+          </Button>
+        )
+      ) : (
+        <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
+          <Typography variant="subtitle2" mb={1}>
+            Нужно привязать Telegram
+          </Typography>
+          <Typography variant="body2" color="text.secondary" mb={2}>
+            Конфиги выдаются только после привязки — это отдельный канал уведомлений и способ
+            восстановить доступ, если ссылка на этот портал потеряется.
+          </Typography>
+          {status.botDeepLink && (
+            <Button href={status.botDeepLink} target="_blank" rel="noopener" variant="contained" fullWidth sx={{ mb: 1.5 }}>
+              Открыть бота в Telegram
+            </Button>
+          )}
+          {status.mtProxy ? (
+            <Stack spacing={1}>
+              <Alert severity="info">
+                Временный доступ действует до {new Date(status.mtProxy.expiresAt).toLocaleTimeString()}. Настройте
+                эту ссылку прокси в Telegram, затем откройте бота (кнопка выше).
+              </Alert>
+              <Button href={status.mtProxy.deepLink} target="_blank" rel="noopener" variant="outlined" fullWidth>
+                Открыть прокси-ссылку в Telegram
+              </Button>
+              <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-all' }}>
+                Вручную: сервер {status.mtProxy.server}, порт {status.mtProxy.port}, секрет {status.mtProxy.secret}
+              </Typography>
+            </Stack>
+          ) : (
+            <Button variant="outlined" fullWidth disabled={mtProxyMutation.isPending} onClick={() => mtProxyMutation.mutate()}>
+              Telegram заблокирован? Получить временный доступ на 10 минут
+            </Button>
+          )}
+          {mtProxyError && (
+            <Alert severity="error" sx={{ mt: 1 }}>
+              {mtProxyError}
+            </Alert>
+          )}
+        </Paper>
       )}
 
-      {status.status === 'approved' && (
+      {status.status === 'approved' && !status.linkedToTelegram && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          Заявка подтверждена — конфиги появятся здесь сразу после привязки Telegram выше.
+        </Alert>
+      )}
+
+      {status.status === 'approved' && status.linkedToTelegram && (
         <Stack spacing={2}>
           {(['phone', 'pc'] as PeerDeviceType[]).map((deviceType) => {
             const device = status.devices.find((d) => d.deviceType === deviceType);
