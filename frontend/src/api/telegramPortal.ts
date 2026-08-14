@@ -6,12 +6,15 @@ export interface PortalDevice {
   createdAt: string;
 }
 
+// Постоянная ссылка на MTProto-proxy self-сервера (см. MtProxyService на бэкенде) — одна
+// на всех клиентов, устанавливается администратором заранее (кнопка на карточке
+// self-сервера в «Серверах»), ключ меняется автоматически раз в сутки.
 export interface PortalMtProxy {
   server: string;
   port: number;
   secret: string;
   deepLink: string;
-  expiresAt: string;
+  updatedAt: string;
 }
 
 export interface PortalStatus {
@@ -62,13 +65,5 @@ export async function issuePortalConfig(
 // issuePortalConfig, которая при существующем устройстве перевыпускает и инвалидирует старый).
 export async function downloadPortalConfig(token: string, deviceType: PeerDeviceType): Promise<PortalConfigResult> {
   const { data } = await portalClient.get<PortalConfigResult>(`/telegram-portal/${token}/config/${deviceType}`);
-  return data;
-}
-
-// Запускает временный MTProto-proxy на self-сервере (10 минут) — единственный способ
-// привязать Telegram, если он заблокирован у клиента. Повторный вызов, пока прежняя сессия
-// ещё активна, возвращает её же (см. TelegramMtProxyService на бэкенде).
-export async function requestPortalMtProxy(token: string): Promise<PortalMtProxy> {
-  const { data } = await portalClient.post<PortalMtProxy>(`/telegram-portal/${token}/mtproxy`);
   return data;
 }

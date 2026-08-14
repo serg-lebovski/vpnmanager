@@ -31,6 +31,7 @@ import SyncIcon from '@mui/icons-material/Sync';
 import SystemUpdateAltIcon from '@mui/icons-material/SystemUpdateAlt';
 import TravelExploreIcon from '@mui/icons-material/TravelExplore';
 import VpnKeyIcon from '@mui/icons-material/VpnKey';
+import VpnLockIcon from '@mui/icons-material/VpnLock';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, useEffect, useState } from 'react';
 import { connectDashboardSocket } from '../api/dashboard';
@@ -46,7 +47,9 @@ import {
   deleteServer,
   detectExistingInstallations,
   ensureFail2ban,
+  fetchMtProxyStatus,
   fetchServers,
+  installMtProxy,
   installProtocol,
   rebootServer,
   resetHostKeyFingerprint,
@@ -403,6 +406,19 @@ function ServerCard({
   const checkVersionMutation = useMutation({ mutationFn: checkProtocolVersion, onSuccess: onDetected });
   const updatePackageMutation = useMutation({ mutationFn: updateProtocolPackage, onSuccess: onDetected });
 
+  // Постоянный MTProto-proxy (обход блокировки Telegram) — только на self-сервере, см.
+  // README/MtProxyService. GET отдельно от установки — чтобы посмотреть уже выданную ссылку
+  // без переустановки (переустановка меняет порт+ключ и рвёт уже разосланные ссылки).
+  const mtProxyStatusQuery = useQuery({
+    queryKey: ['mtproxy-status', server.id],
+    queryFn: () => fetchMtProxyStatus(server.id),
+    enabled: server.isSelf,
+  });
+  const mtProxyInstallMutation = useMutation({
+    mutationFn: () => installMtProxy(server.id),
+    onSuccess: () => mtProxyStatusQuery.refetch(),
+  });
+
   const protocolLabels: Record<VpnProtocol, string> = { wireguard: 'WireGuard', amneziawg: 'AmneziaWG' };
 
   return (
@@ -503,6 +519,23 @@ function ServerCard({
               </IconButton>
             </span>
           </Tooltip>
+          {server.isSelf && (
+            <Tooltip
+              title={
+                mtProxyInstallMutation.isPending
+                  ? 'Устанавливаем…'
+                  : server.mtProxyPort
+                    ? 'Переустановить MTProto-proxy (обход блокировки Telegram) — новые порт и ключ, старая ссылка перестанет работать'
+                    : 'Установить MTProto-proxy (обход блокировки Telegram) — ссылка показывается клиентам на портале регистрации'
+              }
+            >
+              <span>
+                <IconButton size="small" onClick={() => mtProxyInstallMutation.mutate()} disabled={mtProxyInstallMutation.isPending}>
+                  {mtProxyInstallMutation.isPending ? <CircularProgress size={16} /> : <VpnLockIcon fontSize="small" />}
+                </IconButton>
+              </span>
+            </Tooltip>
+          )}
           {!isEditingName && (
             <Tooltip title="Переименовать">
               <IconButton
@@ -545,6 +578,23 @@ function ServerCard({
       {fail2banErrorMessage && !fail2banPending && (
         <Alert severity="error" sx={{ mt: 2 }}>
           {fail2banErrorMessage}
+        </Alert>
+      )}
+
+      {server.isSelf && mtProxyStatusQuery.data?.installed && (
+        <Alert severity="success" sx={{ mt: 2 }}>
+          <Typography variant="body2">
+            MTProto-proxy на порту {mtProxyStatusQuery.data.port} — эта ссылка автоматически показывается клиентам на
+            портале регистрации для обхода блокировки Telegram. Ключ обновляется автоматически раз в сутки.
+          </Typography>
+          <Typography variant="caption" sx={{ wordBreak: 'break-all', display: 'block', mt: 0.5 }}>
+            {mtProxyStatusQuery.data.deepLink}
+          </Typography>
+        </Alert>
+      )}
+      {mtProxyInstallMutation.isError && (
+        <Alert severity="error" sx={{ mt: 2 }}>
+          {getErrorMessage(mtProxyInstallMutation.error, 'Не удалось установить mtproxy')}
         </Alert>
       )}
 

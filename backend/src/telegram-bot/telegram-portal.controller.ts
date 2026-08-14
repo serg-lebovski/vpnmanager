@@ -41,13 +41,4 @@ export class TelegramPortalController {
   downloadConfig(@Param('token') token: string, @Param('deviceType') deviceType: PeerDeviceType) {
     return this.telegramPortalService.downloadConfig(token, deviceType);
   }
-
-  // Реально провижинит временный процесс на self-сервере по SSH (см.
-  // TelegramMtProxyService) — заметно дороже остальных ручек контроллера, отдельный лимит
-  // не даёт злоупотребить этим как способом просадить self-сервер частыми запросами.
-  @Throttle({ default: { limit: 5, ttl: 60_000 } })
-  @Post(':token/mtproxy')
-  requestMtProxy(@Param('token') token: string) {
-    return this.telegramPortalService.requestMtProxy(token);
-  }
 }

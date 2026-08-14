@@ -120,6 +120,11 @@ export interface ServerEntity {
   // TOFU-отпечаток SSH host key — null, пока ни разу не подключались (или сброшен вручную
   // после переустановки сервера). См. SshService/ServersPage.
   sshHostKeyFingerprint: string | null;
+  // Постоянный MTProto-proxy (обход блокировки Telegram) — см. MtProxyStatus/ServersPage.
+  // mtProxyPort !== null означает "установлен"; сам секрет/ссылка сюда не попадают —
+  // за ними отдельный запрос (fetchMtProxyStatus), чтобы не гонять их в общем списке.
+  mtProxyPort: number | null;
+  mtProxyUpdatedAt: string | null;
   createdAt: string;
   protocols: ServerProtocolEntity[];
 }

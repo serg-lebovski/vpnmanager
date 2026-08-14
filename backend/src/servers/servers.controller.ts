@@ -7,13 +7,17 @@ import { CreateServerDto } from './dto/create-server.dto';
 import { InstallProtocolDto } from './dto/install-protocol.dto';
 import { UpdateServerCredentialsDto } from './dto/update-server-credentials.dto';
 import { UpdateServerDto } from './dto/update-server.dto';
+import { MtProxyService } from './mtproxy.service';
 import { ServersService } from './servers.service';
 
 @Controller('servers')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(Role.SUPER_ADMIN)
 export class ServersController {
-  constructor(private readonly serversService: ServersService) {}
+  constructor(
+    private readonly serversService: ServersService,
+    private readonly mtProxyService: MtProxyService,
+  ) {}
 
   @Get()
   findAll() {
@@ -96,5 +100,18 @@ export class ServersController {
   @Post(':id/reset-host-key')
   resetHostKeyFingerprint(@Param('id') id: string) {
     return this.serversService.resetHostKeyFingerprint(id);
+  }
+
+  // Постоянный MTProto-proxy для обхода блокировки Telegram у клиентов, устанавливаемый
+  // только на self-сервере — см. MtProxyService. GET — посмотреть текущую ссылку без
+  // переустановки (переустановка меняет порт+ключ и обрывает уже разосланные ссылки).
+  @Get(':id/mtproxy')
+  getMtProxyStatus(@Param('id') id: string) {
+    return this.mtProxyService.getStatus(id);
+  }
+
+  @Post(':id/mtproxy')
+  installMtProxy(@Param('id') id: string) {
+    return this.mtProxyService.install(id);
   }
 }

@@ -25,7 +25,6 @@ import {
   issuePortalConfig,
   PortalUpstreamOption,
   registerPortal,
-  requestPortalMtProxy,
 } from '../api/telegramPortal';
 import { PeerDeviceType, VpnProtocol } from '../api/types';
 
@@ -138,17 +137,7 @@ function PortalStatusView({ token }: { token: string }) {
   const [issueDialog, setIssueDialog] = useState<IssueDialogState | null>(null);
   const [issueError, setIssueError] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
-  const [mtProxyError, setMtProxyError] = useState<string | null>(null);
   const [result, setResult] = useState<{ filename: string; content: string; qrDataUri: string } | null>(null);
-
-  const mtProxyMutation = useMutation({
-    mutationFn: () => requestPortalMtProxy(token),
-    onSuccess: () => {
-      setMtProxyError(null);
-      queryClient.invalidateQueries({ queryKey: ['portal-status', token] });
-    },
-    onError: (err) => setMtProxyError(getErrorMessage(err, 'Не удалось выдать временный доступ')),
-  });
 
   const downloadMutation = useMutation({
     mutationFn: (deviceType: PeerDeviceType) => downloadPortalConfig(token, deviceType),
@@ -243,11 +232,10 @@ function PortalStatusView({ token }: { token: string }) {
               Открыть бота в Telegram
             </Button>
           )}
-          {status.mtProxy ? (
+          {status.mtProxy && (
             <Stack spacing={1}>
               <Alert severity="info">
-                Временный доступ действует до {new Date(status.mtProxy.expiresAt).toLocaleTimeString()}. Настройте
-                эту ссылку прокси в Telegram, затем откройте бота (кнопка выше).
+                Telegram заблокирован? Настройте эту ссылку прокси в Telegram, затем откройте бота (кнопка выше).
               </Alert>
               <Button href={status.mtProxy.deepLink} target="_blank" rel="noopener" variant="outlined" fullWidth>
                 Открыть прокси-ссылку в Telegram
@@ -256,15 +244,6 @@ function PortalStatusView({ token }: { token: string }) {
                 Вручную: сервер {status.mtProxy.server}, порт {status.mtProxy.port}, секрет {status.mtProxy.secret}
               </Typography>
             </Stack>
-          ) : (
-            <Button variant="outlined" fullWidth disabled={mtProxyMutation.isPending} onClick={() => mtProxyMutation.mutate()}>
-              Telegram заблокирован? Получить временный доступ на 10 минут
-            </Button>
-          )}
-          {mtProxyError && (
-            <Alert severity="error" sx={{ mt: 1 }}>
-              {mtProxyError}
-            </Alert>
           )}
         </Paper>
       )}

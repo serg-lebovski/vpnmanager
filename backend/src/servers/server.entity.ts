@@ -51,6 +51,20 @@ export class Server {
   @Column({ name: 'ssh_host_key_fingerprint', type: 'varchar', nullable: true })
   sshHostKeyFingerprint: string | null;
 
+  // Постоянный MTProto-proxy (обход блокировки Telegram у клиентов) — устанавливается
+  // кнопкой на карточке self-сервера (см. MtProxyService), не путать со старой версией
+  // (временная сессия на 10 минут по запросу с портала, от которой отказались 2026-08-15).
+  // mtProxyPort меняется только при установке/переустановке, mtProxySecretEnc — ещё и раз в
+  // сутки автоматической ротацией (MtProxyService.rotateSecrets), без переустановки порта.
+  @Column({ name: 'mtproxy_port', type: 'int', nullable: true })
+  mtProxyPort: number | null;
+
+  @Column({ name: 'mtproxy_secret_enc', type: 'text', nullable: true })
+  mtProxySecretEnc: string | null;
+
+  @Column({ name: 'mtproxy_updated_at', type: 'timestamptz', nullable: true })
+  mtProxyUpdatedAt: Date | null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 

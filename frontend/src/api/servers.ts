@@ -115,3 +115,27 @@ export async function resetHostKeyFingerprint(serverId: string): Promise<ServerE
   const { data } = await apiClient.post<ServerEntity>(`/servers/${serverId}/reset-host-key`);
   return data;
 }
+
+export interface MtProxyStatus {
+  installed: boolean;
+  server: string | null;
+  port: number | null;
+  secret: string | null;
+  deepLink: string | null;
+  updatedAt: string | null;
+}
+
+// Текущее состояние постоянного MTProto-proxy self-сервера, без переустановки — доступно
+// только для сервера с isSelf: true (см. MtProxyService на бэкенде).
+export async function fetchMtProxyStatus(serverId: string): Promise<MtProxyStatus> {
+  const { data } = await apiClient.get<MtProxyStatus>(`/servers/${serverId}/mtproxy`);
+  return data;
+}
+
+// Создать (если ещё не установлен) или полностью переустановить — новые порт+ключ,
+// systemd-юнит разворачивается заново. Ссылка, уже разосланная клиентам до этого, перестаёт
+// работать (в отличие от автоматической ежесуточной ротации ключа, которая порт не трогает).
+export async function installMtProxy(serverId: string): Promise<MtProxyStatus> {
+  const { data } = await apiClient.post<MtProxyStatus>(`/servers/${serverId}/mtproxy`);
+  return data;
+}
