@@ -118,6 +118,18 @@ export class TelegramMtProxyService {
   // обхода блокировки, а не просто голый TCP-проброс. cd в каталог сессии, а не абсолютные
   // пути в команде python — mtprotoproxy.py ищет config.py рядом с собой (в каталоге
   // запущенного скрипта), поэтому у каждой сессии своя копия скрипта + свой config.py.
+  //
+  // setsid (не просто `nohup ... &`) — живьём пойманный на проде инцидент 2026-08-14:
+  // `nohup timeout ... python3 mtprotoproxy.py > log 2>&1 < /dev/null &` НЕ отвязывает
+  // процесс от SSH-канала, несмотря на полное перенаправление всех трёх потоков — sshd
+  // (у non-pty exec-канала) не шлёт EOF, пока жив хотя бы один процесс, унаследовавший
+  // сессию исходной команды, а именно так ведёт себя python3 mtprotoproxy.py (в отличие от
+  // проверенных вручную `sleep`/голого asyncio/сокета — не воспроизводится). Итог:
+  // `ssh.execCommand` в SshService зависал на все MTPROXY_TTL_SECONDS (600с), backend
+  // всё ещё ждал ответа, а nginx уже обрывал HTTP-запрос по `proxy_read_timeout 300s` —
+  // пользователь получал 504 (HTML, не JSON) и видел общий fallback-текст ошибки на
+  // портале, хотя прокси на self-сервере реально поднимался и работал. `setsid` заводит
+  // процессу отдельную сессию — SSH-канал закрывается сразу же, без ожидания.
   private async launchProxy(ssh: NodeSSH, sessionId: string, port: number, secret: string): Promise<void> {
     const dir = `/opt/mtproxy-sessions/${sessionId}`;
     const script = `mkdir -p ${dir} && cp /opt/mtproxy-src/mtprotoproxy.py ${dir}/ && cat > ${dir}/config.py <<'PYEOF'
@@ -133,8 +145,8 @@ MODES = {
 TLS_DOMAIN = "www.google.com"
 PYEOF
 command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active" && ufw allow ${port}/tcp || true
-cd ${dir} && nohup timeout ${MTPROXY_TTL_SECONDS} python3 mtprotoproxy.py > mtproxy.log 2>&1 < /dev/null &
-nohup sh -c "sleep $((MTPROXY_TTL_SECONDS + 30)) && rm -rf ${dir}" > /dev/null 2>&1 < /dev/null &`;
+setsid sh -c "cd ${dir} && exec timeout ${MTPROXY_TTL_SECONDS} python3 mtprotoproxy.py" < /dev/null > ${dir}/mtproxy.log 2>&1 &
+setsid sh -c "sleep $((MTPROXY_TTL_SECONDS + 30)) && rm -rf ${dir}" < /dev/null > /dev/null 2>&1 &`;
     await this.sshService.execOrThrow(ssh, script);
     this.logger.log(`Временный MTProto-proxy запущен на порту ${port} (сессия ${sessionId}, ${MTPROXY_TTL_SECONDS}с)`);
   }
