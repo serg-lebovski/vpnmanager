@@ -1,4 +1,8 @@
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
   Box,
   Button,
@@ -11,6 +15,12 @@ import {
   Paper,
   Stack,
   Switch,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
   TextField,
   Typography,
 } from '@mui/material';
@@ -22,6 +32,7 @@ import {
   CreateBridgeInput,
   createBridge,
   deleteBridge,
+  fetchBridgeLogs,
   fetchBridges,
   fetchCandidateServers,
   fetchCandidateStatus,
@@ -44,6 +55,12 @@ const statusColor: Record<string, 'default' | 'success' | 'error' | 'warning'> =
   error: 'error',
 };
 
+const logLevelColor: Record<string, 'default' | 'warning' | 'error'> = {
+  info: 'default',
+  warn: 'warning',
+  error: 'error',
+};
+
 interface ProtocolRowState {
   enabled: boolean;
   listenPort: number;
@@ -61,6 +78,11 @@ export function BridgePage() {
   const { data: bridges, isLoading } = useQuery({ queryKey: ['bridges'], queryFn: fetchBridges });
   const { data: servers } = useQuery({ queryKey: ['bridge-candidate-servers'], queryFn: fetchCandidateServers });
   const { data: organizations } = useQuery({ queryKey: ['organizations'], queryFn: fetchOrganizations });
+  const { data: bridgeLogs, isLoading: bridgeLogsLoading } = useQuery({
+    queryKey: ['bridge-logs'],
+    queryFn: fetchBridgeLogs,
+    refetchInterval: 15_000,
+  });
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['bridges'] });
 
@@ -280,6 +302,48 @@ export function BridgePage() {
           canDelete={isSuperAdmin}
         />
       ))}
+
+      <Accordion>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Typography variant="subtitle1">Журнал мостов</Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Typography variant="body2" color="text.secondary" mb={2}>
+            Переключения upstream (ручные/авто/failover), настройка NAT/обхода/маршрутизации
+            Telegram, восстановление после перезагрузки self-сервера — хранится в БД, не
+            пропадает при пересоздании контейнера backend.
+          </Typography>
+          <TableContainer sx={{ overflowX: 'auto', maxHeight: 480 }}>
+            <Table size="small" stickyHeader>
+              <TableHead>
+                <TableRow>
+                  <TableCell>Время</TableCell>
+                  <TableCell>Уровень</TableCell>
+                  <TableCell>Мост</TableCell>
+                  <TableCell>Сообщение</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {bridgeLogs?.map((entry) => (
+                  <TableRow key={entry.id}>
+                    <TableCell sx={{ whiteSpace: 'nowrap' }}>{new Date(entry.createdAt).toLocaleString()}</TableCell>
+                    <TableCell>
+                      <Chip size="small" label={entry.level} color={logLevelColor[entry.level]} />
+                    </TableCell>
+                    <TableCell>{entry.bridgeName ?? '—'}</TableCell>
+                    <TableCell sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{entry.message}</TableCell>
+                  </TableRow>
+                ))}
+                {!bridgeLogsLoading && (bridgeLogs?.length ?? 0) === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={4}>Записей пока нет</TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </AccordionDetails>
+      </Accordion>
     </Stack>
   );
 }

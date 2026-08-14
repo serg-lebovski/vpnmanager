@@ -1,5 +1,5 @@
 import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
-import { TelegramBotLogLevel } from '../common/enums';
+import { LogLevel } from '../common/enums';
 
 // Журнал действий Telegram-бота самостоятельной регистрации — видно в панели (вкладка
 // Telegram), без необходимости заходить по SSH и смотреть docker logs, чтобы понять, что
@@ -12,8 +12,8 @@ export class TelegramBotLog {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ type: 'enum', enum: TelegramBotLogLevel, default: TelegramBotLogLevel.INFO })
-  level: TelegramBotLogLevel;
+  @Column({ type: 'enum', enum: LogLevel, default: LogLevel.INFO })
+  level: LogLevel;
 
   @Column({ type: 'text' })
   message: string;

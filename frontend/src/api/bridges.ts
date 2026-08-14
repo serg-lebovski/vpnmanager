@@ -100,3 +100,20 @@ export async function rebalanceBridge(bridgeId: string): Promise<BridgeEntity> {
 export async function deleteBridge(bridgeId: string): Promise<void> {
   await apiClient.delete(`/bridges/${bridgeId}`);
 }
+
+export interface BridgeLogEntry {
+  id: string;
+  level: 'info' | 'warn' | 'error';
+  message: string;
+  bridgeId: string | null;
+  bridgeName: string | null;
+  createdAt: string;
+}
+
+// Журнал жизненного цикла ВСЕХ мостов (переключения upstream, NAT/bypass/маршрутизация
+// Telegram, восстановление после перезагрузки self-сервера) — не в docker logs (те
+// пропадают при каждом пересоздании контейнера backend), а в БД.
+export async function fetchBridgeLogs(): Promise<BridgeLogEntry[]> {
+  const { data } = await apiClient.get<BridgeLogEntry[]>('/bridges/logs');
+  return data;
+}

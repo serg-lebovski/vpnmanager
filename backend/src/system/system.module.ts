@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { BridgeLogModule } from '../bridge-log/bridge-log.module';
 import { Bridge } from '../bridges/bridge.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { Server } from '../servers/server.entity';
@@ -21,6 +22,7 @@ import { UpdateService } from './update.service';
   imports: [
     TypeOrmModule.forFeature([SystemSettings, Bridge, Server]),
     VpnModule,
+    BridgeLogModule,
     NotificationsModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],

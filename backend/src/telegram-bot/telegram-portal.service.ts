@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
 import * as QRCode from 'qrcode';
 import { Repository } from 'typeorm';
-import { PeerDeviceType, TelegramBotLogLevel, TelegramRegistrationStatus, VpnProtocol } from '../common/enums';
+import { PeerDeviceType, LogLevel, TelegramRegistrationStatus, VpnProtocol } from '../common/enums';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Organization } from '../organizations/organization.entity';
 import { PeersService } from '../peers/peers.service';
@@ -75,7 +75,7 @@ export class TelegramPortalService {
     });
     await this.registrationsRepository.save(registration);
     await this.logsRepository.insert({
-      level: TelegramBotLogLevel.INFO,
+      level: LogLevel.INFO,
       message: `Новая веб-заявка на регистрацию: ${registration.fullName}`,
       chatId: null,
     });
@@ -119,7 +119,7 @@ export class TelegramPortalService {
     const registration = await this.findByToken(token);
     const session = await this.telegramMtProxyService.issueSession(registration.id);
     await this.logsRepository.insert({
-      level: TelegramBotLogLevel.INFO,
+      level: LogLevel.INFO,
       message: `Выдан временный MTProto-proxy для привязки Telegram (заявка «${registration.fullName}»)`,
       chatId: null,
     });
@@ -162,7 +162,7 @@ export class TelegramPortalService {
           dto.upstreamKey,
         );
     await this.logsRepository.insert({
-      level: TelegramBotLogLevel.INFO,
+      level: LogLevel.INFO,
       message: `${hasExisting ? 'Перевыпущен' : 'Выдан'} peer через веб-портал: «${result.filename.replace(/\.conf$/, '')}»`,
       chatId: null,
     });

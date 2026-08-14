@@ -2,7 +2,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
 import { IsNull, Not, Repository } from 'typeorm';
-import { TelegramBotLogLevel, TelegramRegistrationStatus } from '../common/enums';
+import { LogLevel, TelegramRegistrationStatus } from '../common/enums';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PeersService } from '../peers/peers.service';
 import { TelegramBotLog } from './telegram-bot-log.entity';
@@ -86,7 +86,7 @@ export class TelegramRegistrationsService {
     registration.status = TelegramRegistrationStatus.APPROVED;
     await this.registrationsRepository.save(registration);
     await this.logsRepository.insert({
-      level: TelegramBotLogLevel.INFO,
+      level: LogLevel.INFO,
       message: `Заявка подтверждена суперадмином: ${registration.fullName}`,
       chatId: registration.telegramChatId,
     });
@@ -107,7 +107,7 @@ export class TelegramRegistrationsService {
       await this.peersService.revokeAllPeersForTelegramRegistration(id);
     }
     await this.logsRepository.insert({
-      level: TelegramBotLogLevel.INFO,
+      level: LogLevel.INFO,
       message: `Заявка удалена суперадмином: ${registration.fullName} (peers ${revokePeers ? 'отозваны' : 'оставлены'})`,
       chatId: registration.telegramChatId,
     });

@@ -2,10 +2,11 @@ import { BadRequestException, Injectable, Logger, NotFoundException } from '@nes
 import { NodeSSH } from 'node-ssh';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Not, Repository } from 'typeorm';
+import { BridgeLogService } from '../bridge-log/bridge-log.service';
 import { Bridge } from '../bridges/bridge.entity';
 import { probeTcpPort } from '../common/tcp-probe.util';
 import { decryptSecret } from '../common/encryption.util';
-import { ServerProtocolStatus, VpnProtocol } from '../common/enums';
+import { LogLevel, ServerProtocolStatus, VpnProtocol } from '../common/enums';
 import { ServerProtocol } from '../servers/server-protocol.entity';
 import { Server } from '../servers/server.entity';
 import { SshConnectionParams, SshService } from '../ssh/ssh.service';
@@ -40,6 +41,7 @@ export class VpnProvisioningService {
     private readonly amneziaWgDriver: AmneziaWgDriver,
     @InjectRepository(Server) private readonly serversRepository: Repository<Server>,
     @InjectRepository(ServerProtocol) private readonly serverProtocolsRepository: Repository<ServerProtocol>,
+    private readonly bridgeLogService: BridgeLogService,
   ) {
     this.drivers = {
       [VpnProtocol.WIREGUARD]: this.wireGuardDriver,
@@ -98,6 +100,10 @@ export class VpnProvisioningService {
       `Модуль ${driver.protocol} на сервере "${server.name}" собран для ядра ${status.rebootKernel}, но сервер ` +
         `сейчас работает на другом ядре — перезагружаю сервер, чтобы применить его (до ${KERNEL_REBOOT_TIMEOUT_MS / 1000}с)…`,
     );
+    this.bridgeLogService.log(
+      LogLevel.WARN,
+      `Автоперезагрузка сервера "${server.name}": модуль ${driver.protocol} собран не под текущее ядро`,
+    );
     try {
       await this.sshService.withConnection(connection, (ssh) => this.sshService.exec(ssh, 'reboot'));
     } catch {
@@ -111,17 +117,20 @@ export class VpnProvisioningService {
         await new Promise((resolve) => setTimeout(resolve, KERNEL_REBOOT_SSHD_SETTLE_MS));
         const recheck = await this.sshService.withConnection(connection, (ssh) => driver.checkKernelModuleStatus(ssh));
         if (!recheck.ready) {
-          throw new Error(
-            `Сервер "${server.name}" перезагрузился, но модуль ${driver.protocol} всё ещё недоступен для текущего ` +
-              `ядра — возможно, загрузчик выбирает не ту версию ядра по умолчанию. Проверьте по SSH "uname -r" и "dkms status".`,
-          );
+          const message = `Сервер "${server.name}" перезагрузился, но модуль ${driver.protocol} всё ещё недоступен для текущего ` +
+            `ядра — возможно, загрузчик выбирает не ту версию ядра по умолчанию. Проверьте по SSH "uname -r" и "dkms status".`;
+          this.bridgeLogService.log(LogLevel.ERROR, message);
+          throw new Error(message);
         }
         this.logger.log(`Сервер "${server.name}" вернулся после перезагрузки, модуль ${driver.protocol} готов`);
+        this.bridgeLogService.log(LogLevel.INFO, `Сервер "${server.name}" вернулся после перезагрузки, модуль ${driver.protocol} готов`);
         return;
       }
       await new Promise((resolve) => setTimeout(resolve, KERNEL_REBOOT_POLL_MS));
     }
-    throw new Error(`Сервер "${server.name}" не вернулся в сеть после перезагрузки в течение ${KERNEL_REBOOT_TIMEOUT_MS / 1000}с`);
+    const timeoutMessage = `Сервер "${server.name}" не вернулся в сеть после перезагрузки в течение ${KERNEL_REBOOT_TIMEOUT_MS / 1000}с`;
+    this.bridgeLogService.log(LogLevel.ERROR, timeoutMessage);
+    throw new Error(timeoutMessage);
   }
 
   async installProtocol(

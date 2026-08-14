@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { BridgeLogModule } from '../bridge-log/bridge-log.module';
 import { ServerProtocol } from '../servers/server-protocol.entity';
 import { Server } from '../servers/server.entity';
 import { SshModule } from '../ssh/ssh.module';
@@ -8,7 +9,7 @@ import { VpnProvisioningService } from './vpn-provisioning.service';
 import { WireGuardDriver } from './wireguard.driver';
 
 @Module({
-  imports: [SshModule, TypeOrmModule.forFeature([Server, ServerProtocol])],
+  imports: [SshModule, BridgeLogModule, TypeOrmModule.forFeature([Server, ServerProtocol])],
   providers: [WireGuardDriver, AmneziaWgDriver, VpnProvisioningService],
   exports: [VpnProvisioningService],
 })

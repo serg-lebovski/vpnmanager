@@ -2,8 +2,10 @@ import { BadRequestException, Injectable, Logger, OnModuleInit } from '@nestjs/c
 import { Cron } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { BridgeLogService } from '../bridge-log/bridge-log.service';
 import { Bridge } from '../bridges/bridge.entity';
 import { setCorsAllowedDomain } from '../common/cors-origin.state';
+import { LogLevel } from '../common/enums';
 import { encryptSecret } from '../common/encryption.util';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Server } from '../servers/server.entity';
@@ -25,6 +27,7 @@ export class SettingsService implements OnModuleInit {
     private readonly nginxConfigService: NginxConfigService,
     private readonly vpnProvisioningService: VpnProvisioningService,
     private readonly notificationsService: NotificationsService,
+    private readonly bridgeLogService: BridgeLogService,
   ) {}
 
   // Пойманный вживую инцидент (2026-08-14): self-сервер моста перезагрузился (после сбоя
@@ -50,6 +53,7 @@ export class SettingsService implements OnModuleInit {
       }
     } catch (error) {
       this.logger.warn(`Не удалось переприменить маршрутизацию Telegram при старте: ${(error as Error).message}`);
+      this.bridgeLogService.log(LogLevel.ERROR, `Переприменение маршрутизации Telegram при старте не удалось: ${(error as Error).message}`);
     }
   }
 
@@ -144,12 +148,16 @@ export class SettingsService implements OnModuleInit {
         const selfServer = bridge?.wireguardClientProtocol?.server ?? bridge?.amneziawgClientProtocol?.server;
         if (!bridge || !selfServer) {
           this.logger.warn(`Не удалось настроить маршрутизацию Telegram через мост ${bridgeId} — мост или self-сервер не найден`);
+          this.bridgeLogService.log(LogLevel.WARN, 'Маршрутизация Telegram: мост или self-сервер не найден', bridgeId);
           return;
         }
-        return this.vpnProvisioningService.setupTelegramRouting(selfServer, bridge);
+        return this.vpnProvisioningService.setupTelegramRouting(selfServer, bridge).then(() => {
+          this.bridgeLogService.log(LogLevel.INFO, 'Маршрутизация Telegram через мост применена', bridge.id, bridge.name);
+        });
       })
       .catch((error) => {
         this.logger.warn(`Не удалось настроить маршрутизацию Telegram через мост: ${(error as Error).message}`);
+        this.bridgeLogService.log(LogLevel.ERROR, `Маршрутизация Telegram не применена: ${(error as Error).message}`, bridgeId);
       });
   }
 

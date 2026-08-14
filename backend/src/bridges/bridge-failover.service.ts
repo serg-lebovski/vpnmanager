@@ -2,8 +2,9 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { BridgeLogService } from '../bridge-log/bridge-log.service';
 import { probeTcpPort } from '../common/tcp-probe.util';
-import { BridgeStatus, BridgeUpstreamMode } from '../common/enums';
+import { BridgeStatus, BridgeUpstreamMode, LogLevel } from '../common/enums';
 import { Bridge } from './bridge.entity';
 import { BridgesService } from './bridges.service';
 
@@ -34,6 +35,7 @@ export class BridgeFailoverService {
   constructor(
     @InjectRepository(Bridge) private readonly bridgesRepository: Repository<Bridge>,
     private readonly bridgesService: BridgesService,
+    private readonly bridgeLogService: BridgeLogService,
   ) {}
 
   // Снимок текущей (flap-protected) доступности по serverId — null, пока сервер ещё не
@@ -71,7 +73,7 @@ export class BridgeFailoverService {
     await Promise.all(
       Array.from(serversById.entries()).map(async ([serverId, { host, sshPort }]) => {
         const ok = await probeTcpPort(host, sshPort);
-        this.updateState(serverId, ok);
+        this.updateState(serverId, host, ok);
       }),
     );
 
@@ -84,8 +86,9 @@ export class BridgeFailoverService {
   // FLAP_PROTECTION_CONSECUTIVE подряд одинаковых результатов — то же самое окно и для
   // самого первого присвоения (null → true/false), и для смены уже известного состояния,
   // поэтому сразу после включения режима не полыхнёт "всё упало" по одной проверке.
-  private updateState(serverId: string, ok: boolean): void {
+  private updateState(serverId: string, host: string, ok: boolean): void {
     const state = this.stateByServerId.get(serverId) ?? { reachable: null, consecutiveOk: 0, consecutiveFail: 0 };
+    const wasReachable = state.reachable;
     if (ok) {
       state.consecutiveOk += 1;
       state.consecutiveFail = 0;
@@ -98,6 +101,14 @@ export class BridgeFailoverService {
       if (state.reachable !== false && state.consecutiveFail >= FLAP_PROTECTION_CONSECUTIVE) {
         state.reachable = false;
       }
+    }
+    // Только реальный переход состояния (не каждый тик) — иначе журнал захлебнётся записями
+    // каждые 20с для стабильно доступного сервера.
+    if (state.reachable !== wasReachable && state.reachable !== null) {
+      this.bridgeLogService.log(
+        state.reachable ? LogLevel.INFO : LogLevel.WARN,
+        `Failover: сервер-кандидат ${host} стал ${state.reachable ? 'доступен' : 'недоступен'} (SSH-порт)`,
+      );
     }
     this.stateByServerId.set(serverId, state);
   }
@@ -114,6 +125,12 @@ export class BridgeFailoverService {
 
     if (!best) {
       this.logger.warn(`Мост "${bridge.name}": ни один upstream-кандидат сейчас не доступен — оставляю текущий upstream как есть`);
+      this.bridgeLogService.log(
+        LogLevel.WARN,
+        'Failover: ни один кандидат сейчас не доступен — upstream не меняю',
+        bridge.id,
+        bridge.name,
+      );
       return;
     }
     if (best.serverProtocolId === bridge.upstreamServerProtocolId) {
@@ -121,10 +138,17 @@ export class BridgeFailoverService {
     }
 
     this.logger.log(`Мост "${bridge.name}": переключаю upstream на кандидата с приоритетом ${best.priority} (failover)`);
+    this.bridgeLogService.log(
+      LogLevel.INFO,
+      `Failover: переключаю upstream на кандидата с приоритетом ${best.priority}`,
+      bridge.id,
+      bridge.name,
+    );
     try {
       await this.bridgesService.setUpstream(bridge.id, best.serverProtocolId);
     } catch (error) {
       this.logger.error(`Failover-переключение моста "${bridge.name}" не удалось: ${(error as Error).message}`);
+      this.bridgeLogService.log(LogLevel.ERROR, `Failover-переключение не удалось: ${(error as Error).message}`, bridge.id, bridge.name);
     }
   }
 }

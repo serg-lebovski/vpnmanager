@@ -3,9 +3,10 @@ import { BadRequestException, Injectable, Logger, NotFoundException } from '@nes
 import { Interval } from '@nestjs/schedule';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, Not, Repository } from 'typeorm';
+import { BridgeLogService } from '../bridge-log/bridge-log.service';
 import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { decryptSecret, encryptSecret } from '../common/encryption.util';
-import { BridgeStatus, BridgeUpstreamMode, PeerStatus, Role, ServerProtocolStatus, VpnProtocol } from '../common/enums';
+import { BridgeStatus, BridgeUpstreamMode, LogLevel, PeerStatus, Role, ServerProtocolStatus, VpnProtocol } from '../common/enums';
 import { Organization } from '../organizations/organization.entity';
 import { Peer } from '../peers/peer.entity';
 import { PeersService } from '../peers/peers.service';
@@ -72,6 +73,7 @@ export class BridgesService {
     private readonly peersService: PeersService,
     private readonly vpnProvisioningService: VpnProvisioningService,
     private readonly bridgesGateway: BridgesGateway,
+    private readonly bridgeLogService: BridgeLogService,
   ) {}
 
   async findAll(requester: AuthenticatedUser): Promise<BridgeListItem[]> {
@@ -306,6 +308,12 @@ export class BridgesService {
         await this.syncBypassRules(saved);
       } catch (error) {
         this.logger.warn(`Не удалось сразу применить список обхода upstream моста "${saved.name}": ${(error as Error).message}`);
+        this.bridgeLogService.log(
+          LogLevel.WARN,
+          `Не удалось сразу применить список обхода upstream: ${(error as Error).message}`,
+          saved.id,
+          saved.name,
+        );
       }
     }
 
@@ -339,6 +347,12 @@ export class BridgesService {
         await this.syncBypassRules(bridge);
       } catch (error) {
         this.logger.warn(`Не удалось обновить список обхода upstream моста "${bridge.name}": ${(error as Error).message}`);
+        this.bridgeLogService.log(
+          LogLevel.WARN,
+          `Периодическое обновление списка обхода upstream не удалось: ${(error as Error).message}`,
+          bridge.id,
+          bridge.name,
+        );
       }
     }
   }
@@ -425,12 +439,25 @@ export class BridgesService {
         );
         if (alternative) {
           this.logger.log(`Сервер удаляется — мост "${bridge.name}" переключается на другой upstream`);
+          this.bridgeLogService.log(LogLevel.INFO, 'Сервер-upstream удаляется — переключаю мост на другой', bridge.id, bridge.name);
           await this.setUpstream(bridge.id, alternative.id);
         } else {
           this.logger.warn(`Сервер удаляется — для моста "${bridge.name}" не нашлось альтернативного upstream`);
+          this.bridgeLogService.log(
+            LogLevel.WARN,
+            'Сервер-upstream удаляется — альтернативы не нашлось, мост останется без upstream',
+            bridge.id,
+            bridge.name,
+          );
         }
       } catch (error) {
         this.logger.error(`Не удалось переключить upstream моста "${bridge.name}" при удалении сервера: ${(error as Error).message}`);
+        this.bridgeLogService.log(
+          LogLevel.ERROR,
+          `Переключение upstream при удалении сервера не удалось: ${(error as Error).message}`,
+          bridge.id,
+          bridge.name,
+        );
       }
     }
   }
@@ -448,6 +475,7 @@ export class BridgesService {
     }
     bridge.upstreamMode = mode;
     const saved = await this.bridgesRepository.save(bridge);
+    this.bridgeLogService.log(LogLevel.INFO, `Режим upstream изменён на "${mode}"`, bridge.id, bridge.name);
     return this.toSafeBridge(saved);
   }
 
@@ -502,6 +530,12 @@ export class BridgesService {
     bridge.status = BridgeStatus.CONFIGURING;
     bridge.lastError = null;
     await this.bridgesRepository.save(bridge);
+    this.bridgeLogService.log(
+      LogLevel.INFO,
+      `Переключение upstream на "${target.server.name}" (${target.protocol}) начато`,
+      bridge.id,
+      bridge.name,
+    );
 
     const progress = (percent: number, step: string) =>
       this.bridgesGateway.broadcastProgress({ bridgeId: bridge.id, percent, step, done: false });
@@ -589,6 +623,7 @@ export class BridgesService {
       }
 
       this.bridgesGateway.broadcastProgress({ bridgeId: bridge.id, percent: 100, step: 'Готово', done: true });
+      this.bridgeLogService.log(LogLevel.INFO, `Upstream переключён на "${target.server.name}" (${target.protocol})`, bridge.id, bridge.name);
       return this.toSafeBridge(saved);
     } catch (error) {
       bridge.status = BridgeStatus.ERROR;
@@ -601,6 +636,12 @@ export class BridgesService {
         done: true,
         error: (error as Error).message,
       });
+      this.bridgeLogService.log(
+        LogLevel.ERROR,
+        `Переключение upstream на "${target.server.name}" не удалось: ${(error as Error).message}`,
+        bridge.id,
+        bridge.name,
+      );
       throw error;
     }
   }
@@ -644,10 +685,12 @@ export class BridgesService {
         const best = await this.findBetterCandidate(bridge);
         if (best) {
           this.logger.log(`Автобаланс: мост "${bridge.name}" переключается на менее загруженный сервер`);
+          this.bridgeLogService.log(LogLevel.INFO, 'Автобаланс: переключаюсь на менее загруженный сервер', bridge.id, bridge.name);
           await this.setUpstream(bridge.id, best.id);
         }
       } catch (error) {
         this.logger.error(`Автобаланс моста "${bridge.name}" не удался: ${(error as Error).message}`);
+        this.bridgeLogService.log(LogLevel.ERROR, `Автобаланс не удался: ${(error as Error).message}`, bridge.id, bridge.name);
       }
     }
   }

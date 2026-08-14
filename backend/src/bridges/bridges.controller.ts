@@ -1,4 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Put, UseGuards } from '@nestjs/common';
+import { BridgeLogService } from '../bridge-log/bridge-log.service';
 import { AuthenticatedUser, CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/enums';
@@ -18,6 +19,7 @@ export class BridgesController {
   constructor(
     private readonly bridgesService: BridgesService,
     private readonly bridgeFailoverService: BridgeFailoverService,
+    private readonly bridgeLogService: BridgeLogService,
   ) {}
 
   // Доступен всем аутентифицированным ролям — org_admin/org_user должны видеть мост
@@ -26,6 +28,15 @@ export class BridgesController {
   @Get()
   findAll(@CurrentUser() user: AuthenticatedUser) {
     return this.bridgesService.findAll(user);
+  }
+
+  // Журнал жизненного цикла ВСЕХ мостов (переключения upstream, NAT/bypass/маршрутизация
+  // Telegram, восстановление после перезагрузки self-сервера) — не завязан на конкретный
+  // :id, поэтому отдельным литеральным путём, а не вложенным под мост.
+  @Get('logs')
+  @Roles(Role.SUPER_ADMIN, Role.ENGINEER)
+  listLogs() {
+    return this.bridgeLogService.list();
   }
 
   // Безопасный (без SSH-секретов) список серверов+протоколов для настройки моста — см.

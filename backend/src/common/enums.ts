@@ -82,10 +82,11 @@ export enum PeerDeviceType {
   PC = 'pc',
 }
 
-// Уровень записи в журнале действий Telegram-бота (TelegramBotLog) — отдельный от
-// AuditLogEntry журнал: у бота нет request.user/HTTP-запроса, через который работает
-// AuditLogInterceptor, и события другие по смыслу (заявки/выдача peers, а не HTTP-вызовы).
-export enum TelegramBotLogLevel {
+// Общий уровень для журналов-таблиц вроде TelegramBotLog/BridgeLog — отдельных от
+// AuditLogEntry: там нет request.user/HTTP-запроса, через который работает
+// AuditLogInterceptor, и события другие по смыслу (заявки/выдача peers, переключения
+// upstream и т.п., а не HTTP-вызовы).
+export enum LogLevel {
   INFO = 'info',
   WARN = 'warn',
   ERROR = 'error',

@@ -4,7 +4,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
 import * as QRCode from 'qrcode';
 import { Repository } from 'typeorm';
-import { PeerDeviceType, TelegramBotLogLevel, TelegramContentKind, TelegramRegistrationStatus, VpnProtocol } from '../common/enums';
+import { PeerDeviceType, LogLevel, TelegramContentKind, TelegramRegistrationStatus, VpnProtocol } from '../common/enums';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Organization } from '../organizations/organization.entity';
 import { PeersService } from '../peers/peers.service';
@@ -80,8 +80,8 @@ export class TelegramBotService {
   // Пишет и в docker logs (как раньше), и в БД, чтобы событие было видно в панели (вкладка
   // Telegram) без захода по SSH. chatId — для контекста "чья это заявка/запрос", не FK
   // (заявка могла быть уже удалена к моменту просмотра лога).
-  private async log(level: TelegramBotLogLevel, message: string, chatId?: string): Promise<void> {
-    const logMethod = level === TelegramBotLogLevel.ERROR ? 'error' : level === TelegramBotLogLevel.WARN ? 'warn' : 'log';
+  private async log(level: LogLevel, message: string, chatId?: string): Promise<void> {
+    const logMethod = level === LogLevel.ERROR ? 'error' : level === LogLevel.WARN ? 'warn' : 'log';
     this.logger[logMethod](chatId ? `[${chatId}] ${message}` : message);
     try {
       await this.logsRepository.insert({ level, message, chatId: chatId ?? null });
@@ -278,7 +278,7 @@ export class TelegramBotService {
     if (forceNew || !registration.webToken) {
       registration.webToken = randomUUID();
       await this.registrationsRepository.save(registration);
-      await this.log(TelegramBotLogLevel.INFO, `${forceNew ? 'Перевыпущена' : 'Выдана'} ссылка веб-портала`, chatId);
+      await this.log(LogLevel.INFO, `${forceNew ? 'Перевыпущена' : 'Выдана'} ссылка веб-портала`, chatId);
     }
     const base = await this.notificationsService.getPanelBaseUrl();
     if (!base) {
@@ -314,7 +314,7 @@ export class TelegramBotService {
         linked.telegramChatId = chatId;
         linked.telegramUsername = telegramUsername;
         await this.registrationsRepository.save(linked);
-        await this.log(TelegramBotLogLevel.INFO, `Telegram привязан к веб-заявке: ${linked.fullName}`, chatId);
+        await this.log(LogLevel.INFO, `Telegram привязан к веб-заявке: ${linked.fullName}`, chatId);
         if (linked.status === TelegramRegistrationStatus.APPROVED) {
           await this.notificationsService.sendToChat(chatId, 'Telegram успешно привязан к вашей заявке.');
           await this.sendMainMenu(chatId);
@@ -340,7 +340,7 @@ export class TelegramBotService {
       const organization = await findOrganizationByQuery(this.organizationsRepository, query);
       if (!organization) {
         this.drafts.delete(chatId);
-        await this.log(TelegramBotLogLevel.WARN, `Не удалось найти организацию по запросу «${query}»`, chatId);
+        await this.log(LogLevel.WARN, `Не удалось найти организацию по запросу «${query}»`, chatId);
         await this.notificationsService.sendToChat(
           chatId,
           'Не нашёл организацию с таким названием или ИНН. Проверьте данные и начните заново с /start.',
@@ -368,7 +368,7 @@ export class TelegramBotService {
       });
       await this.registrationsRepository.save(registration);
       this.drafts.delete(chatId);
-      await this.log(TelegramBotLogLevel.INFO, `Новая заявка на регистрацию: ${text}`, chatId);
+      await this.log(LogLevel.INFO, `Новая заявка на регистрацию: ${text}`, chatId);
       await this.notificationsService.sendToChat(chatId, 'Заявка отправлена. Ожидайте подтверждения администратора.');
     }
   }
@@ -549,12 +549,12 @@ export class TelegramBotService {
       const png = await QRCode.toBuffer(content, { type: 'png', width: 400 });
       await this.notificationsService.sendPhotoToChat(chatId, png, 'QR-код для быстрого подключения');
       await this.log(
-        TelegramBotLogLevel.INFO,
+        LogLevel.INFO,
         `${reissue ? 'Перевыпущен' : 'Выдан'} peer «${filename.replace(/\.conf$/, '')}» (${request.protocol}, ${request.deviceType})`,
         chatId,
       );
     } catch (error) {
-      await this.log(TelegramBotLogLevel.ERROR, `Не удалось выдать peer: ${(error as Error).message}`, chatId);
+      await this.log(LogLevel.ERROR, `Не удалось выдать peer: ${(error as Error).message}`, chatId);
       await this.notificationsService.sendToChat(chatId, `Не удалось создать конфиг: ${(error as Error).message}`);
     } finally {
       this.peerRequests.delete(chatId);
