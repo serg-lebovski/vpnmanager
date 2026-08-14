@@ -1,4 +1,8 @@
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
   Button,
   Chip,
@@ -12,12 +16,18 @@ import {
   Paper,
   Stack,
   Switch,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
   TextField,
   Typography,
 } from '@mui/material';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { fetchBridges } from '../api/bridges';
+import { fetchBridgeLogs, fetchBridges } from '../api/bridges';
 import { getErrorMessage } from '../api/errors';
 import { fetchSettings, renewCertificate, sendTestTelegramMessage, updateSettings } from '../api/settings';
 import {
@@ -33,9 +43,16 @@ import {
   triggerUpdate,
   UpdateProgress,
 } from '../api/system';
+import { fetchTelegramBotLogs } from '../api/telegramRegistrations';
 
 // Должно совпадать с RESTORE_CONFIRMATION_PHRASE в backend/src/system/dto/restore-database.dto.ts.
 const RESTORE_CONFIRMATION_PHRASE = 'ВОССТАНОВИТЬ';
+
+const logLevelColor: Record<string, 'default' | 'warning' | 'error'> = {
+  info: 'default',
+  warn: 'warning',
+  error: 'error',
+};
 
 export function SettingsPage() {
   const { data: version, isLoading, refetch, isFetching } = useQuery({ queryKey: ['system', 'version'], queryFn: fetchVersion });
@@ -260,6 +277,17 @@ export function SettingsPage() {
   const downloadLogsMutation = useMutation({
     mutationFn: () => downloadLogs(logService),
     onError: (err) => setLogError(getErrorMessage(err, 'Не удалось скачать логи')),
+  });
+
+  const { data: bridgeLogs, isLoading: bridgeLogsLoading } = useQuery({
+    queryKey: ['bridge-logs'],
+    queryFn: fetchBridgeLogs,
+    refetchInterval: 15_000,
+  });
+  const { data: telegramLogs, isLoading: telegramLogsLoading } = useQuery({
+    queryKey: ['telegram-bot-logs'],
+    queryFn: fetchTelegramBotLogs,
+    refetchInterval: 15_000,
   });
 
   return (
@@ -636,6 +664,85 @@ export function SettingsPage() {
           </Paper>
         )}
       </Paper>
+
+      <Accordion>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Typography variant="subtitle1">Журнал мостов</Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Typography variant="body2" color="text.secondary" mb={2}>
+            Переключения upstream (ручные/авто/failover), настройка NAT/обхода/маршрутизации
+            Telegram, восстановление после перезагрузки self-сервера — хранится в БД, не
+            пропадает при пересоздании контейнера backend.
+          </Typography>
+          <TableContainer sx={{ overflowX: 'auto', maxHeight: 480 }}>
+            <Table size="small" stickyHeader>
+              <TableHead>
+                <TableRow>
+                  <TableCell>Время</TableCell>
+                  <TableCell>Уровень</TableCell>
+                  <TableCell>Мост</TableCell>
+                  <TableCell>Сообщение</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {bridgeLogs?.map((entry) => (
+                  <TableRow key={entry.id}>
+                    <TableCell sx={{ whiteSpace: 'nowrap' }}>{new Date(entry.createdAt).toLocaleString()}</TableCell>
+                    <TableCell>
+                      <Chip size="small" label={entry.level} color={logLevelColor[entry.level]} />
+                    </TableCell>
+                    <TableCell>{entry.bridgeName ?? '—'}</TableCell>
+                    <TableCell sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{entry.message}</TableCell>
+                  </TableRow>
+                ))}
+                {!bridgeLogsLoading && (bridgeLogs?.length ?? 0) === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={4}>Записей пока нет</TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </AccordionDetails>
+      </Accordion>
+
+      <Accordion>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Typography variant="subtitle1">Журнал Telegram-бота</Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          <TableContainer sx={{ overflowX: 'auto', maxHeight: 480 }}>
+            <Table size="small" stickyHeader>
+              <TableHead>
+                <TableRow>
+                  <TableCell>Время</TableCell>
+                  <TableCell>Уровень</TableCell>
+                  <TableCell>Chat ID</TableCell>
+                  <TableCell>Сообщение</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {telegramLogs?.map((entry) => (
+                  <TableRow key={entry.id}>
+                    <TableCell sx={{ whiteSpace: 'nowrap' }}>{new Date(entry.createdAt).toLocaleString()}</TableCell>
+                    <TableCell>
+                      <Chip size="small" label={entry.level} color={logLevelColor[entry.level]} />
+                    </TableCell>
+                    <TableCell>{entry.chatId ?? '—'}</TableCell>
+                    <TableCell sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{entry.message}</TableCell>
+                  </TableRow>
+                ))}
+                {!telegramLogsLoading && (telegramLogs?.length ?? 0) === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={4}>Записей пока нет</TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </AccordionDetails>
+      </Accordion>
 
       <Dialog open={confirmOpen} onClose={() => setConfirmOpen(false)}>
         <DialogTitle>Обновить приложение?</DialogTitle>

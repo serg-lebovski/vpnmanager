@@ -45,7 +45,6 @@ import {
   broadcastTelegramMessage,
   deleteTelegramBroadcast,
   deleteTelegramRegistration,
-  fetchTelegramBotLogs,
   fetchTelegramBroadcasts,
   fetchTelegramPortalLink,
   fetchTelegramRegistrations,
@@ -204,12 +203,6 @@ const statusColor: Record<string, 'warning' | 'success'> = {
   approved: 'success',
 };
 
-const logLevelColor: Record<string, 'default' | 'warning' | 'error'> = {
-  info: 'default',
-  warn: 'warning',
-  error: 'error',
-};
-
 export function TelegramBotPage() {
   const queryClient = useQueryClient();
   const { data: registrations, isLoading } = useQuery({
@@ -314,12 +307,6 @@ export function TelegramBotPage() {
   const deleteBroadcastMutation = useMutation({
     mutationFn: deleteTelegramBroadcast,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['telegram-broadcasts'] }),
-  });
-
-  const { data: logs, isLoading: logsLoading } = useQuery({
-    queryKey: ['telegram-bot-logs'],
-    queryFn: fetchTelegramBotLogs,
-    refetchInterval: 15_000,
   });
 
   return (
@@ -521,43 +508,6 @@ export function TelegramBotPage() {
                 {!broadcastsLoading && (broadcasts?.length ?? 0) === 0 && (
                   <TableRow>
                     <TableCell colSpan={5}>Рассылок пока не было</TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </TableContainer>
-        </AccordionDetails>
-      </Accordion>
-
-      <Accordion>
-        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-          <Typography variant="subtitle1">Журнал бота</Typography>
-        </AccordionSummary>
-        <AccordionDetails>
-          <TableContainer sx={{ overflowX: 'auto', maxHeight: 480 }}>
-            <Table size="small" stickyHeader>
-              <TableHead>
-                <TableRow>
-                  <TableCell>Время</TableCell>
-                  <TableCell>Уровень</TableCell>
-                  <TableCell>Chat ID</TableCell>
-                  <TableCell>Сообщение</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {logs?.map((entry) => (
-                  <TableRow key={entry.id}>
-                    <TableCell sx={{ whiteSpace: 'nowrap' }}>{new Date(entry.createdAt).toLocaleString()}</TableCell>
-                    <TableCell>
-                      <Chip size="small" label={entry.level} color={logLevelColor[entry.level]} />
-                    </TableCell>
-                    <TableCell>{entry.chatId ?? '—'}</TableCell>
-                    <TableCell sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{entry.message}</TableCell>
-                  </TableRow>
-                ))}
-                {!logsLoading && (logs?.length ?? 0) === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={4}>Записей пока нет</TableCell>
                   </TableRow>
                 )}
               </TableBody>
