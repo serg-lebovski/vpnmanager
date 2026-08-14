@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -14,7 +14,7 @@ import { UpdateSettingsDto } from './dto/update-settings.dto';
 import { SystemSettings } from './system-settings.entity';
 
 @Injectable()
-export class SettingsService {
+export class SettingsService implements OnModuleInit {
   private readonly logger = new Logger(SettingsService.name);
 
   constructor(
@@ -26,6 +26,32 @@ export class SettingsService {
     private readonly vpnProvisioningService: VpnProvisioningService,
     private readonly notificationsService: NotificationsService,
   ) {}
+
+  // Пойманный вживую инцидент (2026-08-14): self-сервер моста перезагрузился (после сбоя
+  // upstream, чинили переключением на другой upstream-сервер) — сам мост восстановился
+  // штатно (setUpstream пересоздаёт NAT/маршруты при каждом переключении), а вот ipset/
+  // iptables/ip rule для маршрутизации Telegram через этот мост (setupTelegramRouting)
+  // применяются ad-hoc через SSH ТОЛЬКО при сохранении настроек с изменившимся
+  // telegramBridgeId — перезагрузку хоста они не переживают (netfilter/ipset — не
+  // персистентное состояние), и ничто больше их не переприменяло. Backend продолжал
+  // работать как ни в чём не бывало, просто каждый getUpdates падал с "fetch failed"
+  // (Telegram по прямому пути с self-сервера заблокирован — для того и нужна была эта
+  // маршрутизация). Переприменяем при каждом старте backend — тот же повод и тот же
+  // паттерн, что у NginxConfigService.onModuleInit(): backend перезапускается на каждом
+  // деплое/рестарте контейнера, а если он живёт на самом self-сервере — это происходит и
+  // после его перезагрузки (restart: unless-stopped в docker-compose.yml). Идемпотентно
+  // (см. setupTelegramRouting), лишний вызов на обычном рестарте без перезагрузки
+  // self-сервера ничего не портит.
+  async onModuleInit(): Promise<void> {
+    try {
+      const settings = await this.getOrCreate();
+      if (settings.telegramBridgeId) {
+        this.setupTelegramRoutingBestEffort(settings.telegramBridgeId);
+      }
+    } catch (error) {
+      this.logger.warn(`Не удалось переприменить маршрутизацию Telegram при старте: ${(error as Error).message}`);
+    }
+  }
 
   async getOrCreate(): Promise<SystemSettings> {
     const existing = await this.settingsRepository.findOne({ where: { id: 1 } });
