@@ -1,9 +1,21 @@
-import { IsEnum, IsOptional, IsString, IsUUID, MinLength } from 'class-validator';
+import { IsBoolean, IsEnum, IsOptional, IsString, IsUUID, MinLength } from 'class-validator';
 import { VpnProtocol } from '../../common/enums';
 
 export class CreatePeerDto {
+  // Игнорируется, если multiProtocol = true (создаются сразу оба протокола) — но всё
+  // равно обязателен на уровне DTO, чтобы форма не могла прислать вообще без протокола
+  // для обычного (не мульти-) создания.
   @IsEnum(VpnProtocol)
   protocol: VpnProtocol;
+
+  // «Мультиконфиг» — создать сразу два связанных peer'а (WireGuard и AmneziaWG) на одном
+  // и том же мосту/сервере и выдать их одним .vpn-файлом для официального приложения
+  // AmneziaVPN, где протокол переключается прямо внутри приложения без повторного
+  // импорта. Требует, чтобы оба протокола были активны на выбранном мосту/сервере — иначе
+  // 400 (см. PeersService.createMultiProtocol).
+  @IsBoolean()
+  @IsOptional()
+  multiProtocol?: boolean;
 
   @IsString()
   @MinLength(1)

@@ -23,6 +23,11 @@ export interface CreatePeerInput {
   // null — явное «без клиента» (только для super_admin); undefined — не передавать
   // (org_admin/org_user всегда создают peer в своей организации на бэкенде).
   organizationId?: string | null;
+  // Мультиконфиг — создать сразу пару peer'ов (WireGuard + AmneziaWG) на выбранном мосту/
+  // сервере, выдаётся одним .vpn-файлом для приложения AmneziaVPN (protocol в этом случае
+  // игнорируется бэкендом). Требует, чтобы ОБА протокола были активны на выбранном мосту/
+  // сервере — иначе 400.
+  multiProtocol?: boolean;
 }
 
 export async function createPeer(input: CreatePeerInput): Promise<PeerEntity> {
@@ -65,4 +70,17 @@ export async function downloadPeerConfig(id: string, suggestedName: string): Pro
 export async function fetchPeerQrCodeUrl(id: string): Promise<string> {
   const response = await apiClient.get(`/peers/${id}/qrcode`, { responseType: 'blob' });
   return URL.createObjectURL(response.data);
+}
+
+// Дополнительный формат — .vpn для официального приложения AmneziaVPN (не заменяет
+// downloadPeerConfig/.conf). Работает для любого peer'а: для пары мультиконфига в файл
+// попадают оба протокола, для обычного peer'а — один (просто без переключения в приложении).
+export async function downloadPeerAmneziaConfig(id: string, suggestedName: string): Promise<void> {
+  const response = await apiClient.get(`/peers/${id}/amnezia-config`, { responseType: 'blob' });
+  const url = URL.createObjectURL(response.data);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `${suggestedName}.vpn`;
+  link.click();
+  URL.revokeObjectURL(url);
 }

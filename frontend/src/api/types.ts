@@ -172,4 +172,7 @@ export interface PeerEntity {
   // только super_admin.
   expiresAt: string | null;
   isExpired: boolean;
+  // Заполнено только для мультиконфига (WireGuard + AmneziaWG одним .vpn-файлом) — id
+  // второго peer'а той же пары. null — обычный одно-протокольный peer.
+  pairedPeerId: string | null;
 }

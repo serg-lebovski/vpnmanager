@@ -27,6 +27,7 @@ import BlockIcon from '@mui/icons-material/Block';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DownloadIcon from '@mui/icons-material/Download';
 import EditIcon from '@mui/icons-material/Edit';
+import PhonelinkRingIcon from '@mui/icons-material/PhonelinkRing';
 import QrCode2Icon from '@mui/icons-material/QrCode2';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, useEffect, useMemo, useState } from 'react';
@@ -36,6 +37,7 @@ import { fetchOrganizations } from '../api/organizations';
 import {
   CreatePeerInput,
   createPeer,
+  downloadPeerAmneziaConfig,
   downloadPeerConfig,
   fetchAllowedServers,
   fetchPeerQrCodeUrl,
@@ -291,10 +293,27 @@ export function PeersPage() {
                 onChange={(e) => setForm({ ...form, protocol: e.target.value as VpnProtocol })}
                 size="small"
                 fullWidth
+                disabled={form.multiProtocol}
               >
                 <MenuItem value="wireguard">WireGuard</MenuItem>
                 <MenuItem value="amneziawg">AmneziaWG</MenuItem>
               </TextField>
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={!!form.multiProtocol}
+                    onChange={(e) => setForm({ ...form, multiProtocol: e.target.checked })}
+                  />
+                }
+                label="Мультиконфиг (WireGuard + AmneziaWG)"
+              />
+              {form.multiProtocol && (
+                <Alert severity="info" sx={{ fontSize: '0.8rem' }}>
+                  Создаст сразу два peer'а на выбранном мосту/сервере и выдаст один .vpn-файл для
+                  приложения AmneziaVPN — протокол переключается прямо внутри приложения. Требует, чтобы
+                  на мосту/сервере были активны ОБА протокола.
+                </Alert>
+              )}
               {bridges && bridges.length > 0 && (
                 <TextField
                   select
@@ -477,6 +496,15 @@ export function PeersPage() {
                       {isSuperAdmin && !peer.isExpired && peer.expiresAt && (
                         <Chip size="small" variant="outlined" label={`до ${new Date(peer.expiresAt).toLocaleDateString()}`} />
                       )}
+                      {peer.pairedPeerId && (
+                        <Chip
+                          size="small"
+                          variant="outlined"
+                          color="info"
+                          label="мультиконфиг"
+                          title="Часть пары WireGuard + AmneziaWG — отзыв/переименование/срок действия применяются к обоим сразу"
+                        />
+                      )}
                     </Stack>
                   </TableCell>
                   <TableCell align="right">
@@ -501,6 +529,17 @@ export function PeersPage() {
                         <span>
                           <IconButton size="small" disabled={peer.source === 'imported'} onClick={() => handleShowQr(peer)}>
                             <QrCode2Icon fontSize="small" />
+                          </IconButton>
+                        </span>
+                      </Tooltip>
+                      <Tooltip title="Скачать .vpn для приложения AmneziaVPN">
+                        <span>
+                          <IconButton
+                            size="small"
+                            disabled={peer.source === 'imported'}
+                            onClick={() => downloadPeerAmneziaConfig(peer.id, peer.name)}
+                          >
+                            <PhonelinkRingIcon fontSize="small" />
                           </IconButton>
                         </span>
                       </Tooltip>

@@ -96,9 +96,16 @@ export class TelegramPortalService {
       organizationName: registration.organization.name,
       status: registration.status,
       linkedToTelegram: !!registration.telegramChatId,
-      devices: peers
-        .filter((p): p is typeof p & { deviceType: PeerDeviceType } => p.deviceType !== null)
-        .map((p) => ({ deviceType: p.deviceType, createdAt: p.createdAt })),
+      // Мультиконфиг — это ДВА реальных peer'а (WireGuard + AmneziaWG, см.
+      // PeersService.createMultiProtocolForTelegramRegistration) с одинаковым deviceType —
+      // без дедупликации устройство отображалось бы в списке дважды.
+      devices: Array.from(
+        new Map(
+          peers
+            .filter((p): p is typeof p & { deviceType: PeerDeviceType } => p.deviceType !== null)
+            .map((p) => [p.deviceType, { deviceType: p.deviceType, createdAt: p.createdAt }] as const),
+        ).values(),
+      ),
       botDeepLink: botUsername ? `https://t.me/${botUsername}?start=${token}` : null,
       mtProxy,
     };
@@ -112,6 +119,14 @@ export class TelegramPortalService {
     return this.peersService.listUpstreamOptions(registration.organization, protocol);
   }
 
+  async listMultiProtocolUpstreamOptions(token: string): Promise<Array<{ key: string; label: string }>> {
+    const registration = await this.findByToken(token);
+    if (registration.status !== TelegramRegistrationStatus.APPROVED) {
+      throw new ForbiddenException('Заявка ещё не подтверждена администратором');
+    }
+    return this.peersService.listMultiProtocolUpstreamOptions(registration.organization);
+  }
+
   async issueConfig(token: string, dto: IssuePortalConfigDto): Promise<{ filename: string; content: string; qrDataUri: string }> {
     const registration = await this.findByToken(token);
     if (registration.status !== TelegramRegistrationStatus.APPROVED) {
@@ -120,24 +135,28 @@ export class TelegramPortalService {
     this.requireLinkedTelegram(registration);
     const existing = await this.peersService.findActivePeersForTelegramRegistration(registration.id);
     const hasExisting = existing.some((p) => p.deviceType === dto.deviceType);
-    const result = hasExisting
-      ? await this.peersService.reissueForTelegramRegistration(
-          registration,
-          registration.organization,
-          dto.protocol,
-          dto.deviceType,
-          dto.upstreamKey,
-        )
-      : await this.peersService.createForTelegramRegistration(
-          registration,
-          registration.organization,
-          dto.protocol,
-          dto.deviceType,
-          dto.upstreamKey,
-        );
+    const result = dto.multiProtocol
+      ? hasExisting
+        ? await this.peersService.reissueMultiProtocolForTelegramRegistration(registration, registration.organization, dto.deviceType, dto.upstreamKey)
+        : await this.peersService.createMultiProtocolForTelegramRegistration(registration, registration.organization, dto.deviceType, dto.upstreamKey)
+      : hasExisting
+        ? await this.peersService.reissueForTelegramRegistration(
+            registration,
+            registration.organization,
+            dto.protocol,
+            dto.deviceType,
+            dto.upstreamKey,
+          )
+        : await this.peersService.createForTelegramRegistration(
+            registration,
+            registration.organization,
+            dto.protocol,
+            dto.deviceType,
+            dto.upstreamKey,
+          );
     await this.logsRepository.insert({
       level: LogLevel.INFO,
-      message: `${hasExisting ? 'Перевыпущен' : 'Выдан'} peer через веб-портал: «${result.filename.replace(/\.conf$/, '')}»`,
+      message: `${hasExisting ? 'Перевыпущен' : 'Выдан'} peer через веб-портал: «${result.filename.replace(/\.(conf|vpn)$/, '')}»`,
       chatId: null,
     });
     return this.withQr(result);
@@ -153,6 +172,19 @@ export class TelegramPortalService {
     }
     this.requireLinkedTelegram(registration);
     const result = await this.peersService.getDownloadableConfigForTelegramRegistration(registration.id, deviceType);
+    return this.withQr(result);
+  }
+
+  // Повторное скачивание .vpn для официального приложения AmneziaVPN — аналог
+  // downloadConfig, но по PeersService.getAmneziaAppConfigForTelegramRegistration; работает
+  // и для обычного одно-протокольного устройства, и для пары мультиконфига.
+  async downloadAmneziaConfig(token: string, deviceType: PeerDeviceType): Promise<{ filename: string; content: string; qrDataUri: string }> {
+    const registration = await this.findByToken(token);
+    if (registration.status !== TelegramRegistrationStatus.APPROVED) {
+      throw new ForbiddenException('Заявка ещё не подтверждена администратором');
+    }
+    this.requireLinkedTelegram(registration);
+    const result = await this.peersService.getAmneziaAppConfigForTelegramRegistration(registration.id, deviceType);
     return this.withQr(result);
   }
 

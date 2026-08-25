@@ -39,6 +39,9 @@ interface Draft {
 interface PeerRequest {
   deviceType: PeerDeviceType;
   protocol?: VpnProtocol;
+  // Мультиконфиг — WireGuard + AmneziaWG одним .vpn-файлом (см. PeersService.
+  // createMultiProtocolForTelegramRegistration), взаимоисключимо с protocol.
+  multiProtocol?: boolean;
   upstreamOptions?: Array<{ key: string; label: string }>;
   upstreamKey?: string;
   // true — запрос пришёл с кнопки "Сменить протокол": пользователь уже явно осознаёт, что
@@ -234,7 +237,9 @@ export class TelegramBotService {
   // менять пока нечего (сначала обычная выдача через "Телефон"/"ПК").
   private async startChangeProtocol(chatId: string, registration: TelegramRegistration): Promise<void> {
     const existingPeers = await this.peersService.findActivePeersForTelegramRegistration(registration.id);
-    const devices = existingPeers.map((peer) => peer.deviceType).filter((d): d is PeerDeviceType => d !== null);
+    // new Set — мультиконфиг даёт ДВА peer'а (WireGuard + AmneziaWG) с одним и тем же
+    // deviceType, без дедупликации устройство считалось бы "выбором из двух" само с собой.
+    const devices = [...new Set(existingPeers.map((peer) => peer.deviceType).filter((d): d is PeerDeviceType => d !== null))];
     if (devices.length === 0) {
       await this.notificationsService.sendToChat(
         chatId,
@@ -401,6 +406,9 @@ export class TelegramBotService {
           { text: 'AmneziaWG', callback_data: 'protocol:amneziawg' },
           { text: 'WireGuard', callback_data: 'protocol:wireguard' },
         ],
+        // Мультиконфиг — один .vpn-файл для приложения AmneziaVPN, протокол переключается
+        // прямо внутри приложения без повторного импорта (см. amnezia-config.util.ts).
+        [{ text: '🔀 WireGuard + AmneziaWG (мультиконфиг)', callback_data: 'protocol:multi' }],
       ],
     });
   }
@@ -418,7 +426,7 @@ export class TelegramBotService {
     const organization = await this.organizationsRepository.findOneOrFail({ where: { id: registration.organizationId } });
     const request = this.peerRequests.get(chatId);
 
-    const protocolMatch = data.match(/^protocol:(amneziawg|wireguard)$/);
+    const protocolMatch = data.match(/^protocol:(amneziawg|wireguard|multi)$/);
     if (protocolMatch) {
       // request отсутствует, если backend перезапускался между нажатием кнопки устройства и
       // этим шагом — восстановить контекст неоткуда, просим начать заново явно, а не молчать.
@@ -426,7 +434,11 @@ export class TelegramBotService {
         await this.notificationsService.sendToChat(chatId, 'Сессия запроса устарела, нажмите «Телефон»/«ПК» ещё раз.');
         return;
       }
-      request.protocol = protocolMatch[1] === 'amneziawg' ? VpnProtocol.AMNEZIAWG : VpnProtocol.WIREGUARD;
+      if (protocolMatch[1] === 'multi') {
+        request.multiProtocol = true;
+      } else {
+        request.protocol = protocolMatch[1] === 'amneziawg' ? VpnProtocol.AMNEZIAWG : VpnProtocol.WIREGUARD;
+      }
       await this.proceedAfterProtocol(chatId, registration, organization, request);
       return;
     }
@@ -465,7 +477,7 @@ export class TelegramBotService {
         this.peerRequests.delete(chatId);
         return;
       }
-      if (!request?.protocol) {
+      if (!request?.protocol && !request?.multiProtocol) {
         await this.notificationsService.sendToChat(chatId, 'Сессия запроса устарела, начните заново.');
         return;
       }
@@ -481,7 +493,9 @@ export class TelegramBotService {
     organization: Organization,
     request: PeerRequest,
   ): Promise<void> {
-    const options = await this.peersService.listUpstreamOptions(organization, request.protocol!);
+    const options = request.multiProtocol
+      ? await this.peersService.listMultiProtocolUpstreamOptions(organization)
+      : await this.peersService.listUpstreamOptions(organization, request.protocol!);
     if (options.length === 0) {
       await this.notificationsService.sendToChat(chatId, 'Для вашей организации ещё не настроен доступ ни к одному серверу или мосту.');
       this.peerRequests.delete(chatId);
@@ -542,15 +556,19 @@ export class TelegramBotService {
   ): Promise<void> {
     const upstreamKey = request.upstreamKey;
     try {
-      const { filename, content } = reissue
-        ? await this.peersService.reissueForTelegramRegistration(registration, organization, request.protocol!, request.deviceType, upstreamKey)
-        : await this.peersService.createForTelegramRegistration(registration, organization, request.protocol!, request.deviceType, upstreamKey);
+      const { filename, content } = request.multiProtocol
+        ? reissue
+          ? await this.peersService.reissueMultiProtocolForTelegramRegistration(registration, organization, request.deviceType, upstreamKey)
+          : await this.peersService.createMultiProtocolForTelegramRegistration(registration, organization, request.deviceType, upstreamKey)
+        : reissue
+          ? await this.peersService.reissueForTelegramRegistration(registration, organization, request.protocol!, request.deviceType, upstreamKey)
+          : await this.peersService.createForTelegramRegistration(registration, organization, request.protocol!, request.deviceType, upstreamKey);
       await this.notificationsService.sendDocumentToChat(chatId, filename, content);
       const png = await QRCode.toBuffer(content, { type: 'png', width: 400 });
       await this.notificationsService.sendPhotoToChat(chatId, png, 'QR-код для быстрого подключения');
       await this.log(
         LogLevel.INFO,
-        `${reissue ? 'Перевыпущен' : 'Выдан'} peer «${filename.replace(/\.conf$/, '')}» (${request.protocol}, ${request.deviceType})`,
+        `${reissue ? 'Перевыпущен' : 'Выдан'} peer «${filename.replace(/\.(conf|vpn)$/, '')}» (${request.multiProtocol ? 'мультиконфиг' : request.protocol}, ${request.deviceType})`,
         chatId,
       );
     } catch (error) {
