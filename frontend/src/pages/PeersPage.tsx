@@ -289,31 +289,27 @@ export function PeersPage() {
               <TextField
                 select
                 label="Протокол"
-                value={form.protocol}
-                onChange={(e) => setForm({ ...form, protocol: e.target.value as VpnProtocol })}
+                value={form.multiProtocol ? 'multi' : form.protocol}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  if (value === 'multi') {
+                    setForm({ ...form, multiProtocol: true });
+                    return;
+                  }
+                  setForm({ ...form, protocol: value as VpnProtocol, multiProtocol: false });
+                }}
                 size="small"
                 fullWidth
-                disabled={form.multiProtocol}
+                helperText={
+                  form.multiProtocol
+                    ? "Создаст сразу два peer'а и выдаст один .vpn-файл для AmneziaVPN — протокол переключается прямо внутри приложения. Требует, чтобы на мосту/сервере были активны оба протокола."
+                    : undefined
+                }
               >
                 <MenuItem value="wireguard">WireGuard</MenuItem>
                 <MenuItem value="amneziawg">AmneziaWG</MenuItem>
+                <MenuItem value="multi">AmneziaWG + WireGuard</MenuItem>
               </TextField>
-              <FormControlLabel
-                control={
-                  <Checkbox
-                    checked={!!form.multiProtocol}
-                    onChange={(e) => setForm({ ...form, multiProtocol: e.target.checked })}
-                  />
-                }
-                label="Мультиконфиг (WireGuard + AmneziaWG)"
-              />
-              {form.multiProtocol && (
-                <Alert severity="info" sx={{ fontSize: '0.8rem' }}>
-                  Создаст сразу два peer'а на выбранном мосту/сервере и выдаст один .vpn-файл для
-                  приложения AmneziaVPN — протокол переключается прямо внутри приложения. Требует, чтобы
-                  на мосту/сервере были активны ОБА протокола.
-                </Alert>
-              )}
               {bridges && bridges.length > 0 && (
                 <TextField
                   select
