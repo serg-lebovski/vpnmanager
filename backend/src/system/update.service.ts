@@ -139,11 +139,19 @@ export class UpdateService {
         );
       }
 
-      emit(60, nginxRenderOk ? 'Пересоздание nginx и frontend' : 'Пересоздание frontend (nginx пропущен из-за ошибки конфигурации выше)');
+      // --build здесь и в recreateBackendDetached ниже — без него `docker compose up`
+      // просто пересоздаёт контейнер ИЗ УЖЕ СУЩЕСТВУЮЩЕГО (старого) образа, никак не
+      // подхватывая новый код из только что затянутого git pull (у backend/frontend в
+      // docker-compose.yml задан build.context — образ нужно пересобрать явно; у nginx
+      // своего Dockerfile нет, --build там просто no-op). Пойманный вживую реальный
+      // инцидент: несколько обновлений подряд отчитывались "Готово", контейнеры
+      // пересоздавались, но фронтенд/бэкенд оставались на коде десятидневной давности —
+      // до этого фикса здесь не было НИ ОДНОГО вызова "docker compose build".
+      emit(60, nginxRenderOk ? 'Пересборка и пересоздание nginx и frontend' : 'Пересборка и пересоздание frontend (nginx пропущен из-за ошибки конфигурации выше)');
       await this.runLogged(
         nginxRenderOk
-          ? 'docker compose up -d --force-recreate --no-deps nginx frontend'
-          : 'docker compose up -d --force-recreate --no-deps frontend',
+          ? 'docker compose up -d --build --force-recreate --no-deps nginx frontend'
+          : 'docker compose up -d --build --force-recreate --no-deps frontend',
         repoPath,
         logPath,
       );
@@ -186,23 +194,18 @@ export class UpdateService {
   // текущий backend.
   private async recreateBackendDetached(repoPath: string, logPath: string): Promise<void> {
     // РАНЬШЕ здесь резолвился `docker inspect --format '{{.Image}}' $(hostname)` — sha256-
-    // digest образа, из которого создан ТЕКУЩИЙ (ещё не пересозданный) контейнер, а затем
-    // `docker compose images -q backend`. Проблема (пойманная вживую ДВАЖДЫ, оба раза
-    // 2026-08-04): оба варианта резолвят образ уже ЗАПУЩЕННОГО контейнера сервиса backend —
-    // то есть СТАРЫЙ образ, а не тот, что только что собрал предыдущий шаг
-    // (`docker compose build`). К моменту, когда sibling-контейнер реально пытался
-    // запуститься по этому (обязательно старому, уже расстэгованному после ретэга `:latest`
-    // на новый билд) digest'у, самого образа в локальном хранилище уже не было ("No such
-    // image") — унёс мусорщик демона. Старый образ тут в принципе не нужен — sibling-
-    // контейнеру нужен ЛЮБОЙ образ с docker-cli + docker-cli-compose, а свежесобранный образ
-    // backend уже есть и куда надёжнее (не может пропасть между сборкой и использованием).
+    // digest образа, из которого создан ТЕКУЩИЙ (ещё не пересозданный) контейнер. Проблема
+    // (пойманная вживую ДВАЖДЫ, оба раза 2026-08-04): после ретэга `:latest` на новый билд
+    // старый digest быстро становится "висячим" и пропадает из локального хранилища
+    // ("No such image") раньше, чем sibling-контейнер успевал по нему запуститься. selfImage
+    // здесь нужен ТОЛЬКО как образ с docker-cli + docker-cli-compose внутри для запуска
+    // helperCommand ниже (сам backend пересобирается флагом --build В ЭТОЙ команде, из уже
+    // затянутого git pull'ом кода) — годится любой существующий тег, не обязательно свежий.
     // `docker compose config --images` — чисто конфигурационная операция (читает имена
     // образов из docker-compose.yml по стандартной схеме `<project>-<service>`), не
-    // обращается к рантайму контейнеров вообще, поэтому не зависит от того, что уже запущено
-    // и что могло быть собрано мусорщиком — всегда актуальна сразу после `docker compose
-    // build`. Без фильтра по сервису — с фильтром (`... --images backend`) compose тянет ещё
-    // и образы зависимостей (`depends_on: postgres`), поэтому фильтруем по подстроке
-    // "backend" в имени образа сами.
+    // обращается к рантайму контейнеров вообще. Без фильтра по сервису — с фильтром
+    // (`... --images backend`) compose тянет ещё и образы зависимостей (`depends_on:
+    // postgres`), поэтому фильтруем по подстроке "backend" в имени образа сами.
     const { stdout } = await execFileAsync('docker', ['compose', 'config', '--images'], { cwd: repoPath });
     const selfImage = stdout
       .split('\n')
@@ -212,7 +215,7 @@ export class UpdateService {
       throw new Error('Не удалось определить образ backend (docker compose config --images не вернул образ с "backend" в имени)');
     }
 
-    const helperCommand = `sleep 2 && docker compose up -d --no-deps backend >> "${logPath}" 2>&1`;
+    const helperCommand = `sleep 2 && docker compose up -d --build --no-deps backend >> "${logPath}" 2>&1`;
     await execFileAsync('docker', [
       'run',
       '-d',
