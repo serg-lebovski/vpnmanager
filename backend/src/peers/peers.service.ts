@@ -539,8 +539,11 @@ export class PeersService {
   // (см. create()), только собранный целиком, а не выбранный за пользователя. key —
   // непрозрачный идентификатор ("bridge:<id>"/"server:<id>"), передаётся обратно в
   // resolveUpstreamOption при фактическом создании peer'а.
-  async listUpstreamOptions(organization: Organization, protocol: CreatePeerDto['protocol']): Promise<Array<{ key: string; label: string }>> {
-    const options: Array<{ key: string; label: string }> = [];
+  async listUpstreamOptions(
+    organization: Organization,
+    protocol: CreatePeerDto['protocol'],
+  ): Promise<Array<{ key: string; label: string; isDefault?: boolean }>> {
+    const options: Array<{ key: string; label: string; isDefault?: boolean }> = [];
     const bridges = await this.bridgesRepository.find({
       where: [{ organizationId: IsNull() }, { organizationId: organization.id }],
     });
@@ -554,7 +557,7 @@ export class PeersService {
       }
       const active = await this.serverProtocolsRepository.exists({ where: { id: serverProtocolId, status: ServerProtocolStatus.ACTIVE } });
       if (active) {
-        options.push({ key: `bridge:${bridge.id}`, label: `Мост «${bridge.name}»` });
+        options.push({ key: `bridge:${bridge.id}`, label: `Мост «${bridge.name}»`, isDefault: bridge.isDefault });
       }
     }
     if (organization.allowedServerIds.length > 0) {
@@ -621,13 +624,15 @@ export class PeersService {
     return this.buildDownloadableConfig(peer);
   }
 
-  // Фолбэк, когда upstreamKey не передан: первый доступный мост, иначе авто-баланс среди
+  // Фолбэк, когда upstreamKey не передан: мост "по умолчанию" (Bridge.isDefault), если он
+  // среди доступных организации, иначе первый доступный мост, иначе авто-баланс среди
   // allowedServerIds — тот же дух, что у org_user без явного выбора моста/сервера в create().
   private async pickServerProtocolForOrganization(organization: Organization, protocol: CreatePeerDto['protocol']): Promise<ServerProtocol> {
     const bridges = await this.bridgesRepository.find({
       where: [{ organizationId: IsNull() }, { organizationId: organization.id }],
     });
-    const bridge = bridges.find((b) => !organization.blockedBridgeIds.includes(b.id));
+    const candidates = bridges.filter((b) => !organization.blockedBridgeIds.includes(b.id));
+    const bridge = candidates.find((b) => b.isDefault) ?? candidates[0];
     if (bridge) {
       return this.findBridgeClientProtocolByBridge(bridge, protocol);
     }
@@ -662,8 +667,8 @@ export class PeersService {
   // Аналог listUpstreamOptions, но оставляет только те мосты/серверы, где активны СРАЗУ
   // ОБА протокола — мультиконфиг должен указывать на один и тот же endpoint для обоих
   // протоколов, а не на два разных сервера с независимой балансировкой.
-  async listMultiProtocolUpstreamOptions(organization: Organization): Promise<Array<{ key: string; label: string }>> {
-    const options: Array<{ key: string; label: string }> = [];
+  async listMultiProtocolUpstreamOptions(organization: Organization): Promise<Array<{ key: string; label: string; isDefault?: boolean }>> {
+    const options: Array<{ key: string; label: string; isDefault?: boolean }> = [];
     const bridges = await this.bridgesRepository.find({
       where: [{ organizationId: IsNull() }, { organizationId: organization.id }],
     });
@@ -676,7 +681,7 @@ export class PeersService {
         this.serverProtocolsRepository.exists({ where: { id: bridge.amneziawgClientProtocolId, status: ServerProtocolStatus.ACTIVE } }),
       ]);
       if (wgActive && awgActive) {
-        options.push({ key: `bridge:${bridge.id}`, label: `Мост «${bridge.name}»` });
+        options.push({ key: `bridge:${bridge.id}`, label: `Мост «${bridge.name}»`, isDefault: bridge.isDefault });
       }
     }
     if (organization.allowedServerIds.length > 0) {
@@ -728,9 +733,10 @@ export class PeersService {
     const bridges = await this.bridgesRepository.find({
       where: [{ organizationId: IsNull() }, { organizationId: organization.id }],
     });
-    const bridge = bridges.find(
+    const candidates = bridges.filter(
       (b) => !organization.blockedBridgeIds.includes(b.id) && b.wireguardClientProtocolId && b.amneziawgClientProtocolId,
     );
+    const bridge = candidates.find((b) => b.isDefault) ?? candidates[0];
     if (bridge) {
       const [wireguard, amneziawg] = await Promise.all([
         this.findBridgeClientProtocolByBridge(bridge, VpnProtocol.WIREGUARD),

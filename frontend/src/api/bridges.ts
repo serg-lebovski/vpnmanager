@@ -64,6 +64,9 @@ export interface UpdateBridgeInput {
   organizationId?: string | null;
   domainName?: string | null;
   bypassDestinations?: string[];
+  // true — сделать этот мост "по умолчанию" (снимает флаг у остальных); false — снять с
+  // этого. См. Bridge.isDefault на бэкенде.
+  isDefault?: boolean;
 }
 
 export async function updateBridge(bridgeId: string, input: UpdateBridgeInput): Promise<BridgeEntity> {

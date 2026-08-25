@@ -1,4 +1,4 @@
-import { IsArray, IsOptional, IsString, IsUUID, MinLength, ValidateIf } from 'class-validator';
+import { IsArray, IsBoolean, IsOptional, IsString, IsUUID, MinLength, ValidateIf } from 'class-validator';
 
 export class UpdateBridgeDto {
   @IsString()
@@ -26,4 +26,14 @@ export class UpdateBridgeDto {
   @IsString({ each: true })
   @IsOptional()
   bypassDestinations?: string[];
+
+  // true — сделать этот мост "по умолчанию" (сбрасывает флаг у всех остальных мостов, см.
+  // BridgesService.update) — бот/портал будут молча создавать/перевыпускать на нём новые
+  // конфиги, не спрашивая выбор сервера, если он один из доступных вариантов организации
+  // (см. PeersService.listUpstreamOptions/listMultiProtocolUpstreamOptions). false —
+  // снять флаг с этого моста (тогда default нет ни у одного, пока не назначат явно).
+  // Отсутствие поля — не менять.
+  @IsBoolean()
+  @IsOptional()
+  isDefault?: boolean;
 }

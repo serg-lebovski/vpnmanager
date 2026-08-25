@@ -153,6 +153,9 @@ export interface BridgeEntity {
   bypassDestinations: string[];
   upstreamCandidates: Array<{ id: string; priority: number; serverProtocol: (ServerProtocolEntity & { server?: ServerEntity }) | null }>;
   createdAt: string;
+  // Мост, который бот/портал используют молча (без вопроса "какой сервер?"), если он
+  // среди доступных организации вариантов — только у одного моста одновременно.
+  isDefault: boolean;
 }
 
 export interface PeerEntity {

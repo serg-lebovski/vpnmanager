@@ -94,6 +94,15 @@ export class Bridge {
   @Column({ name: 'domain_name', type: 'varchar', nullable: true })
   domainName: string | null;
 
+  // Мост, который бот/портал используют молча (без запроса "какой сервер?"), если он один
+  // из доступных вариантов для организации — см. PeersService.listUpstreamOptions/
+  // listMultiProtocolUpstreamOptions, BridgesService.update. Только у ОДНОГО моста
+  // одновременно (обеспечивается в update()); если он не виден конкретной организации
+  // (чужой приватный мост/в её blockedBridgeIds) — для неё это как если бы default не было
+  // вовсе, обычная логика "один вариант — автовыбор, несколько — спросить" не меняется.
+  @Column({ name: 'is_default', default: false })
+  isDefault: boolean;
+
   // Список доменов/IP, трафик к которым НЕ идёт через upstream ("зарубежный" сервер) моста
   // — уходит напрямую с self-сервера его обычным подключением (см.
   // VpnProvisioningService.setupBridgeBypass, BridgesService.syncBypassRules). Каждая

@@ -42,7 +42,7 @@ interface PeerRequest {
   // Мультиконфиг — WireGuard + AmneziaWG одним .vpn-файлом (см. PeersService.
   // createMultiProtocolForTelegramRegistration), взаимоисключимо с protocol.
   multiProtocol?: boolean;
-  upstreamOptions?: Array<{ key: string; label: string }>;
+  upstreamOptions?: Array<{ key: string; label: string; isDefault?: boolean }>;
   upstreamKey?: string;
   // true — запрос пришёл с кнопки "Сменить протокол": пользователь уже явно осознаёт, что
   // текущий конфиг для этого устройства будет заменён, отдельное "уже есть, перевыпустить?"
@@ -486,7 +486,10 @@ export class TelegramBotService {
   }
 
   // Один доступный вариант сервера/моста (типичный случай) — пропускаем шаг выбора и сразу
-  // создаём/проверяем перевыпуск; несколько — спрашиваем явно ("мост «X»"/"напрямую: Y").
+  // создаём/проверяем перевыпуск; так же — если среди НЕСКОЛЬКИХ вариантов есть мост
+  // "по умолчанию" (Bridge.isDefault, настраивается в панели) — используем именно его
+  // молча, не спрашивая; иначе (несколько вариантов, default не задан или не входит в
+  // список) — спрашиваем явно ("мост «X»"/"напрямую: Y").
   private async proceedAfterProtocol(
     chatId: string,
     registration: TelegramRegistration,
@@ -501,8 +504,9 @@ export class TelegramBotService {
       this.peerRequests.delete(chatId);
       return;
     }
-    if (options.length === 1) {
-      await this.confirmOrIssue(chatId, registration, organization, request, options[0].key);
+    const defaultOption = options.find((option) => option.isDefault);
+    if (options.length === 1 || defaultOption) {
+      await this.confirmOrIssue(chatId, registration, organization, request, (defaultOption ?? options[0]).key);
       return;
     }
     request.upstreamOptions = options;

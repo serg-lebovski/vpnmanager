@@ -7,13 +7,17 @@ import {
   CircularProgress,
   Divider,
   FormControlLabel,
+  IconButton,
   MenuItem,
   Paper,
   Stack,
   Switch,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material';
+import StarIcon from '@mui/icons-material/Star';
+import StarBorderIcon from '@mui/icons-material/StarBorder';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChangeEvent, FormEvent, useEffect, useState } from 'react';
 import {
@@ -416,6 +420,17 @@ function BridgeCard({
     },
     onError: (err) => setError(getErrorMessage(err, 'Не удалось пересчитать баланс')),
   });
+  // Мост "по умолчанию" — бот/портал молча создают/перевыпускают на нём новые конфиги, не
+  // спрашивая выбор сервера (см. PeersService.listUpstreamOptions на бэкенде). Отдельная
+  // мутация (не часть общей формы "Изменить") — однокликовый переключатель.
+  const defaultMutation = useMutation({
+    mutationFn: (isDefault: boolean) => updateBridge(bridge.id, { isDefault }),
+    onSuccess: () => {
+      onChanged();
+      setError(null);
+    },
+    onError: (err) => setError(getErrorMessage(err, 'Не удалось изменить мост по умолчанию')),
+  });
 
   const [isEditingCandidates, setIsEditingCandidates] = useState(false);
   const [candidatePriority, setCandidatePriority] = useState<Record<string, number | ''>>({});
@@ -553,6 +568,11 @@ function BridgeCard({
             </Stack>
           ) : (
             <Typography variant="h6">
+              <Tooltip title={bridge.isDefault ? 'Мост по умолчанию (бот/портал создают конфиги здесь без вопросов)' : 'Сделать мостом по умолчанию'}>
+                <IconButton size="small" onClick={() => defaultMutation.mutate(!bridge.isDefault)} disabled={defaultMutation.isPending}>
+                  {bridge.isDefault ? <StarIcon fontSize="small" color="warning" /> : <StarBorderIcon fontSize="small" />}
+                </IconButton>
+              </Tooltip>
               {bridge.name} <Chip size="small" label={bridge.status} color={statusColor[bridge.status]} sx={{ ml: 1 }} />
               <Chip size="small" label={organizationName ?? 'общий'} variant="outlined" sx={{ ml: 1 }} />
             </Typography>
