@@ -55,6 +55,8 @@ const statusColor: Record<string, 'success' | 'default'> = {
   revoked: 'default',
 };
 
+const protocolLabels: Record<VpnProtocol, string> = { wireguard: 'WireGuard', amneziawg: 'AmneziaWG' };
+
 // Сентинел для «Клиент» в форме создания peer — отличает осознанный выбор «без клиента»
 // (organizationId: null отправится на бэкенд) от ещё не подгруженного значения по
 // умолчанию (пустая строка, см. useEffect ниже).
@@ -468,7 +470,9 @@ export function PeersPage() {
               {visiblePeers.map((peer) => (
                 <TableRow key={peer.id}>
                   <TableCell>{peer.name}</TableCell>
-                  <TableCell>{peer.allowedIp}</TableCell>
+                  <TableCell>
+                    {peer.serverProtocol ? protocolLabels[peer.serverProtocol.protocol] : '—'} · {peer.allowedIp}
+                  </TableCell>
                   <TableCell>{serverLabel(peer, bridges)}</TableCell>
                   <TableCell>
                     <Stack direction="row" spacing={0.5} alignItems="center">

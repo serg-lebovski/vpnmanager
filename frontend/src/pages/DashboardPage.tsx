@@ -21,7 +21,7 @@ import {
   Typography,
 } from '@mui/material';
 import { useQuery } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { fetchOrganizations } from '../api/organizations';
 import { fetchServers } from '../api/servers';
 import {
@@ -174,6 +174,66 @@ function ServerLoadRow({ server }: { server: DashboardServerStats }) {
         />
       </Box>
     </Stack>
+  );
+}
+
+// Сводка "какой протокол на каком сервере используется" — считается на лету из живого
+// снапшота (DashboardPeerStats уже несёт serverName+protocol на каждый активный peer),
+// без отдельного запроса к бэкенду.
+interface ServerProtocolBreakdown {
+  serverName: string;
+  wireguard: number;
+  amneziawg: number;
+}
+
+function ProtocolsByServerSection({ peers }: { peers: DashboardPeerStats[] }) {
+  const rows = useMemo<ServerProtocolBreakdown[]>(() => {
+    const byServer = new Map<string, ServerProtocolBreakdown>();
+    for (const peer of peers) {
+      const entry = byServer.get(peer.serverName) ?? { serverName: peer.serverName, wireguard: 0, amneziawg: 0 };
+      if (peer.protocol === 'wireguard') {
+        entry.wireguard += 1;
+      } else if (peer.protocol === 'amneziawg') {
+        entry.amneziawg += 1;
+      }
+      byServer.set(peer.serverName, entry);
+    }
+    return Array.from(byServer.values()).sort((a, b) => a.serverName.localeCompare(b.serverName));
+  }, [peers]);
+
+  return (
+    <Paper sx={{ p: 2 }}>
+      <Typography variant="subtitle1" mb={1}>
+        Протоколы по серверам
+      </Typography>
+      <TableContainer sx={{ overflowX: 'auto' }}>
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell>Сервер</TableCell>
+              <TableCell>WireGuard</TableCell>
+              <TableCell>AmneziaWG</TableCell>
+              <TableCell>Всего активных peers</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {rows.map((row) => (
+              <TableRow key={row.serverName}>
+                <TableCell>{row.serverName}</TableCell>
+                <TableCell>{row.wireguard}</TableCell>
+                <TableCell>{row.amneziawg}</TableCell>
+                <TableCell>{row.wireguard + row.amneziawg}</TableCell>
+              </TableRow>
+            ))}
+            {rows.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={4}>Нет активных peers</TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </TableContainer>
+    </Paper>
   );
 }
 
@@ -443,6 +503,8 @@ export function DashboardPage() {
           )}
         </Stack>
       </Paper>
+
+      <ProtocolsByServerSection peers={peers} />
 
       <Paper sx={{ p: 2 }}>
         <Typography variant="subtitle1" mb={2}>
