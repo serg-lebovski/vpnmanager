@@ -7,7 +7,6 @@ import {
   CircularProgress,
   Divider,
   FormControlLabel,
-  IconButton,
   MenuItem,
   Paper,
   Stack,
@@ -568,14 +567,31 @@ function BridgeCard({
             </Stack>
           ) : (
             <Typography variant="h6">
-              <Tooltip title={bridge.isDefault ? 'Мост по умолчанию (бот/портал создают конфиги здесь без вопросов)' : 'Сделать мостом по умолчанию'}>
-                <IconButton size="small" onClick={() => defaultMutation.mutate(!bridge.isDefault)} disabled={defaultMutation.isPending}>
-                  {bridge.isDefault ? <StarIcon fontSize="small" color="warning" /> : <StarBorderIcon fontSize="small" />}
-                </IconButton>
-              </Tooltip>
               {bridge.name} <Chip size="small" label={bridge.status} color={statusColor[bridge.status]} sx={{ ml: 1 }} />
               <Chip size="small" label={organizationName ?? 'общий'} variant="outlined" sx={{ ml: 1 }} />
             </Typography>
+          )}
+          {!isEditing && (
+            <Box sx={{ mt: 0.5 }}>
+              <Tooltip
+                title={
+                  bridge.isDefault
+                    ? 'Бот/портал создают новые конфиги здесь без вопросов — нажмите, чтобы снять'
+                    : 'Бот/портал будут молча создавать новые конфиги на этом мосту (если это один из доступных организации вариантов) — нажмите, чтобы назначить'
+                }
+              >
+                <Chip
+                  size="small"
+                  clickable
+                  disabled={defaultMutation.isPending}
+                  onClick={() => defaultMutation.mutate(!bridge.isDefault)}
+                  icon={bridge.isDefault ? <StarIcon fontSize="small" /> : <StarBorderIcon fontSize="small" />}
+                  label={bridge.isDefault ? 'Мост по умолчанию' : 'Сделать мостом по умолчанию'}
+                  color={bridge.isDefault ? 'warning' : 'default'}
+                  variant={bridge.isDefault ? 'filled' : 'outlined'}
+                />
+              </Tooltip>
+            </Box>
           )}
           {clientInterfaces.map(({ label, sp }) => (
             <Typography key={label} variant="body2" color="text.secondary">
