@@ -37,6 +37,21 @@ export interface AmneziaContainerInput {
   serverProtocol: ServerProtocol;
 }
 
+// "amnezia-awg" (Legacy) для интерфейсов, установленных до перехода на полный набор
+// параметров 3.0 (см. AmneziaWgDriver.buildObfuscationParams) — у них нет S3 в
+// obfuscationParams. "amnezia-awg2" — только когда параметры реально содержат S3/S4
+// (заведомо совместимо: и сервер, и клиентский конфиг сгенерированы одним и тем же новым
+// кодом одновременно). НЕ "самый новый по умолчанию" — иначе приложение показало бы
+// "AmneziaWG" для интерфейса, который физически не понимает S3/S4/диапазоны H, и
+// подключение не удалось бы.
+function amneziaContainerId(protocol: VpnProtocol, serverProtocol: ServerProtocol): string {
+  if (protocol !== VpnProtocol.AMNEZIAWG) {
+    return 'amnezia-wireguard';
+  }
+  const isModernAwg = serverProtocol.obfuscationParams?.S3 !== undefined;
+  return isModernAwg ? 'amnezia-awg2' : 'amnezia-awg';
+}
+
 function buildContainerEntry(input: AmneziaContainerInput): Record<string, unknown> {
   const { protocol, peer, privateKey, presharedKey, server, serverProtocol } = input;
   const configText = buildClientConfig(peer, privateKey, server, serverProtocol, presharedKey);
@@ -68,10 +83,9 @@ function buildContainerEntry(input: AmneziaContainerInput): Record<string, unkno
   }
   protocolBlock.last_config = JSON.stringify(lastConfig);
 
-  const containerId = protocol === VpnProtocol.AMNEZIAWG ? 'amnezia-awg' : 'amnezia-wireguard';
   const protocolKey = protocol === VpnProtocol.AMNEZIAWG ? 'awg' : 'wireguard';
 
-  return { container: containerId, [protocolKey]: protocolBlock };
+  return { container: amneziaContainerId(protocol, serverProtocol), [protocolKey]: protocolBlock };
 }
 
 // description — то, что приложение покажет как имя профиля; hostName/dns — общие для
@@ -87,7 +101,7 @@ export function buildAmneziaAppConfig(
   const primary = containers.find((c) => c.protocol === preferredDefaultProtocol) ?? containers[0];
   const payload = {
     containers: containers.map(buildContainerEntry),
-    defaultContainer: primary.protocol === VpnProtocol.AMNEZIAWG ? 'amnezia-awg' : 'amnezia-wireguard',
+    defaultContainer: amneziaContainerId(primary.protocol, primary.serverProtocol),
     description,
     dns1: primary.peer.dns,
     dns2: primary.peer.dns,

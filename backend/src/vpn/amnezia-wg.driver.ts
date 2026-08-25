@@ -80,28 +80,65 @@ export class AmneziaWgDriver extends BaseWireGuardLikeDriver {
     return new Error(`${error.message}\n\n${hint}`);
   }
 
-  protected buildObfuscationParams(): Record<string, number> {
-    const usedValues = new Set<number>();
-    const nextUniqueValue = (): number => {
-      let value: number;
-      do {
-        value = randomInt(5, 2 ** 31 - 1);
-      } while (usedValues.has(value));
-      usedValues.add(value);
-      return value;
-    };
-
+  // Полный набор параметров AmneziaWG 3.0 (Jc/Jmin/Jmax/S1-S4/H1-H4-как-диапазоны) —
+  // генерируется ТОЛЬКО для НОВЫХ установок протокола (install() вызывает этот метод один
+  // раз, результат сохраняется в ServerProtocol.obfuscationParams и оттуда уже неизменно
+  // применяется на сервере и во всех клиентских конфигах этого протокола, см.
+  // base-wireguard-like.driver.ts). Уже установленные протоколы этот код не трогает —
+  // их obfuscationParams остаётся тем, что было сгенерировано при их собственной
+  // установке (может быть старым, "Legacy"-набором без S3/S4/диапазонов H — намеренно
+  // не мигрируем существующие интерфейсы автоматически: у AmneziaWG эти параметры общие
+  // на весь интерфейс, а не per-peer, рассинхронизация со старыми уже выданными клиентскими
+  // конфигами оборвала бы им handshake). Чтобы получить новый набор на уже установленном
+  // сервере — переустановить протокол (Server.protocols → «Удалить протокол» → установить
+  // заново), но только если на этом сервере нет других активных peers этого протокола,
+  // кроме системного upstream-peer моста — иначе их обфускация перестанет совпадать с
+  // сервером и они отвалятся. Значения и диапазоны сверены с проверенным community-скриптом
+  // (bivlked/amneziawg-installer, awg_common_en.sh/install_amneziawg_en.sh) — единственным
+  // найденным источником, где эти диапазоны реально протестированы на живых серверах.
+  protected buildObfuscationParams(): Record<string, number | string> {
+    const jmin = randomInt(40, 90);
     return {
-      Jc: randomInt(3, 10),
-      Jmin: 40,
-      Jmax: 70,
-      S1: randomInt(15, 150),
-      S2: randomInt(15, 150),
-      H1: nextUniqueValue(),
-      H2: nextUniqueValue(),
-      H3: nextUniqueValue(),
-      H4: nextUniqueValue(),
+      Jc: randomInt(3, 7),
+      Jmin: jmin,
+      Jmax: jmin + randomInt(50, 251),
+      S1: randomInt(15, 151),
+      S2: randomInt(15, 151),
+      S3: randomInt(8, 56),
+      S4: randomInt(4, 28),
+      ...this.buildHRanges(),
     };
+  }
+
+  // 4 непересекающихся диапазона "min-max" для H1-H4 — нижняя граница первого диапазона
+  // >= 5 (1-4 зарезервированы под типы сообщений ванильного WireGuard), между соседними
+  // диапазонами зазор минимум 1000, верхняя граница ограничена 2^31-1 (не полным uint32) —
+  // отдельные клиенты AmneziaWG (в частности Windows) валидируют H-поля как signed int32 и
+  // отклоняют большие значения, хотя сам сервер принял бы полный uint32.
+  private buildHRanges(): Record<'H1' | 'H2' | 'H3' | 'H4', string> {
+    const maxAttempts = 20;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const values = Array.from({ length: 8 }, () => randomInt(0, 2 ** 31 - 1)).sort((a, b) => a - b);
+      const validPair = (loIdx: number, hiIdx: number) => values[hiIdx] - values[loIdx] >= 1000;
+      if (
+        values[0] >= 5 &&
+        validPair(0, 1) &&
+        validPair(2, 3) &&
+        validPair(4, 5) &&
+        validPair(6, 7) &&
+        values[2] > values[1] &&
+        values[4] > values[3] &&
+        values[6] > values[5]
+      ) {
+        return {
+          H1: `${values[0]}-${values[1]}`,
+          H2: `${values[2]}-${values[3]}`,
+          H3: `${values[4]}-${values[5]}`,
+          H4: `${values[6]}-${values[7]}`,
+        };
+      }
+    }
+    throw new Error('Не удалось сгенерировать непересекающиеся диапазоны H1-H4 для AmneziaWG за разумное число попыток');
   }
 
   // AmneziaWG 2.0 добавляет S3/S4, а H1-H4 там может быть диапазоном "min-max" вместо

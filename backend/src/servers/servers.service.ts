@@ -124,6 +124,9 @@ export class ServersService {
     if (dto.maxPeers !== undefined) {
       server.maxPeers = dto.maxPeers;
     }
+    if (dto.amneziaAppName !== undefined) {
+      server.amneziaAppName = dto.amneziaAppName || null;
+    }
     return this.serversRepository.save(server);
   }
 

@@ -521,9 +521,13 @@ export class PeersService {
       });
     }
 
-    const description = peersInGroup[0].name;
+    // Имя ПРОФИЛЯ, которое видит клиент в приложении AmneziaVPN, — НЕ имя peer'а (у peers,
+    // выданных через Telegram-бота/портал, это ФИО клиента — не то, что должно всплывать
+    // в приложении как "название сервера", см. Server.amneziaAppName). Имя файла при этом
+    // остаётся по peer'у — практичнее для администратора, различающего файлы на диске.
+    const description = containers[0].server.amneziaAppName?.trim() || containers[0].server.name;
     const content = buildAmneziaAppConfig(containers, description);
-    const safeName = description.replace(/[^\p{L}\p{N}_-]+/gu, '_');
+    const safeName = peersInGroup[0].name.replace(/[^\p{L}\p{N}_-]+/gu, '_');
     return { filename: `${safeName}.vpn`, content };
   }
 

@@ -161,8 +161,8 @@ export function ServersPage() {
 
   const deleteMutation = useMutation({ mutationFn: deleteServer, onSuccess: invalidate });
   const renameMutation = useMutation({
-    mutationFn: (vars: { id: string; name: string; maxPeers: number }) =>
-      updateServer(vars.id, { name: vars.name, maxPeers: vars.maxPeers }),
+    mutationFn: (vars: { id: string; name: string; maxPeers: number; amneziaAppName: string | null }) =>
+      updateServer(vars.id, { name: vars.name, maxPeers: vars.maxPeers, amneziaAppName: vars.amneziaAppName }),
     onSuccess: invalidate,
   });
   const fail2banMutation = useMutation({ mutationFn: ensureFail2ban });
@@ -268,7 +268,7 @@ export function ServersPage() {
             server={server}
             online={onlineByServer[server.id]}
             onDelete={() => deleteMutation.mutate(server.id)}
-            onRename={(name, maxPeers) => renameMutation.mutate({ id: server.id, name, maxPeers })}
+            onRename={(name, maxPeers, amneziaAppName) => renameMutation.mutate({ id: server.id, name, maxPeers, amneziaAppName })}
             onTest={() => testMutation.mutate(server.id)}
             onEnsureFail2ban={() => fail2banMutation.mutate(server.id)}
             fail2banPending={fail2banMutation.isPending && fail2banMutation.variables === server.id}
@@ -350,7 +350,7 @@ function ServerCard({
   server: ServerEntity;
   online?: boolean;
   onDelete: () => void;
-  onRename: (name: string, maxPeers: number) => void;
+  onRename: (name: string, maxPeers: number, amneziaAppName: string | null) => void;
   onTest: () => void;
   isTesting: boolean;
   onReboot: () => void;
@@ -390,6 +390,7 @@ function ServerCard({
   const [isEditingName, setIsEditingName] = useState(false);
   const [editName, setEditName] = useState(server.name);
   const [editMaxPeers, setEditMaxPeers] = useState(server.maxPeers);
+  const [editAmneziaAppName, setEditAmneziaAppName] = useState(server.amneziaAppName ?? '');
   const [isEditingCredentials, setIsEditingCredentials] = useState(false);
   const [credAuthType, setCredAuthType] = useState<SshAuthType>('password');
   const [credSecret, setCredSecret] = useState('');
@@ -436,12 +437,21 @@ function ServerCard({
                 onChange={(e) => setEditMaxPeers(Number(e.target.value))}
                 sx={{ width: 120 }}
               />
+              <TextField
+                size="small"
+                label="Имя в приложении AmneziaVPN"
+                value={editAmneziaAppName}
+                onChange={(e) => setEditAmneziaAppName(e.target.value)}
+                placeholder={server.name}
+                helperText="Пусто — используется название сервера"
+                sx={{ width: 260 }}
+              />
               <Tooltip title="Сохранить">
                 <IconButton
                   size="small"
                   color="primary"
                   onClick={() => {
-                    onRename(editName, editMaxPeers);
+                    onRename(editName, editMaxPeers, editAmneziaAppName.trim() || null);
                     setIsEditingName(false);
                   }}
                 >
@@ -449,7 +459,13 @@ function ServerCard({
                 </IconButton>
               </Tooltip>
               <Tooltip title="Отмена">
-                <IconButton size="small" onClick={() => setIsEditingName(false)}>
+                <IconButton
+                  size="small"
+                  onClick={() => {
+                    setEditAmneziaAppName(server.amneziaAppName ?? '');
+                    setIsEditingName(false);
+                  }}
+                >
                   <CloseIcon fontSize="small" />
                 </IconButton>
               </Tooltip>
@@ -543,6 +559,7 @@ function ServerCard({
                 onClick={() => {
                   setEditName(server.name);
                   setEditMaxPeers(server.maxPeers);
+                  setEditAmneziaAppName(server.amneziaAppName ?? '');
                   setIsEditingName(true);
                 }}
               >

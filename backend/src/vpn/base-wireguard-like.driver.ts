@@ -48,7 +48,7 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
   protected abstract readonly aptPackages: string;
 
   abstract ensureClientToolsInstalled(ssh: NodeSSH): Promise<void>;
-  protected abstract buildObfuscationParams(): Record<string, number> | undefined;
+  protected abstract buildObfuscationParams(): Record<string, number | string> | undefined;
   protected abstract parseObfuscationParamsFromConfig(configText: string): Record<string, number | string> | undefined;
 
   // Если протокол работает внутри Docker-контейнера, все команды на сервере нужно

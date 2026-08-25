@@ -127,6 +127,9 @@ export interface ServerEntity {
   mtProxyUpdatedAt: string | null;
   createdAt: string;
   protocols: ServerProtocolEntity[];
+  // Имя профиля в приложении AmneziaVPN (см. amnezia-config.util.ts на бэкенде) — null:
+  // используется обычное `name`.
+  amneziaAppName: string | null;
 }
 
 export interface BridgeEntity {
