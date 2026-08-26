@@ -37,19 +37,16 @@ export interface AmneziaContainerInput {
   serverProtocol: ServerProtocol;
 }
 
-// "amnezia-awg" (Legacy) для интерфейсов, установленных до перехода на полный набор
-// параметров 3.0 (см. AmneziaWgDriver.buildObfuscationParams) — у них нет S3 в
-// obfuscationParams. "amnezia-awg2" — только когда параметры реально содержат S3/S4
-// (заведомо совместимо: и сервер, и клиентский конфиг сгенерированы одним и тем же новым
-// кодом одновременно). НЕ "самый новый по умолчанию" — иначе приложение показало бы
-// "AmneziaWG" для интерфейса, который физически не понимает S3/S4/диапазоны H, и
-// подключение не удалось бы.
-function amneziaContainerId(protocol: VpnProtocol, serverProtocol: ServerProtocol): string {
-  if (protocol !== VpnProtocol.AMNEZIAWG) {
-    return 'amnezia-wireguard';
-  }
-  const isModernAwg = serverProtocol.obfuscationParams?.S3 !== undefined;
-  return isModernAwg ? 'amnezia-awg2' : 'amnezia-awg';
+// "amnezia-awg" — тот же container id, что и сам официальный клиент подставляет при
+// ИМПОРТЕ стороннего .conf (ImportController::extractWireGuardConfig в исходниках
+// amnezia-client: определяет протокол по наличию awg-полей, но container всегда
+// "amnezia-awg", "amnezia-awg2" в этом пути НЕ используется вообще — тот id зарезервирован
+// за собственной server-management логикой приложения, не за третьесторонним импортом).
+// Раньше здесь была попытка отличать "amnezia-awg2" по наличию S3 в obfuscationParams —
+// убрано: это не тот код, который реально грузит и коннектит сторонние .vpn-профили,
+// подтверждено вживую (профиль с "amnezia-awg2" не подключался вообще, ни разу).
+function amneziaContainerId(protocol: VpnProtocol): string {
+  return protocol === VpnProtocol.AMNEZIAWG ? 'amnezia-awg' : 'amnezia-wireguard';
 }
 
 function buildContainerEntry(input: AmneziaContainerInput): Record<string, unknown> {
@@ -75,6 +72,14 @@ function buildContainerEntry(input: AmneziaContainerInput): Record<string, unkno
   const protocolBlock: Record<string, unknown> = {
     port: String(serverProtocol.listenPort),
     transport_proto: 'udp',
+    // Без этого поля импортированный профиль не подключается вообще (ни WireGuard, ни
+    // AmneziaWG) — приложение просто не отправляет ни одного пакета на сервер (проверено
+    // вживую: tcpdump на сервере не видел ни одного входящего пакета при попытке
+    // подключения без этого поля). Это тот же флаг, который сам клиент проставляет себе
+    // при импорте СТОРОННЕГО .conf (см. amneziaContainerId) — без него приложение,
+    // похоже, обрабатывает профиль как "свой", ожидая полей/состояния, которых там нет,
+    // и просто не поднимает туннель.
+    isThirdPartyConfig: true,
   };
 
   if (protocol === VpnProtocol.AMNEZIAWG && serverProtocol.obfuscationParams) {
@@ -85,7 +90,7 @@ function buildContainerEntry(input: AmneziaContainerInput): Record<string, unkno
 
   const protocolKey = protocol === VpnProtocol.AMNEZIAWG ? 'awg' : 'wireguard';
 
-  return { container: amneziaContainerId(protocol, serverProtocol), [protocolKey]: protocolBlock };
+  return { container: amneziaContainerId(protocol), [protocolKey]: protocolBlock };
 }
 
 // description — то, что приложение покажет как имя профиля; hostName/dns — общие для
@@ -101,7 +106,7 @@ export function buildAmneziaAppConfig(
   const primary = containers.find((c) => c.protocol === preferredDefaultProtocol) ?? containers[0];
   const payload = {
     containers: containers.map(buildContainerEntry),
-    defaultContainer: amneziaContainerId(primary.protocol, primary.serverProtocol),
+    defaultContainer: amneziaContainerId(primary.protocol),
     description,
     dns1: primary.peer.dns,
     dns2: primary.peer.dns,
