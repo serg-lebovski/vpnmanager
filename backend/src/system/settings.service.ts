@@ -126,6 +126,9 @@ export class SettingsService implements OnModuleInit {
     if (dto.telegramWelcomeMessage !== undefined) {
       settings.telegramWelcomeMessage = dto.telegramWelcomeMessage;
     }
+    if (dto.deployBranch !== undefined) {
+      settings.deployBranch = dto.deployBranch;
+    }
 
     const saved = await this.settingsRepository.save(settings);
     setCorsAllowedDomain(saved.domain);

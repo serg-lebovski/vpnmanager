@@ -12,6 +12,7 @@ export interface SystemSettings {
   telegramChatId: string | null;
   telegramBridgeId: string | null;
   telegramWelcomeMessage: string | null;
+  deployBranch: string;
   updatedAt: string;
 }
 
@@ -31,6 +32,7 @@ export interface UpdateSettingsInput {
   telegramChatId?: string;
   telegramBridgeId?: string | null;
   telegramWelcomeMessage?: string;
+  deployBranch?: string;
 }
 
 export async function updateSettings(input: UpdateSettingsInput): Promise<SystemSettings> {

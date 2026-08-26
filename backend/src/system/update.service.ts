@@ -5,6 +5,7 @@ import { promisify } from 'util';
 import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NginxConfigService } from './nginx-config.service';
+import { SettingsService } from './settings.service';
 import { SystemGateway } from './system.gateway';
 
 const execFileAsync = promisify(execFile);
@@ -12,6 +13,8 @@ const execFileAsync = promisify(execFile);
 export interface VersionInfo {
   currentCommit: string;
   currentCommitShort: string;
+  currentBranch: string;
+  deployBranch: string;
   remoteCommit: string | null;
   remoteCommitShort: string | null;
   updateAvailable: boolean;
@@ -33,6 +36,7 @@ export class UpdateService {
     private readonly configService: ConfigService,
     private readonly systemGateway: SystemGateway,
     private readonly nginxConfigService: NginxConfigService,
+    private readonly settingsService: SettingsService,
   ) {}
 
   private getRepoPath(): string {
@@ -48,21 +52,29 @@ export class UpdateService {
   async getVersion(): Promise<VersionInfo> {
     const repoPath = this.getRepoPath();
     const currentCommit = await this.git(repoPath, ['rev-parse', 'HEAD']);
+    const currentBranch = await this.git(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    const settings = await this.settingsService.getOrCreate();
+    const deployBranch = settings.deployBranch;
 
+    // Сравниваем с ВЫБРАННОЙ в настройках веткой, а не обязательно с той, что сейчас
+    // реально выведена (currentBranch) — если админ только что переключил deployBranch,
+    // "обновление доступно" должно отражать это сразу, до первого нажатия «Обновить».
     let remoteCommit: string | null = null;
     try {
       await this.git(repoPath, ['fetch', '--quiet', 'origin']);
-      remoteCommit = await this.git(repoPath, ['rev-parse', 'origin/main']);
+      remoteCommit = await this.git(repoPath, ['rev-parse', `origin/${deployBranch}`]);
     } catch (error) {
-      this.logger.warn(`Не удалось проверить обновления на GitHub: ${(error as Error).message}`);
+      this.logger.warn(`Не удалось проверить обновления на GitHub (ветка ${deployBranch}): ${(error as Error).message}`);
     }
 
     return {
       currentCommit,
       currentCommitShort: currentCommit.slice(0, 8),
+      currentBranch,
+      deployBranch,
       remoteCommit,
       remoteCommitShort: remoteCommit?.slice(0, 8) ?? null,
-      updateAvailable: remoteCommit !== null && remoteCommit !== currentCommit,
+      updateAvailable: remoteCommit !== null && (remoteCommit !== currentCommit || currentBranch !== deployBranch),
       checkedAt: new Date().toISOString(),
     };
   }
@@ -105,8 +117,20 @@ export class UpdateService {
   private async runUpdateSequence(repoPath: string, logPath: string): Promise<void> {
     const emit = (percent: number, step: string) => this.systemGateway.broadcastUpdateProgress({ percent, step, done: false });
     try {
+      const settings = await this.settingsService.getOrCreate();
+      const branch = settings.deployBranch;
+
+      emit(3, `Переключение на ветку ${branch}`);
+      await this.runLogged(`git fetch --quiet origin`, repoPath, logPath);
+      // checkout (не просто pull) — переживает и первое переключение ветки (main <-> beta),
+      // и повторные обновления на уже выбранной; -B создаёт локальную ветку, если её ещё
+      // нет, или переиспользует существующую. reset --hard ДО pull ниже гарантирует чистое
+      // дерево независимо от того, что было в рабочей копии раньше (этот checkout — только
+      // деплой, а не место для локальных правок, см. CLAUDE.md про рабочий процесс).
+      await this.runLogged(`git checkout -B ${branch} origin/${branch}`, repoPath, logPath);
+
       emit(5, 'git pull');
-      await this.runLogged('git pull', repoPath, logPath);
+      await this.runLogged(`git pull origin ${branch}`, repoPath, logPath);
 
       // Реальный инцидент (2026-08-07): "git pull" уже обновил nginx.conf.template на диске,
       // но ЭТОТ ПРОЦЕСС — всё ещё СТАРЫЙ backend (новый образ только что собран шагом выше,

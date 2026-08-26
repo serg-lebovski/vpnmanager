@@ -43,4 +43,12 @@ export class UpdateSettingsDto {
   @IsString()
   @IsOptional()
   telegramWelcomeMessage?: string;
+
+  // Ветка git, из которой самообновление подтягивает код (см. UpdateService) — 'main'/
+  // 'beta' и т.п. Не влияет на уже собранные образы, применяется при следующем нажатии
+  // «Обновить».
+  @IsString()
+  @MinLength(1)
+  @IsOptional()
+  deployBranch?: string;
 }
