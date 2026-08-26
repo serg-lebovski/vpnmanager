@@ -29,6 +29,7 @@ import RestartAltIcon from '@mui/icons-material/RestartAlt';
 import SecurityIcon from '@mui/icons-material/Security';
 import SyncIcon from '@mui/icons-material/Sync';
 import SystemUpdateAltIcon from '@mui/icons-material/SystemUpdateAlt';
+import TerminalIcon from '@mui/icons-material/Terminal';
 import TravelExploreIcon from '@mui/icons-material/TravelExplore';
 import VpnKeyIcon from '@mui/icons-material/VpnKey';
 import VpnLockIcon from '@mui/icons-material/VpnLock';
@@ -36,6 +37,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, useEffect, useState } from 'react';
 import { connectDashboardSocket } from '../api/dashboard';
 import { getErrorMessage } from '../api/errors';
+import { TerminalDialog } from '../components/TerminalDialog';
 import {
   CreateServerInput,
   DetectionResult,
@@ -394,6 +396,7 @@ function ServerCard({
   const [isEditingCredentials, setIsEditingCredentials] = useState(false);
   const [credAuthType, setCredAuthType] = useState<SshAuthType>('password');
   const [credSecret, setCredSecret] = useState('');
+  const [terminalOpen, setTerminalOpen] = useState(false);
 
   const detectMutation = useMutation({
     mutationFn: () => detectExistingInstallations(server.id),
@@ -567,6 +570,11 @@ function ServerCard({
               </IconButton>
             </Tooltip>
           )}
+          <Tooltip title="Терминал">
+            <IconButton size="small" onClick={() => setTerminalOpen(true)}>
+              <TerminalIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
           <Tooltip title="Удалить сервер">
             <IconButton size="small" color="error" onClick={onDelete}>
               <DeleteOutlineIcon fontSize="small" />
@@ -574,6 +582,10 @@ function ServerCard({
           </Tooltip>
         </Stack>
       </Stack>
+
+      {terminalOpen && (
+        <TerminalDialog serverId={server.id} serverLabel={`${server.name} (${server.host})`} onClose={() => setTerminalOpen(false)} />
+      )}
 
       {detectResult && (
         <Alert severity="info" sx={{ mt: 2 }} onClose={() => setDetectResult(null)}>

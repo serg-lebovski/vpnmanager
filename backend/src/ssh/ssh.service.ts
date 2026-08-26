@@ -127,6 +127,13 @@ export class SshService {
     }
   }
 
+  // В отличие от withConnection НЕ закрывает соединение сама — вызывающий код (веб-терминал,
+  // см. terminal/terminal.gateway.ts) держит его открытым на весь срок жизни интерактивной
+  // сессии (может быть минуты/часы) и обязан сам вызвать ssh.dispose() при отключении клиента.
+  async connect(params: SshConnectionParams): Promise<NodeSSH> {
+    return this.connectWithRetry(params);
+  }
+
   // Ubuntu периодически сама запускает apt-get (unattended-upgrades) в фоне — если наша
   // команда апт совпала с ней по времени, получаем "Could not get lock ... apt/lists/lock"
   // или "dpkg frontend lock". Это не реальная ошибка установки, а гонка за лок, который
