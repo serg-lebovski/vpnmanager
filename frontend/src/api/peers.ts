@@ -84,3 +84,8 @@ export async function downloadPeerAmneziaConfig(id: string, suggestedName: strin
   link.click();
   URL.revokeObjectURL(url);
 }
+
+export async function fetchPeerAmneziaQrCodeUrl(id: string): Promise<string> {
+  const response = await apiClient.get(`/peers/${id}/amnezia-qrcode`, { responseType: 'blob' });
+  return URL.createObjectURL(response.data);
+}

@@ -83,4 +83,14 @@ export class PeersController {
     res.setHeader('Content-Type', 'image/png');
     res.send(png);
   }
+
+  // QR для .vpn (AmneziaVPN) — тот же принцип, что и /qrcode для обычного .conf, просто
+  // кодирует содержимое getAmneziaAppConfig (саму строку "vpn://...") вместо .conf-текста.
+  @Get(':id/amnezia-qrcode')
+  async downloadAmneziaQrCode(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Res() res: Response) {
+    const { content } = await this.peersService.getAmneziaAppConfig(user, id);
+    const png = await QRCode.toBuffer(content, { type: 'png', width: 400 });
+    res.setHeader('Content-Type', 'image/png');
+    res.send(png);
+  }
 }

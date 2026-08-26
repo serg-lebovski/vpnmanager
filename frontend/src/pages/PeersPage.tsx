@@ -30,6 +30,7 @@ import EditIcon from '@mui/icons-material/Edit';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import KeyboardArrowRightIcon from '@mui/icons-material/KeyboardArrowRight';
 import PhonelinkRingIcon from '@mui/icons-material/PhonelinkRing';
+import QrCodeIcon from '@mui/icons-material/QrCode';
 import QrCode2Icon from '@mui/icons-material/QrCode2';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, useEffect, useMemo, useState } from 'react';
@@ -42,6 +43,7 @@ import {
   downloadPeerAmneziaConfig,
   downloadPeerConfig,
   fetchAllowedServers,
+  fetchPeerAmneziaQrCodeUrl,
   fetchPeerQrCodeUrl,
   fetchPeers,
   purgePeer,
@@ -83,6 +85,7 @@ interface PeerRowHandlers {
   isSuperAdmin: boolean;
   onEdit: (peer: PeerEntity) => void;
   onShowQr: (peer: PeerEntity) => void;
+  onShowAmneziaQr: (peer: PeerEntity) => void;
   onRevoke: (id: string) => void;
   onPurge: (id: string) => void;
 }
@@ -122,6 +125,7 @@ function PeerTableRow({
   isSuperAdmin,
   onEdit,
   onShowQr,
+  onShowAmneziaQr,
   onRevoke,
   onPurge,
   indent,
@@ -164,6 +168,13 @@ function PeerTableRow({
               </IconButton>
             </span>
           </Tooltip>
+          <Tooltip title="QR-код для .vpn (AmneziaVPN)">
+            <span>
+              <IconButton size="small" disabled={peer.source === 'imported'} onClick={() => onShowAmneziaQr(peer)}>
+                <QrCodeIcon fontSize="small" />
+              </IconButton>
+            </span>
+          </Tooltip>
           {peer.status === 'active' && (
             <Tooltip title="Отозвать">
               <IconButton size="small" color="warning" onClick={() => onRevoke(peer.id)}>
@@ -198,6 +209,7 @@ function MultiConfigGroupRows({
   onToggle,
   onEdit,
   onShowQr,
+  onShowAmneziaQr,
   onRevoke,
   onPurge,
 }: PeerRowHandlers & { groupKey: string; a: PeerEntity; b: PeerEntity; expanded: boolean; onToggle: (key: string) => void }) {
@@ -234,6 +246,13 @@ function MultiConfigGroupRows({
                 </IconButton>
               </span>
             </Tooltip>
+            <Tooltip title="QR-код для .vpn (AmneziaVPN, оба протокола)">
+              <span>
+                <IconButton size="small" disabled={a.source === 'imported'} onClick={() => onShowAmneziaQr(a)}>
+                  <QrCodeIcon fontSize="small" />
+                </IconButton>
+              </span>
+            </Tooltip>
             {a.status === 'active' && (
               <Tooltip title="Отозвать (оба протокола)">
                 <IconButton size="small" color="warning" onClick={() => onRevoke(a.id)}>
@@ -253,8 +272,8 @@ function MultiConfigGroupRows({
       </TableRow>
       {expanded && (
         <>
-          <PeerTableRow peer={a} bridges={bridges} isSuperAdmin={isSuperAdmin} onEdit={onEdit} onShowQr={onShowQr} onRevoke={onRevoke} onPurge={onPurge} indent />
-          <PeerTableRow peer={b} bridges={bridges} isSuperAdmin={isSuperAdmin} onEdit={onEdit} onShowQr={onShowQr} onRevoke={onRevoke} onPurge={onPurge} indent />
+          <PeerTableRow peer={a} bridges={bridges} isSuperAdmin={isSuperAdmin} onEdit={onEdit} onShowQr={onShowQr} onShowAmneziaQr={onShowAmneziaQr} onRevoke={onRevoke} onPurge={onPurge} indent />
+          <PeerTableRow peer={b} bridges={bridges} isSuperAdmin={isSuperAdmin} onEdit={onEdit} onShowQr={onShowQr} onShowAmneziaQr={onShowAmneziaQr} onRevoke={onRevoke} onPurge={onPurge} indent />
         </>
       )}
     </>
@@ -400,6 +419,12 @@ export function PeersPage() {
 
   async function handleShowQr(peer: PeerEntity) {
     const url = await fetchPeerQrCodeUrl(peer.id);
+    setQrPeer(peer);
+    setQrUrl(url);
+  }
+
+  async function handleShowAmneziaQr(peer: PeerEntity) {
+    const url = await fetchPeerAmneziaQrCodeUrl(peer.id);
     setQrPeer(peer);
     setQrUrl(url);
   }
@@ -693,7 +718,19 @@ export function PeersPage() {
             <TableBody>
               {groupedRows.map((row) => {
                 if (row.type === 'single') {
-                  return <PeerTableRow key={row.peer.id} peer={row.peer} bridges={bridges} isSuperAdmin={isSuperAdmin} onEdit={openEdit} onShowQr={handleShowQr} onRevoke={(id) => revokeMutation.mutate(id)} onPurge={(id) => purgeMutation.mutate(id)} />;
+                  return (
+                    <PeerTableRow
+                      key={row.peer.id}
+                      peer={row.peer}
+                      bridges={bridges}
+                      isSuperAdmin={isSuperAdmin}
+                      onEdit={openEdit}
+                      onShowQr={handleShowQr}
+                      onShowAmneziaQr={handleShowAmneziaQr}
+                      onRevoke={(id) => revokeMutation.mutate(id)}
+                      onPurge={(id) => purgeMutation.mutate(id)}
+                    />
+                  );
                 }
                 const key = groupKey(row.a, row.b);
                 const expanded = expandedGroups.has(key);
@@ -709,6 +746,7 @@ export function PeersPage() {
                     onToggle={toggleGroup}
                     onEdit={openEdit}
                     onShowQr={handleShowQr}
+                    onShowAmneziaQr={handleShowAmneziaQr}
                     onRevoke={(id) => revokeMutation.mutate(id)}
                     onPurge={(id) => purgeMutation.mutate(id)}
                   />

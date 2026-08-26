@@ -67,6 +67,8 @@ export interface UpdateBridgeInput {
   // true — сделать этот мост "по умолчанию" (снимает флаг у остальных); false — снять с
   // этого. См. Bridge.isDefault на бэкенде.
   isDefault?: boolean;
+  // Лимит активных peers на этом мосту — null снимает лимит.
+  maxPeers?: number | null;
 }
 
 export async function updateBridge(bridgeId: string, input: UpdateBridgeInput): Promise<BridgeEntity> {

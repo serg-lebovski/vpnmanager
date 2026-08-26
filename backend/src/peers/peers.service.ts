@@ -595,7 +595,30 @@ export class PeersService {
     if (!serverProtocol) {
       throw new BadRequestException('Клиентский интерфейс моста не установлен или неактивен');
     }
+    await this.assertBridgeCapacity(bridge);
     return serverProtocol;
+  }
+
+  // Bridge.maxPeers — независимый от Server.maxPeers лимит (тот общий на ВСЕ мосты одного
+  // self-сервера, см. комментарий у поля). Считает активные peers по ОБОИМ клиентским
+  // протоколам моста сразу (мультиконфиг даёт по одному peer'у на каждый — оба считаются),
+  // без системного upstream-peer (это не клиент, а сам мост). null — лимита нет.
+  private async assertBridgeCapacity(bridge: Bridge): Promise<void> {
+    if (bridge.maxPeers === null || bridge.maxPeers === undefined) {
+      return;
+    }
+    const protocolIds = [bridge.wireguardClientProtocolId, bridge.amneziawgClientProtocolId].filter(
+      (id): id is string => !!id,
+    );
+    if (protocolIds.length === 0) {
+      return;
+    }
+    const count = await this.peersRepository.count({
+      where: { serverProtocolId: In(protocolIds), status: PeerStatus.ACTIVE, source: Not(PeerSource.BRIDGE_UPSTREAM) },
+    });
+    if (count >= bridge.maxPeers) {
+      throw new BadRequestException(`На мосту «${bridge.name}» достигнут лимит peers (${bridge.maxPeers})`);
+    }
   }
 
   // upstreamKey — явный выбор пользователя (см. listUpstreamOptions), если бот уже спросил
@@ -1022,6 +1045,7 @@ export class PeersService {
     if (!serverProtocol || serverProtocol.status !== 'active') {
       throw new BadRequestException('Клиентский интерфейс моста не установлен или неактивен');
     }
+    await this.assertBridgeCapacity(bridge);
     return serverProtocol;
   }
 

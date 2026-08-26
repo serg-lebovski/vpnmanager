@@ -353,6 +353,8 @@ function BridgeCard({
   const [editName, setEditName] = useState(bridge.name);
   const [editOrganizationId, setEditOrganizationId] = useState(bridge.organizationId ?? '');
   const [editDomainName, setEditDomainName] = useState(bridge.domainName ?? '');
+  // Пустая строка — "лимита нет" (отправится null); иначе положительное целое.
+  const [editMaxPeers, setEditMaxPeers] = useState(bridge.maxPeers !== null ? String(bridge.maxPeers) : '');
   // Список обхода upstream — редактируется как текст, по записи на строку (домен или
   // IP/CIDR); при сохранении разбивается на массив, пустые строки и строки-комментарии
   // (начинающиеся с #) отбрасываются.
@@ -387,6 +389,7 @@ function BridgeCard({
         organizationId: editOrganizationId || null,
         domainName: editDomainName.trim() || null,
         bypassDestinations: parseBypassText(editBypassText),
+        maxPeers: editMaxPeers.trim() ? Number(editMaxPeers) : null,
       }),
     onSuccess: () => {
       onChanged();
@@ -540,6 +543,15 @@ function BridgeCard({
                   sx={{ minWidth: 220 }}
                   helperText="Вместо IP self-сервера в скачиваемых конфигах peers"
                 />
+                <TextField
+                  label="Лимит peers на мосту"
+                  type="number"
+                  size="small"
+                  value={editMaxPeers}
+                  onChange={(e) => setEditMaxPeers(e.target.value)}
+                  sx={{ width: 180 }}
+                  helperText="Пусто — без своего лимита (общий лимит self-сервера)"
+                />
                 <Button size="small" variant="contained" disabled={updateMutation.isPending} onClick={() => updateMutation.mutate()}>
                   Сохранить
                 </Button>
@@ -605,6 +617,9 @@ function BridgeCard({
             Обход upstream:{' '}
             {bridge.bypassDestinations?.length > 0 ? `${bridge.bypassDestinations.length} записей` : 'не задан'}
           </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Лимит peers на мосту: {bridge.maxPeers ?? 'без своего лимита'}
+          </Typography>
           {bridge.lastError && (
             <Typography variant="body2" color="error">
               {bridge.lastError}
@@ -644,6 +659,7 @@ function BridgeCard({
                 setEditOrganizationId(bridge.organizationId ?? '');
                 setEditDomainName(bridge.domainName ?? '');
                 setEditBypassText((bridge.bypassDestinations ?? []).join('\n'));
+                setEditMaxPeers(bridge.maxPeers !== null ? String(bridge.maxPeers) : '');
                 setIsEditing(true);
               }}
             >

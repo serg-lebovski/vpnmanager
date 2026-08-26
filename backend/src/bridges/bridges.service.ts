@@ -300,6 +300,9 @@ export class BridgesService {
     if (dto.isDefault !== undefined) {
       bridge.isDefault = dto.isDefault;
     }
+    if (dto.maxPeers !== undefined) {
+      bridge.maxPeers = dto.maxPeers;
+    }
     const saved = await this.bridgesRepository.save(bridge);
 
     // Только ОДИН мост может быть "по умолчанию" одновременно — сбрасываем флаг у всех

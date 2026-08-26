@@ -156,6 +156,9 @@ export interface BridgeEntity {
   // Мост, который бот/портал используют молча (без вопроса "какой сервер?"), если он
   // среди доступных организации вариантов — только у одного моста одновременно.
   isDefault: boolean;
+  // Лимит активных peers на этом мосту — null: своего лимита нет, действует только общий
+  // лимит self-сервера (Server.maxPeers).
+  maxPeers: number | null;
 }
 
 export interface PeerEntity {

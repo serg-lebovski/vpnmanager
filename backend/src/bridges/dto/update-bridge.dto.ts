@@ -1,4 +1,4 @@
-import { IsArray, IsBoolean, IsOptional, IsString, IsUUID, MinLength, ValidateIf } from 'class-validator';
+import { IsArray, IsBoolean, IsInt, IsOptional, IsString, IsUUID, Min, MinLength, ValidateIf } from 'class-validator';
 
 export class UpdateBridgeDto {
   @IsString()
@@ -36,4 +36,12 @@ export class UpdateBridgeDto {
   @IsBoolean()
   @IsOptional()
   isDefault?: boolean;
+
+  // Лимит активных peers на этом мосту — null снимает лимит (действует только общий лимит
+  // self-сервера); отсутствие поля — не менять.
+  @IsInt()
+  @Min(1)
+  @ValidateIf((_, value) => value !== null)
+  @IsOptional()
+  maxPeers?: number | null;
 }
