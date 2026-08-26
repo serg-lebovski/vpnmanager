@@ -49,6 +49,10 @@ export interface ScannedPeer {
 export interface PeerTransferStats {
   rxBytes: number;
   txBytes: number;
+  // Unix-время (секунды) последнего успешного handshake — 0, если его не было ни разу
+  // (см. `wg show <iface> dump`, поле "latest handshake"). Используется, в частности, для
+  // предупреждения "peer создан, но ни разу не подключился" (см. dashboard/).
+  latestHandshake: number;
 }
 
 export interface DetectedInstallation {
