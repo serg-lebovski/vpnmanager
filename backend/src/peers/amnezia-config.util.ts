@@ -49,6 +49,22 @@ function amneziaContainerId(protocol: VpnProtocol): string {
   return protocol === VpnProtocol.AMNEZIAWG ? 'amnezia-awg' : 'amnezia-wireguard';
 }
 
+// AwgClientConfig::fromJson/AwgServerConfig::fromJson (и их WireGuard-аналоги) в
+// исходниках amnezia-client читают mtu/persistentKeepAlive/Jc/Jmin/Jmax/S1-S4/H1-H4 через
+// Qt QJsonValue::toString() — а toString() возвращает ПУСТУЮ строку, если значение хранится
+// как JSON-число, а не строка (Qt не делает неявное приведение типа при чтении JSON).
+// serverProtocol.obfuscationParams хранит Jc/Jmin/Jmax/S1/S2 как числа (см.
+// AmneziaWgDriver.buildObfuscationParams) — без явного приведения к строке здесь ВСЕ эти
+// поля читались бы приложением как пустые, и AmneziaWG получал бы нулевые/дефолтные
+// параметры обфускации, не совпадающие с реальными на сервере — сервер ожидает junk-
+// обрамление пакетов по этим параметрам, соединение просто не устанавливается (подтверждено
+// вживую: WireGuard, у которого таких полей нет вообще, подключался нормально; AmneziaWG —
+// нет, ни разу, до этого фикса). port — исключение: там ОБРАТНО, .toInt() в
+// last_config.port ожидает именно число, а не строку.
+function toAmneziaStringField(value: number | string): string {
+  return String(value);
+}
+
 function buildContainerEntry(input: AmneziaContainerInput): Record<string, unknown> {
   const { protocol, peer, privateKey, presharedKey, server, serverProtocol } = input;
   const configText = buildClientConfig(peer, privateKey, server, serverProtocol, presharedKey);
@@ -62,8 +78,8 @@ function buildContainerEntry(input: AmneziaContainerInput): Record<string, unkno
     client_pub_key: peer.publicKey,
     config: configText,
     hostName: server.host,
-    mtu,
-    persistent_keep_alive: 25,
+    mtu: toAmneziaStringField(mtu),
+    persistent_keep_alive: toAmneziaStringField(25),
     port: serverProtocol.listenPort,
     psk_key: presharedKey ?? '',
     server_pub_key: serverProtocol.serverPublicKey ?? '',
@@ -82,13 +98,16 @@ function buildContainerEntry(input: AmneziaContainerInput): Record<string, unkno
     isThirdPartyConfig: true,
   };
 
-  // Параметры обфускации (Jc/Jmin/...) идут ТОЛЬКО внутрь вложенного last_config — по
-  // исходникам amnezia-client (ImportController::extractWireGuardConfig) сам клиент
-  // кладёт их именно туда, а не дублирует на верхний уровень блока протокола. Раньше
-  // здесь был Object.assign(protocolBlock, ...) — лишние поля на верхнем уровне ломали
-  // разбор именно AWG-контейнера (WireGuard, у которого их нет, подключался нормально).
+  // Jc/Jmin/... нужны И на верхнем уровне блока протокола (читает AwgServerConfig::fromJson
+  // — используется для определения версии AWG/отображения), И внутри last_config (читает
+  // AwgClientConfig::fromJson — используется для реального подключения) — оба места читают
+  // независимо друг от друга, оба через toString().
   if (protocol === VpnProtocol.AMNEZIAWG && serverProtocol.obfuscationParams) {
-    Object.assign(lastConfig, serverProtocol.obfuscationParams);
+    const stringified = Object.fromEntries(
+      Object.entries(serverProtocol.obfuscationParams).map(([key, value]) => [key, toAmneziaStringField(value)]),
+    );
+    Object.assign(protocolBlock, stringified);
+    Object.assign(lastConfig, stringified);
   }
   protocolBlock.last_config = JSON.stringify(lastConfig);
 
