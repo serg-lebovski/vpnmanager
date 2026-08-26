@@ -82,8 +82,12 @@ function buildContainerEntry(input: AmneziaContainerInput): Record<string, unkno
     isThirdPartyConfig: true,
   };
 
+  // Параметры обфускации (Jc/Jmin/...) идут ТОЛЬКО внутрь вложенного last_config — по
+  // исходникам amnezia-client (ImportController::extractWireGuardConfig) сам клиент
+  // кладёт их именно туда, а не дублирует на верхний уровень блока протокола. Раньше
+  // здесь был Object.assign(protocolBlock, ...) — лишние поля на верхнем уровне ломали
+  // разбор именно AWG-контейнера (WireGuard, у которого их нет, подключался нормально).
   if (protocol === VpnProtocol.AMNEZIAWG && serverProtocol.obfuscationParams) {
-    Object.assign(protocolBlock, serverProtocol.obfuscationParams);
     Object.assign(lastConfig, serverProtocol.obfuscationParams);
   }
   protocolBlock.last_config = JSON.stringify(lastConfig);
