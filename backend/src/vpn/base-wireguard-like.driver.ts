@@ -411,9 +411,16 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
       if (parts.length < 8) {
         continue;
       }
-      const [publicKey, , , , latestHandshake, rx, tx] = parts;
+      const [publicKey, , endpoint, , latestHandshake, rx, tx] = parts;
       if (publicKey) {
-        stats.set(publicKey, { rxBytes: Number(rx) || 0, txBytes: Number(tx) || 0, latestHandshake: Number(latestHandshake) || 0 });
+        stats.set(publicKey, {
+          rxBytes: Number(rx) || 0,
+          txBytes: Number(tx) || 0,
+          latestHandshake: Number(latestHandshake) || 0,
+          // "(none)", если peer ни разу не подключался — эндпоинт узнаётся только
+          // из фактического входящего UDP-пакета, а не задаётся конфигом.
+          endpoint: endpoint && endpoint !== '(none)' ? endpoint : null,
+        });
       }
     }
     return stats;

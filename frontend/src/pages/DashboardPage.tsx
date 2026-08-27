@@ -52,6 +52,33 @@ function formatMb(mb: number): string {
   return `${Math.round(mb)} МБ`;
 }
 
+// PersistentKeepalive у клиентских конфигов = 25с — активное устройство рукопожатится
+// заметно чаще этого порога, поэтому "недавно" (последние 3 минуты) читаем как "сейчас
+// подключён", а не просто "было соединение когда-то".
+const ONLINE_THRESHOLD_SECONDS = 3 * 60;
+
+function formatLastHandshake(latestHandshake: number): string {
+  if (!latestHandshake) return 'Никогда';
+  const secondsAgo = Date.now() / 1000 - latestHandshake;
+  if (secondsAgo < ONLINE_THRESHOLD_SECONDS) return 'Сейчас в сети';
+  if (secondsAgo < 3600) return `${Math.floor(secondsAgo / 60)} мин назад`;
+  if (secondsAgo < 86400) return `${Math.floor(secondsAgo / 3600)} ч назад`;
+  return new Date(latestHandshake * 1000).toLocaleString();
+}
+
+function isRecentlyOnline(latestHandshake: number): boolean {
+  return latestHandshake > 0 && Date.now() / 1000 - latestHandshake < ONLINE_THRESHOLD_SECONDS;
+}
+
+function formatEndpointIp(endpoint: string | null): string {
+  if (!endpoint) return '—';
+  // "ip:port" или "[ipv6]:port" — отсекаем порт, панели интересен только адрес клиента.
+  const ipv6Match = endpoint.match(/^\[(.+)\]:\d+$/);
+  if (ipv6Match) return ipv6Match[1];
+  const lastColon = endpoint.lastIndexOf(':');
+  return lastColon > 0 ? endpoint.slice(0, lastColon) : endpoint;
+}
+
 // Условный опорный уровень для индикатора "Сеть" — у SSH-опроса нет способа узнать
 // реальную пропускную способность канала конкретного VPS, поэтому 100% здесь — это
 // не "канал забит", а "трафик достиг этого условного ориентира" (100 Мбит/с), просто
@@ -520,6 +547,8 @@ export function DashboardPage() {
               <TableCell>↓ Скачивание</TableCell>
               <TableCell>↑ Отдача</TableCell>
               <TableCell>Всего получено / отправлено</TableCell>
+              <TableCell>Последнее рукопожатие</TableCell>
+              <TableCell>IP-адрес клиента</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -533,11 +562,21 @@ export function DashboardPage() {
                 <TableCell>
                   {formatBytesTotal(peer.rxBytesTotal)} / {formatBytesTotal(peer.txBytesTotal)}
                 </TableCell>
+                <TableCell>
+                  <Typography
+                    variant="body2"
+                    color={isRecentlyOnline(peer.latestHandshake) ? 'success.main' : 'text.secondary'}
+                    fontWeight={isRecentlyOnline(peer.latestHandshake) ? 600 : 400}
+                  >
+                    {formatLastHandshake(peer.latestHandshake)}
+                  </Typography>
+                </TableCell>
+                <TableCell>{formatEndpointIp(peer.endpoint)}</TableCell>
               </TableRow>
             ))}
             {peers.length === 0 && (
               <TableRow>
-                <TableCell colSpan={6}>{connected ? 'Нет активных peers' : 'Загрузка...'}</TableCell>
+                <TableCell colSpan={8}>{connected ? 'Нет активных peers' : 'Загрузка...'}</TableCell>
               </TableRow>
             )}
           </TableBody>

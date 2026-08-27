@@ -49,6 +49,9 @@ export interface DashboardPeerStats {
   // предупреждения "peer создан, но ни разу не подключился" (см. PeerConnectivityAlertService).
   latestHandshake: number;
   createdAt: string;
+  // "ip:port" последнего входящего пакета клиента (см. PeerTransferStats.endpoint) — null,
+  // если handshake не было ни разу. Реальный внешний адрес устройства, не из конфига.
+  endpoint: string | null;
 }
 
 export interface DashboardSnapshot {
@@ -303,6 +306,7 @@ export class DashboardService {
         txBps: Math.round(txBps),
         latestHandshake: sample?.latestHandshake ?? 0,
         createdAt: peer.createdAt.toISOString(),
+        endpoint: sample?.endpoint ?? null,
       };
     });
   }

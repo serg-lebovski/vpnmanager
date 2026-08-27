@@ -28,6 +28,11 @@ export interface DashboardPeerStats {
   txBytesTotal: number;
   rxBps: number;
   txBps: number;
+  // Unix-время (секунды) последнего handshake, 0 — не было ни разу.
+  latestHandshake: number;
+  createdAt: string;
+  // "ip:port" последнего входящего пакета клиента — null, если handshake не было ни разу.
+  endpoint: string | null;
 }
 
 export interface DashboardSnapshot {
