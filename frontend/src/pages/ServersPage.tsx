@@ -36,7 +36,8 @@ import VpnLockIcon from '@mui/icons-material/VpnLock';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, useEffect, useState } from 'react';
 import { connectDashboardSocket } from '../api/dashboard';
-import { getErrorMessage } from '../api/errors';
+import { getErrorMessage, getKernelRebootInfo } from '../api/errors';
+import { KernelRebootConfirmDialog } from '../components/KernelRebootConfirmDialog';
 import { TerminalDialog } from '../components/TerminalDialog';
 import {
   CreateServerInput,
@@ -182,10 +183,13 @@ export function ServersPage() {
       installProtocol(vars.serverId, { protocol: vars.protocol, listenPort: vars.listenPort, networkCidr: vars.networkCidr }),
     onSuccess: invalidate,
   });
+  const installKernelRebootInfo = installMutation.isError ? getKernelRebootInfo(installMutation.error) : null;
   const installError =
-    installMutation.isError && installMutation.variables
+    installMutation.isError && installMutation.variables && !installKernelRebootInfo
       ? { serverId: installMutation.variables.serverId, message: getErrorMessage(installMutation.error, 'Не удалось установить протокол') }
       : null;
+  const [kernelRebootDismissed, setKernelRebootDismissed] = useState(false);
+  const kernelRebootInfo = !kernelRebootDismissed ? installKernelRebootInfo : null;
   const scanMutation = useMutation({ mutationFn: scanAndImportPeers, onSuccess: invalidate });
 
   function handleCreateSubmit(event: FormEvent) {
@@ -291,9 +295,10 @@ export function ServersPage() {
                 ? getErrorMessage(credentialsMutation.error, 'Не удалось сохранить учётные данные')
                 : null
             }
-            onInstall={(protocol, listenPort, networkCidr) =>
-              installMutation.mutate({ serverId: server.id, protocol, listenPort, networkCidr })
-            }
+            onInstall={(protocol, listenPort, networkCidr) => {
+              setKernelRebootDismissed(false);
+              installMutation.mutate({ serverId: server.id, protocol, listenPort, networkCidr });
+            }}
             isInstalling={installMutation.isPending && installMutation.variables?.serverId === server.id}
             installError={installError?.serverId === server.id ? installError.message : null}
             onScan={(serverProtocolId) => scanMutation.mutate(serverProtocolId)}
@@ -322,6 +327,14 @@ export function ServersPage() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {kernelRebootInfo && (
+        <KernelRebootConfirmDialog
+          info={kernelRebootInfo}
+          onClose={() => setKernelRebootDismissed(true)}
+          onRebooted={invalidate}
+        />
+      )}
     </Stack>
   );
 }

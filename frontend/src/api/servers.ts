@@ -55,6 +55,14 @@ export async function rebootServer(id: string): Promise<{ message: string }> {
   return data;
 }
 
+// Подтверждённая администратором перезагрузка сервера, когда установка/подключение
+// upstream упёрлись в KERNEL_REBOOT_REQUIRED (см. KernelRebootConfirmDialog) — модуль
+// протокола собран не под текущее ядро, только перезагрузка сервера применит нужный.
+export async function rebootForKernelModule(serverId: string, protocol: VpnProtocol): Promise<{ message: string }> {
+  const { data } = await apiClient.post(`/servers/${serverId}/reboot-for-kernel-module`, { protocol });
+  return data;
+}
+
 export interface InstallProtocolInput {
   protocol: VpnProtocol;
   listenPort: number;

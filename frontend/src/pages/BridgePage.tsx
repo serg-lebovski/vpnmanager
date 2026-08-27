@@ -35,10 +35,11 @@ import {
   updateBridge,
 } from '../api/bridges';
 import { BridgeSwitchProgress, connectBridgeProgressSocket } from '../api/bridgeSocket';
-import { getErrorMessage } from '../api/errors';
+import { getErrorMessage, getKernelRebootInfo, KernelRebootRequiredInfo } from '../api/errors';
 import { fetchOrganizations } from '../api/organizations';
 import { BridgeEntity, BridgeUpstreamMode, Organization, SshAuthType, VpnProtocol } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
+import { KernelRebootConfirmDialog } from '../components/KernelRebootConfirmDialog';
 
 const statusColor: Record<string, 'default' | 'success' | 'error' | 'warning'> = {
   not_configured: 'default',
@@ -349,6 +350,7 @@ function BridgeCard({
   const [selectedUpstreamServer, setSelectedUpstreamServer] = useState('');
   const [selectedUpstream, setSelectedUpstream] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [kernelRebootInfo, setKernelRebootInfo] = useState<KernelRebootRequiredInfo | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(bridge.name);
   const [editOrganizationId, setEditOrganizationId] = useState(bridge.organizationId ?? '');
@@ -407,7 +409,14 @@ function BridgeCard({
       setSelectedUpstreamServer('');
       setSelectedUpstream('');
     },
-    onError: (err) => setError(getErrorMessage(err, 'Не удалось переключить upstream')),
+    onError: (err) => {
+      const kernelInfo = getKernelRebootInfo(err);
+      if (kernelInfo) {
+        setKernelRebootInfo(kernelInfo);
+        return;
+      }
+      setError(getErrorMessage(err, 'Не удалось переключить upstream'));
+    },
   });
   const modeMutation = useMutation({
     mutationFn: (mode: BridgeUpstreamMode) => setBridgeMode(bridge.id, mode),
@@ -811,6 +820,13 @@ function BridgeCard({
         <Alert severity="error" sx={{ mt: 2 }}>
           {error}
         </Alert>
+      )}
+      {kernelRebootInfo && (
+        <KernelRebootConfirmDialog
+          info={kernelRebootInfo}
+          onClose={() => setKernelRebootInfo(null)}
+          onRebooted={onChanged}
+        />
       )}
     </Paper>
   );
