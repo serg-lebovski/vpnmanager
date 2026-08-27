@@ -29,13 +29,16 @@ import RestartAltIcon from '@mui/icons-material/RestartAlt';
 import SecurityIcon from '@mui/icons-material/Security';
 import SyncIcon from '@mui/icons-material/Sync';
 import SystemUpdateAltIcon from '@mui/icons-material/SystemUpdateAlt';
+import TerminalIcon from '@mui/icons-material/Terminal';
 import TravelExploreIcon from '@mui/icons-material/TravelExplore';
 import VpnKeyIcon from '@mui/icons-material/VpnKey';
 import VpnLockIcon from '@mui/icons-material/VpnLock';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, useEffect, useState } from 'react';
 import { connectDashboardSocket } from '../api/dashboard';
-import { getErrorMessage } from '../api/errors';
+import { getErrorMessage, getKernelRebootInfo } from '../api/errors';
+import { KernelRebootConfirmDialog } from '../components/KernelRebootConfirmDialog';
+import { TerminalDialog } from '../components/TerminalDialog';
 import {
   CreateServerInput,
   DetectionResult,
@@ -161,8 +164,8 @@ export function ServersPage() {
 
   const deleteMutation = useMutation({ mutationFn: deleteServer, onSuccess: invalidate });
   const renameMutation = useMutation({
-    mutationFn: (vars: { id: string; name: string; maxPeers: number }) =>
-      updateServer(vars.id, { name: vars.name, maxPeers: vars.maxPeers }),
+    mutationFn: (vars: { id: string; name: string; maxPeers: number; amneziaAppName: string | null }) =>
+      updateServer(vars.id, { name: vars.name, maxPeers: vars.maxPeers, amneziaAppName: vars.amneziaAppName }),
     onSuccess: invalidate,
   });
   const fail2banMutation = useMutation({ mutationFn: ensureFail2ban });
@@ -180,10 +183,13 @@ export function ServersPage() {
       installProtocol(vars.serverId, { protocol: vars.protocol, listenPort: vars.listenPort, networkCidr: vars.networkCidr }),
     onSuccess: invalidate,
   });
+  const installKernelRebootInfo = installMutation.isError ? getKernelRebootInfo(installMutation.error) : null;
   const installError =
-    installMutation.isError && installMutation.variables
+    installMutation.isError && installMutation.variables && !installKernelRebootInfo
       ? { serverId: installMutation.variables.serverId, message: getErrorMessage(installMutation.error, 'Не удалось установить протокол') }
       : null;
+  const [kernelRebootDismissed, setKernelRebootDismissed] = useState(false);
+  const kernelRebootInfo = !kernelRebootDismissed ? installKernelRebootInfo : null;
   const scanMutation = useMutation({ mutationFn: scanAndImportPeers, onSuccess: invalidate });
 
   function handleCreateSubmit(event: FormEvent) {
@@ -268,7 +274,7 @@ export function ServersPage() {
             server={server}
             online={onlineByServer[server.id]}
             onDelete={() => deleteMutation.mutate(server.id)}
-            onRename={(name, maxPeers) => renameMutation.mutate({ id: server.id, name, maxPeers })}
+            onRename={(name, maxPeers, amneziaAppName) => renameMutation.mutate({ id: server.id, name, maxPeers, amneziaAppName })}
             onTest={() => testMutation.mutate(server.id)}
             onEnsureFail2ban={() => fail2banMutation.mutate(server.id)}
             fail2banPending={fail2banMutation.isPending && fail2banMutation.variables === server.id}
@@ -289,9 +295,10 @@ export function ServersPage() {
                 ? getErrorMessage(credentialsMutation.error, 'Не удалось сохранить учётные данные')
                 : null
             }
-            onInstall={(protocol, listenPort, networkCidr) =>
-              installMutation.mutate({ serverId: server.id, protocol, listenPort, networkCidr })
-            }
+            onInstall={(protocol, listenPort, networkCidr) => {
+              setKernelRebootDismissed(false);
+              installMutation.mutate({ serverId: server.id, protocol, listenPort, networkCidr });
+            }}
             isInstalling={installMutation.isPending && installMutation.variables?.serverId === server.id}
             installError={installError?.serverId === server.id ? installError.message : null}
             onScan={(serverProtocolId) => scanMutation.mutate(serverProtocolId)}
@@ -320,6 +327,14 @@ export function ServersPage() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {kernelRebootInfo && (
+        <KernelRebootConfirmDialog
+          info={kernelRebootInfo}
+          onClose={() => setKernelRebootDismissed(true)}
+          onRebooted={invalidate}
+        />
+      )}
     </Stack>
   );
 }
@@ -350,7 +365,7 @@ function ServerCard({
   server: ServerEntity;
   online?: boolean;
   onDelete: () => void;
-  onRename: (name: string, maxPeers: number) => void;
+  onRename: (name: string, maxPeers: number, amneziaAppName: string | null) => void;
   onTest: () => void;
   isTesting: boolean;
   onReboot: () => void;
@@ -390,9 +405,11 @@ function ServerCard({
   const [isEditingName, setIsEditingName] = useState(false);
   const [editName, setEditName] = useState(server.name);
   const [editMaxPeers, setEditMaxPeers] = useState(server.maxPeers);
+  const [editAmneziaAppName, setEditAmneziaAppName] = useState(server.amneziaAppName ?? '');
   const [isEditingCredentials, setIsEditingCredentials] = useState(false);
   const [credAuthType, setCredAuthType] = useState<SshAuthType>('password');
   const [credSecret, setCredSecret] = useState('');
+  const [terminalOpen, setTerminalOpen] = useState(false);
 
   const detectMutation = useMutation({
     mutationFn: () => detectExistingInstallations(server.id),
@@ -436,12 +453,21 @@ function ServerCard({
                 onChange={(e) => setEditMaxPeers(Number(e.target.value))}
                 sx={{ width: 120 }}
               />
+              <TextField
+                size="small"
+                label="Имя в приложении AmneziaVPN"
+                value={editAmneziaAppName}
+                onChange={(e) => setEditAmneziaAppName(e.target.value)}
+                placeholder={server.name}
+                helperText="Пусто — используется название сервера"
+                sx={{ width: 260 }}
+              />
               <Tooltip title="Сохранить">
                 <IconButton
                   size="small"
                   color="primary"
                   onClick={() => {
-                    onRename(editName, editMaxPeers);
+                    onRename(editName, editMaxPeers, editAmneziaAppName.trim() || null);
                     setIsEditingName(false);
                   }}
                 >
@@ -449,7 +475,13 @@ function ServerCard({
                 </IconButton>
               </Tooltip>
               <Tooltip title="Отмена">
-                <IconButton size="small" onClick={() => setIsEditingName(false)}>
+                <IconButton
+                  size="small"
+                  onClick={() => {
+                    setEditAmneziaAppName(server.amneziaAppName ?? '');
+                    setIsEditingName(false);
+                  }}
+                >
                   <CloseIcon fontSize="small" />
                 </IconButton>
               </Tooltip>
@@ -543,6 +575,7 @@ function ServerCard({
                 onClick={() => {
                   setEditName(server.name);
                   setEditMaxPeers(server.maxPeers);
+                  setEditAmneziaAppName(server.amneziaAppName ?? '');
                   setIsEditingName(true);
                 }}
               >
@@ -550,6 +583,11 @@ function ServerCard({
               </IconButton>
             </Tooltip>
           )}
+          <Tooltip title="Терминал">
+            <IconButton size="small" onClick={() => setTerminalOpen(true)}>
+              <TerminalIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
           <Tooltip title="Удалить сервер">
             <IconButton size="small" color="error" onClick={onDelete}>
               <DeleteOutlineIcon fontSize="small" />
@@ -557,6 +595,10 @@ function ServerCard({
           </Tooltip>
         </Stack>
       </Stack>
+
+      {terminalOpen && (
+        <TerminalDialog serverId={server.id} serverLabel={`${server.name} (${server.host})`} onClose={() => setTerminalOpen(false)} />
+      )}
 
       {detectResult && (
         <Alert severity="info" sx={{ mt: 2 }} onClose={() => setDetectResult(null)}>

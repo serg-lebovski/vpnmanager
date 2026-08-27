@@ -48,7 +48,7 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
   protected abstract readonly aptPackages: string;
 
   abstract ensureClientToolsInstalled(ssh: NodeSSH): Promise<void>;
-  protected abstract buildObfuscationParams(): Record<string, number> | undefined;
+  protected abstract buildObfuscationParams(): Record<string, number | string> | undefined;
   protected abstract parseObfuscationParamsFromConfig(configText: string): Record<string, number | string> | undefined;
 
   // Если протокол работает внутри Docker-контейнера, все команды на сервере нужно
@@ -387,23 +387,40 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
     return peers.length;
   }
 
-  // `wg show <iface> transfer` печатает по строке на peer: "<publicKey>\t<rxBytes>\t<txBytes>"
-  // (awg — тот же формат, drop-in совместимый CLI). Пустая карта, если интерфейс сейчас не
-  // поднят (команда завершается ошибкой) — не считаем это фатальным, просто нет данных.
+  // `wg show <iface> dump` печатает первой строкой данные САМОГО интерфейса (4 поля:
+  // privateKey/publicKey/listenPort/fwmark), а дальше — по строке на peer (8 полей:
+  // publicKey presharedKey endpoint allowedIps latestHandshake rxBytes txBytes keepalive) —
+  // awg тот же формат, drop-in совместимый CLI. Один запрос вместо отдельных "transfer" +
+  // "latest-handshakes" — то же количество SSH-раундтрипов, что было раньше, но данных
+  // больше (используется для предупреждения "peer создан, но ни разу не подключился",
+  // см. dashboard/). Пустая карта, если интерфейс сейчас не поднят (команда завершается
+  // ошибкой) — не считаем это фатальным, просто нет данных.
   async getTransferStats(ctx: VpnDriverContext): Promise<Map<string, PeerTransferStats>> {
     const interfaceName = ctx.serverProtocol.interfaceName;
     const result = await this.sshService.exec(
       ctx.ssh,
-      this.buildCommand(`${this.binary} show ${interfaceName} transfer`, ctx.serverProtocol.execContainer),
+      this.buildCommand(`${this.binary} show ${interfaceName} dump`, ctx.serverProtocol.execContainer),
     );
     const stats = new Map<string, PeerTransferStats>();
     if (result.code !== 0) {
       return stats;
     }
     for (const line of result.stdout.split('\n')) {
-      const [publicKey, rx, tx] = line.trim().split(/\s+/);
-      if (publicKey && rx !== undefined && tx !== undefined) {
-        stats.set(publicKey, { rxBytes: Number(rx) || 0, txBytes: Number(tx) || 0 });
+      const parts = line.trim().split(/\s+/);
+      // Строка интерфейса (4 поля) — не peer, пропускаем; пустые строки — тоже.
+      if (parts.length < 8) {
+        continue;
+      }
+      const [publicKey, , endpoint, , latestHandshake, rx, tx] = parts;
+      if (publicKey) {
+        stats.set(publicKey, {
+          rxBytes: Number(rx) || 0,
+          txBytes: Number(tx) || 0,
+          latestHandshake: Number(latestHandshake) || 0,
+          // "(none)", если peer ни разу не подключался — эндпоинт узнаётся только
+          // из фактического входящего UDP-пакета, а не задаётся конфигом.
+          endpoint: endpoint && endpoint !== '(none)' ? endpoint : null,
+        });
       }
     }
     return stats;

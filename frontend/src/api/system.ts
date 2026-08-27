@@ -24,6 +24,8 @@ export function connectUpdateProgressSocket(onProgress: (progress: UpdateProgres
 export interface VersionInfo {
   currentCommit: string;
   currentCommitShort: string;
+  currentBranch: string;
+  deployBranch: string;
   remoteCommit: string | null;
   remoteCommitShort: string | null;
   updateAvailable: boolean;

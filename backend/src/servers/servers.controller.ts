@@ -5,6 +5,7 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { CreateServerDto } from './dto/create-server.dto';
 import { InstallProtocolDto } from './dto/install-protocol.dto';
+import { RebootForKernelModuleDto } from './dto/reboot-for-kernel-module.dto';
 import { UpdateServerCredentialsDto } from './dto/update-server-credentials.dto';
 import { UpdateServerDto } from './dto/update-server.dto';
 import { MtProxyService } from './mtproxy.service';
@@ -57,6 +58,14 @@ export class ServersController {
   @Post(':id/reboot')
   reboot(@Param('id') id: string) {
     return this.serversService.reboot(id);
+  }
+
+  // Подтверждённая администратором перезагрузка при KERNEL_REBOOT_REQUIRED (см.
+  // VpnProvisioningService.checkKernelModuleReadiness) — отдельно от обычного /reboot,
+  // чтобы фронтенд мог показать именно диалог подтверждения с указанием протокола/причины.
+  @Post(':id/reboot-for-kernel-module')
+  rebootForKernelModule(@Param('id') id: string, @Body() dto: RebootForKernelModuleDto) {
+    return this.serversService.rebootForKernelModule(id, dto);
   }
 
   @Post(':id/protocols')

@@ -84,6 +84,15 @@ export class Peer {
   @Column({ name: 'device_type', type: 'enum', enum: PeerDeviceType, nullable: true })
   deviceType: PeerDeviceType | null;
 
+  // Заполняется только для «мульти-конфига» (см. PeersService.createMultiProtocol) — два
+  // реальных Peer (свои ключи/IP/интерфейс на каждый протокол, WG и AmneziaWG не могут
+  // делить один и тот же ServerProtocol), указывающих друг на друга. Панель обращается с
+  // ними как с одним логическим peer'ом: revoke/purge/переименование/срок действия,
+  // применённые к одному, каскадом применяются и к другому (см. PeersService.revoke/
+  // purge/update). null — обычный одно-протокольный peer.
+  @Column({ name: 'paired_peer_id', type: 'uuid', nullable: true })
+  pairedPeerId: string | null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 }

@@ -30,6 +30,14 @@ export class TelegramPortalController {
     return this.telegramPortalService.listUpstreamOptions(token, protocol);
   }
 
+  // Варианты для мультиконфига (WireGuard + AmneziaWG сразу) — отдельно от
+  // listUpstreamOptions, т.к. фильтрует по НАЛИЧИЮ ОБОИХ протоколов одновременно, а не по
+  // одному переданному в query.
+  @Get(':token/multi-upstream-options')
+  listMultiProtocolUpstreamOptions(@Param('token') token: string) {
+    return this.telegramPortalService.listMultiProtocolUpstreamOptions(token);
+  }
+
   @Post(':token/config')
   issueConfig(@Param('token') token: string, @Body() dto: IssuePortalConfigDto) {
     return this.telegramPortalService.issueConfig(token, dto);
@@ -40,5 +48,12 @@ export class TelegramPortalController {
   @Get(':token/config/:deviceType')
   downloadConfig(@Param('token') token: string, @Param('deviceType') deviceType: PeerDeviceType) {
     return this.telegramPortalService.downloadConfig(token, deviceType);
+  }
+
+  // Дополнительный формат — .vpn для официального приложения AmneziaVPN, не заменяет
+  // /config/:deviceType (.conf). Работает и для обычного, и для мульти-устройства.
+  @Get(':token/amnezia-config/:deviceType')
+  downloadAmneziaConfig(@Param('token') token: string, @Param('deviceType') deviceType: PeerDeviceType) {
+    return this.telegramPortalService.downloadAmneziaConfig(token, deviceType);
   }
 }

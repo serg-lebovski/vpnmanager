@@ -65,9 +65,30 @@ export class PeersController {
     res.send(content);
   }
 
+  // Дополнительный формат конфига — не заменяет /config (.conf для wg-quick/awg-quick),
+  // а .vpn для официального приложения AmneziaVPN (см. PeersService.getAmneziaAppConfig).
+  // Работает и для обычного одно-протокольного peer'а, и для пары мультиконфига.
+  @Get(':id/amnezia-config')
+  async downloadAmneziaConfig(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Res() res: Response) {
+    const { filename, content } = await this.peersService.getAmneziaAppConfig(user, id);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', contentDispositionHeader(filename));
+    res.send(content);
+  }
+
   @Get(':id/qrcode')
   async downloadQrCode(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Res() res: Response) {
     const { content } = await this.peersService.getDownloadableConfig(user, id);
+    const png = await QRCode.toBuffer(content, { type: 'png', width: 400 });
+    res.setHeader('Content-Type', 'image/png');
+    res.send(png);
+  }
+
+  // QR для .vpn (AmneziaVPN) — тот же принцип, что и /qrcode для обычного .conf, просто
+  // кодирует содержимое getAmneziaAppConfig (саму строку "vpn://...") вместо .conf-текста.
+  @Get(':id/amnezia-qrcode')
+  async downloadAmneziaQrCode(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Res() res: Response) {
+    const { content } = await this.peersService.getAmneziaAppConfig(user, id);
     const png = await QRCode.toBuffer(content, { type: 'png', width: 400 });
     res.setHeader('Content-Type', 'image/png');
     res.send(png);

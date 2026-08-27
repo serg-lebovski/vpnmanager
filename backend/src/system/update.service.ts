@@ -5,6 +5,7 @@ import { promisify } from 'util';
 import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NginxConfigService } from './nginx-config.service';
+import { SettingsService } from './settings.service';
 import { SystemGateway } from './system.gateway';
 
 const execFileAsync = promisify(execFile);
@@ -12,6 +13,8 @@ const execFileAsync = promisify(execFile);
 export interface VersionInfo {
   currentCommit: string;
   currentCommitShort: string;
+  currentBranch: string;
+  deployBranch: string;
   remoteCommit: string | null;
   remoteCommitShort: string | null;
   updateAvailable: boolean;
@@ -33,6 +36,7 @@ export class UpdateService {
     private readonly configService: ConfigService,
     private readonly systemGateway: SystemGateway,
     private readonly nginxConfigService: NginxConfigService,
+    private readonly settingsService: SettingsService,
   ) {}
 
   private getRepoPath(): string {
@@ -48,21 +52,29 @@ export class UpdateService {
   async getVersion(): Promise<VersionInfo> {
     const repoPath = this.getRepoPath();
     const currentCommit = await this.git(repoPath, ['rev-parse', 'HEAD']);
+    const currentBranch = await this.git(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    const settings = await this.settingsService.getOrCreate();
+    const deployBranch = settings.deployBranch;
 
+    // Сравниваем с ВЫБРАННОЙ в настройках веткой, а не обязательно с той, что сейчас
+    // реально выведена (currentBranch) — если админ только что переключил deployBranch,
+    // "обновление доступно" должно отражать это сразу, до первого нажатия «Обновить».
     let remoteCommit: string | null = null;
     try {
       await this.git(repoPath, ['fetch', '--quiet', 'origin']);
-      remoteCommit = await this.git(repoPath, ['rev-parse', 'origin/main']);
+      remoteCommit = await this.git(repoPath, ['rev-parse', `origin/${deployBranch}`]);
     } catch (error) {
-      this.logger.warn(`Не удалось проверить обновления на GitHub: ${(error as Error).message}`);
+      this.logger.warn(`Не удалось проверить обновления на GitHub (ветка ${deployBranch}): ${(error as Error).message}`);
     }
 
     return {
       currentCommit,
       currentCommitShort: currentCommit.slice(0, 8),
+      currentBranch,
+      deployBranch,
       remoteCommit,
       remoteCommitShort: remoteCommit?.slice(0, 8) ?? null,
-      updateAvailable: remoteCommit !== null && remoteCommit !== currentCommit,
+      updateAvailable: remoteCommit !== null && (remoteCommit !== currentCommit || currentBranch !== deployBranch),
       checkedAt: new Date().toISOString(),
     };
   }
@@ -105,8 +117,20 @@ export class UpdateService {
   private async runUpdateSequence(repoPath: string, logPath: string): Promise<void> {
     const emit = (percent: number, step: string) => this.systemGateway.broadcastUpdateProgress({ percent, step, done: false });
     try {
+      const settings = await this.settingsService.getOrCreate();
+      const branch = settings.deployBranch;
+
+      emit(3, `Переключение на ветку ${branch}`);
+      await this.runLogged(`git fetch --quiet origin`, repoPath, logPath);
+      // checkout (не просто pull) — переживает и первое переключение ветки (main <-> beta),
+      // и повторные обновления на уже выбранной; -B создаёт локальную ветку, если её ещё
+      // нет, или переиспользует существующую. reset --hard ДО pull ниже гарантирует чистое
+      // дерево независимо от того, что было в рабочей копии раньше (этот checkout — только
+      // деплой, а не место для локальных правок, см. CLAUDE.md про рабочий процесс).
+      await this.runLogged(`git checkout -B ${branch} origin/${branch}`, repoPath, logPath);
+
       emit(5, 'git pull');
-      await this.runLogged('git pull', repoPath, logPath);
+      await this.runLogged(`git pull origin ${branch}`, repoPath, logPath);
 
       // Реальный инцидент (2026-08-07): "git pull" уже обновил nginx.conf.template на диске,
       // но ЭТОТ ПРОЦЕСС — всё ещё СТАРЫЙ backend (новый образ только что собран шагом выше,
@@ -139,11 +163,19 @@ export class UpdateService {
         );
       }
 
-      emit(60, nginxRenderOk ? 'Пересоздание nginx и frontend' : 'Пересоздание frontend (nginx пропущен из-за ошибки конфигурации выше)');
+      // --build здесь и в recreateBackendDetached ниже — без него `docker compose up`
+      // просто пересоздаёт контейнер ИЗ УЖЕ СУЩЕСТВУЮЩЕГО (старого) образа, никак не
+      // подхватывая новый код из только что затянутого git pull (у backend/frontend в
+      // docker-compose.yml задан build.context — образ нужно пересобрать явно; у nginx
+      // своего Dockerfile нет, --build там просто no-op). Пойманный вживую реальный
+      // инцидент: несколько обновлений подряд отчитывались "Готово", контейнеры
+      // пересоздавались, но фронтенд/бэкенд оставались на коде десятидневной давности —
+      // до этого фикса здесь не было НИ ОДНОГО вызова "docker compose build".
+      emit(60, nginxRenderOk ? 'Пересборка и пересоздание nginx и frontend' : 'Пересборка и пересоздание frontend (nginx пропущен из-за ошибки конфигурации выше)');
       await this.runLogged(
         nginxRenderOk
-          ? 'docker compose up -d --force-recreate --no-deps nginx frontend'
-          : 'docker compose up -d --force-recreate --no-deps frontend',
+          ? 'docker compose up -d --build --force-recreate --no-deps nginx frontend'
+          : 'docker compose up -d --build --force-recreate --no-deps frontend',
         repoPath,
         logPath,
       );
@@ -186,23 +218,18 @@ export class UpdateService {
   // текущий backend.
   private async recreateBackendDetached(repoPath: string, logPath: string): Promise<void> {
     // РАНЬШЕ здесь резолвился `docker inspect --format '{{.Image}}' $(hostname)` — sha256-
-    // digest образа, из которого создан ТЕКУЩИЙ (ещё не пересозданный) контейнер, а затем
-    // `docker compose images -q backend`. Проблема (пойманная вживую ДВАЖДЫ, оба раза
-    // 2026-08-04): оба варианта резолвят образ уже ЗАПУЩЕННОГО контейнера сервиса backend —
-    // то есть СТАРЫЙ образ, а не тот, что только что собрал предыдущий шаг
-    // (`docker compose build`). К моменту, когда sibling-контейнер реально пытался
-    // запуститься по этому (обязательно старому, уже расстэгованному после ретэга `:latest`
-    // на новый билд) digest'у, самого образа в локальном хранилище уже не было ("No such
-    // image") — унёс мусорщик демона. Старый образ тут в принципе не нужен — sibling-
-    // контейнеру нужен ЛЮБОЙ образ с docker-cli + docker-cli-compose, а свежесобранный образ
-    // backend уже есть и куда надёжнее (не может пропасть между сборкой и использованием).
+    // digest образа, из которого создан ТЕКУЩИЙ (ещё не пересозданный) контейнер. Проблема
+    // (пойманная вживую ДВАЖДЫ, оба раза 2026-08-04): после ретэга `:latest` на новый билд
+    // старый digest быстро становится "висячим" и пропадает из локального хранилища
+    // ("No such image") раньше, чем sibling-контейнер успевал по нему запуститься. selfImage
+    // здесь нужен ТОЛЬКО как образ с docker-cli + docker-cli-compose внутри для запуска
+    // helperCommand ниже (сам backend пересобирается флагом --build В ЭТОЙ команде, из уже
+    // затянутого git pull'ом кода) — годится любой существующий тег, не обязательно свежий.
     // `docker compose config --images` — чисто конфигурационная операция (читает имена
     // образов из docker-compose.yml по стандартной схеме `<project>-<service>`), не
-    // обращается к рантайму контейнеров вообще, поэтому не зависит от того, что уже запущено
-    // и что могло быть собрано мусорщиком — всегда актуальна сразу после `docker compose
-    // build`. Без фильтра по сервису — с фильтром (`... --images backend`) compose тянет ещё
-    // и образы зависимостей (`depends_on: postgres`), поэтому фильтруем по подстроке
-    // "backend" в имени образа сами.
+    // обращается к рантайму контейнеров вообще. Без фильтра по сервису — с фильтром
+    // (`... --images backend`) compose тянет ещё и образы зависимостей (`depends_on:
+    // postgres`), поэтому фильтруем по подстроке "backend" в имени образа сами.
     const { stdout } = await execFileAsync('docker', ['compose', 'config', '--images'], { cwd: repoPath });
     const selfImage = stdout
       .split('\n')
@@ -212,7 +239,7 @@ export class UpdateService {
       throw new Error('Не удалось определить образ backend (docker compose config --images не вернул образ с "backend" в имени)');
     }
 
-    const helperCommand = `sleep 2 && docker compose up -d --no-deps backend >> "${logPath}" 2>&1`;
+    const helperCommand = `sleep 2 && docker compose up -d --build --no-deps backend >> "${logPath}" 2>&1`;
     await execFileAsync('docker', [
       'run',
       '-d',

@@ -12,8 +12,11 @@ import {
   Stack,
   Switch,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material';
+import StarIcon from '@mui/icons-material/Star';
+import StarBorderIcon from '@mui/icons-material/StarBorder';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChangeEvent, FormEvent, useEffect, useState } from 'react';
 import {
@@ -32,10 +35,11 @@ import {
   updateBridge,
 } from '../api/bridges';
 import { BridgeSwitchProgress, connectBridgeProgressSocket } from '../api/bridgeSocket';
-import { getErrorMessage } from '../api/errors';
+import { getErrorMessage, getKernelRebootInfo, KernelRebootRequiredInfo } from '../api/errors';
 import { fetchOrganizations } from '../api/organizations';
 import { BridgeEntity, BridgeUpstreamMode, Organization, SshAuthType, VpnProtocol } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
+import { KernelRebootConfirmDialog } from '../components/KernelRebootConfirmDialog';
 
 const statusColor: Record<string, 'default' | 'success' | 'error' | 'warning'> = {
   not_configured: 'default',
@@ -346,10 +350,13 @@ function BridgeCard({
   const [selectedUpstreamServer, setSelectedUpstreamServer] = useState('');
   const [selectedUpstream, setSelectedUpstream] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [kernelRebootInfo, setKernelRebootInfo] = useState<KernelRebootRequiredInfo | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(bridge.name);
   const [editOrganizationId, setEditOrganizationId] = useState(bridge.organizationId ?? '');
   const [editDomainName, setEditDomainName] = useState(bridge.domainName ?? '');
+  // Пустая строка — "лимита нет" (отправится null); иначе положительное целое.
+  const [editMaxPeers, setEditMaxPeers] = useState(bridge.maxPeers !== null ? String(bridge.maxPeers) : '');
   // Список обхода upstream — редактируется как текст, по записи на строку (домен или
   // IP/CIDR); при сохранении разбивается на массив, пустые строки и строки-комментарии
   // (начинающиеся с #) отбрасываются.
@@ -384,6 +391,7 @@ function BridgeCard({
         organizationId: editOrganizationId || null,
         domainName: editDomainName.trim() || null,
         bypassDestinations: parseBypassText(editBypassText),
+        maxPeers: editMaxPeers.trim() ? Number(editMaxPeers) : null,
       }),
     onSuccess: () => {
       onChanged();
@@ -401,7 +409,14 @@ function BridgeCard({
       setSelectedUpstreamServer('');
       setSelectedUpstream('');
     },
-    onError: (err) => setError(getErrorMessage(err, 'Не удалось переключить upstream')),
+    onError: (err) => {
+      const kernelInfo = getKernelRebootInfo(err);
+      if (kernelInfo) {
+        setKernelRebootInfo(kernelInfo);
+        return;
+      }
+      setError(getErrorMessage(err, 'Не удалось переключить upstream'));
+    },
   });
   const modeMutation = useMutation({
     mutationFn: (mode: BridgeUpstreamMode) => setBridgeMode(bridge.id, mode),
@@ -415,6 +430,17 @@ function BridgeCard({
       setError(null);
     },
     onError: (err) => setError(getErrorMessage(err, 'Не удалось пересчитать баланс')),
+  });
+  // Мост "по умолчанию" — бот/портал молча создают/перевыпускают на нём новые конфиги, не
+  // спрашивая выбор сервера (см. PeersService.listUpstreamOptions на бэкенде). Отдельная
+  // мутация (не часть общей формы "Изменить") — однокликовый переключатель.
+  const defaultMutation = useMutation({
+    mutationFn: (isDefault: boolean) => updateBridge(bridge.id, { isDefault }),
+    onSuccess: () => {
+      onChanged();
+      setError(null);
+    },
+    onError: (err) => setError(getErrorMessage(err, 'Не удалось изменить мост по умолчанию')),
   });
 
   const [isEditingCandidates, setIsEditingCandidates] = useState(false);
@@ -526,6 +552,15 @@ function BridgeCard({
                   sx={{ minWidth: 220 }}
                   helperText="Вместо IP self-сервера в скачиваемых конфигах peers"
                 />
+                <TextField
+                  label="Лимит peers на мосту"
+                  type="number"
+                  size="small"
+                  value={editMaxPeers}
+                  onChange={(e) => setEditMaxPeers(e.target.value)}
+                  sx={{ width: 180 }}
+                  helperText="Пусто — без своего лимита (общий лимит self-сервера)"
+                />
                 <Button size="small" variant="contained" disabled={updateMutation.isPending} onClick={() => updateMutation.mutate()}>
                   Сохранить
                 </Button>
@@ -557,6 +592,28 @@ function BridgeCard({
               <Chip size="small" label={organizationName ?? 'общий'} variant="outlined" sx={{ ml: 1 }} />
             </Typography>
           )}
+          {!isEditing && (
+            <Box sx={{ mt: 0.5 }}>
+              <Tooltip
+                title={
+                  bridge.isDefault
+                    ? 'Бот/портал создают новые конфиги здесь без вопросов — нажмите, чтобы снять'
+                    : 'Бот/портал будут молча создавать новые конфиги на этом мосту (если это один из доступных организации вариантов) — нажмите, чтобы назначить'
+                }
+              >
+                <Chip
+                  size="small"
+                  clickable
+                  disabled={defaultMutation.isPending}
+                  onClick={() => defaultMutation.mutate(!bridge.isDefault)}
+                  icon={bridge.isDefault ? <StarIcon fontSize="small" /> : <StarBorderIcon fontSize="small" />}
+                  label={bridge.isDefault ? 'Мост по умолчанию' : 'Сделать мостом по умолчанию'}
+                  color={bridge.isDefault ? 'warning' : 'default'}
+                  variant={bridge.isDefault ? 'filled' : 'outlined'}
+                />
+              </Tooltip>
+            </Box>
+          )}
           {clientInterfaces.map(({ label, sp }) => (
             <Typography key={label} variant="body2" color="text.secondary">
               Клиентский интерфейс ({label}): {sp?.server?.name} · порт {sp?.listenPort} · сеть {sp?.networkCidr}
@@ -568,6 +625,9 @@ function BridgeCard({
           <Typography variant="body2" color="text.secondary">
             Обход upstream:{' '}
             {bridge.bypassDestinations?.length > 0 ? `${bridge.bypassDestinations.length} записей` : 'не задан'}
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Лимит peers на мосту: {bridge.maxPeers ?? 'без своего лимита'}
           </Typography>
           {bridge.lastError && (
             <Typography variant="body2" color="error">
@@ -608,6 +668,7 @@ function BridgeCard({
                 setEditOrganizationId(bridge.organizationId ?? '');
                 setEditDomainName(bridge.domainName ?? '');
                 setEditBypassText((bridge.bypassDestinations ?? []).join('\n'));
+                setEditMaxPeers(bridge.maxPeers !== null ? String(bridge.maxPeers) : '');
                 setIsEditing(true);
               }}
             >
@@ -759,6 +820,13 @@ function BridgeCard({
         <Alert severity="error" sx={{ mt: 2 }}>
           {error}
         </Alert>
+      )}
+      {kernelRebootInfo && (
+        <KernelRebootConfirmDialog
+          info={kernelRebootInfo}
+          onClose={() => setKernelRebootInfo(null)}
+          onRebooted={onChanged}
+        />
       )}
     </Paper>
   );

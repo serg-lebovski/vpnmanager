@@ -49,6 +49,15 @@ export interface ScannedPeer {
 export interface PeerTransferStats {
   rxBytes: number;
   txBytes: number;
+  // Unix-время (секунды) последнего успешного handshake — 0, если его не было ни разу
+  // (см. `wg show <iface> dump`, поле "latest handshake"). Используется, в частности, для
+  // предупреждения "peer создан, но ни разу не подключился" (см. dashboard/).
+  latestHandshake: number;
+  // "ip:port" (или "[ipv6]:port"), с которого пришёл последний UDP-пакет клиента — null,
+  // если handshake не было ни разу. Не из конфига — WireGuard/AmneziaWG узнают реальный
+  // источник только по факту получения пакета, поэтому это фактический внешний адрес
+  // устройства клиента (полезно для дашборда — "кто сейчас использует VPN и откуда").
+  endpoint: string | null;
 }
 
 export interface DetectedInstallation {

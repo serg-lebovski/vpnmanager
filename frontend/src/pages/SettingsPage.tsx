@@ -195,6 +195,15 @@ export function SettingsPage() {
     },
     onError: (err) => setSettingsError(getErrorMessage(err, 'Не удалось сохранить домен/email')),
   });
+  const deployBranchMutation = useMutation({
+    mutationFn: (deployBranch: string) => updateSettings({ deployBranch }),
+    onSuccess: () => {
+      refetchSettings();
+      refetch();
+      setSettingsError(null);
+    },
+    onError: (err) => setSettingsError(getErrorMessage(err, 'Не удалось изменить ветку деплоя')),
+  });
   const toggleHttpsMutation = useMutation({
     mutationFn: (httpsEnabled: boolean) => updateSettings({ httpsEnabled }),
     onSuccess: () => {
@@ -302,16 +311,29 @@ export function SettingsPage() {
         {version && (
           <Stack spacing={1}>
             <Typography variant="body2">
-              Текущая версия: <code>{version.currentCommitShort}</code>
+              Текущая версия: <code>{version.currentCommitShort}</code> (ветка <code>{version.currentBranch}</code>)
             </Typography>
             <Typography variant="body2">
-              Последняя на GitHub:{' '}
+              Последняя на GitHub ({version.deployBranch}):{' '}
               {version.remoteCommitShort ? <code>{version.remoteCommitShort}</code> : 'не удалось проверить'}
             </Typography>
             {version.updateAvailable && <Chip color="warning" label="Доступно обновление" sx={{ width: 'fit-content' }} />}
             {!version.updateAvailable && version.remoteCommit && (
               <Chip color="success" label="Установлена последняя версия" sx={{ width: 'fit-content' }} />
             )}
+            <TextField
+              select
+              size="small"
+              label="Ветка для обновления"
+              value={settings?.deployBranch ?? 'main'}
+              onChange={(e) => deployBranchMutation.mutate(e.target.value)}
+              disabled={deployBranchMutation.isPending || !settings}
+              sx={{ maxWidth: 220, mt: 1 }}
+              helperText="Кнопка «Обновить» подтянет код именно из этой ветки"
+            >
+              <MenuItem value="main">main</MenuItem>
+              <MenuItem value="beta">beta</MenuItem>
+            </TextField>
           </Stack>
         )}
         {progress && !progress.done ? (

@@ -51,6 +51,11 @@ export class SystemSettings {
   @Column({ name: 'telegram_welcome_message', type: 'text', nullable: true })
   telegramWelcomeMessage: string | null;
 
+  // Какую ветку git-репозитория подтягивает самообновление (см. UpdateService) —
+  // 'main'/'beta' и т.п. Переключение веток по кнопке в «Настройках» без захода по SSH.
+  @Column({ name: 'deploy_branch', default: 'main' })
+  deployBranch: string;
+
   @UpdateDateColumn({ name: 'updated_at' })
   updatedAt: Date;
 }

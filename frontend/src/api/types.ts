@@ -127,6 +127,9 @@ export interface ServerEntity {
   mtProxyUpdatedAt: string | null;
   createdAt: string;
   protocols: ServerProtocolEntity[];
+  // Имя профиля в приложении AmneziaVPN (см. amnezia-config.util.ts на бэкенде) — null:
+  // используется обычное `name`.
+  amneziaAppName: string | null;
 }
 
 export interface BridgeEntity {
@@ -150,6 +153,12 @@ export interface BridgeEntity {
   bypassDestinations: string[];
   upstreamCandidates: Array<{ id: string; priority: number; serverProtocol: (ServerProtocolEntity & { server?: ServerEntity }) | null }>;
   createdAt: string;
+  // Мост, который бот/портал используют молча (без вопроса "какой сервер?"), если он
+  // среди доступных организации вариантов — только у одного моста одновременно.
+  isDefault: boolean;
+  // Лимит активных peers на этом мосту — null: своего лимита нет, действует только общий
+  // лимит self-сервера (Server.maxPeers).
+  maxPeers: number | null;
 }
 
 export interface PeerEntity {
@@ -172,4 +181,7 @@ export interface PeerEntity {
   // только super_admin.
   expiresAt: string | null;
   isExpired: boolean;
+  // Заполнено только для мультиконфига (WireGuard + AmneziaWG одним .vpn-файлом) — id
+  // второго peer'а той же пары. null — обычный одно-протокольный peer.
+  pairedPeerId: string | null;
 }

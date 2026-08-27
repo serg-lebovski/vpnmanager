@@ -10,6 +10,7 @@ import { SshService } from '../ssh/ssh.service';
 import { VpnProvisioningService } from '../vpn/vpn-provisioning.service';
 import { CreateServerDto } from './dto/create-server.dto';
 import { InstallProtocolDto } from './dto/install-protocol.dto';
+import { RebootForKernelModuleDto } from './dto/reboot-for-kernel-module.dto';
 import { UpdateServerCredentialsDto } from './dto/update-server-credentials.dto';
 import { UpdateServerDto } from './dto/update-server.dto';
 import { ServerProtocol } from './server-protocol.entity';
@@ -124,6 +125,9 @@ export class ServersService {
     if (dto.maxPeers !== undefined) {
       server.maxPeers = dto.maxPeers;
     }
+    if (dto.amneziaAppName !== undefined) {
+      server.amneziaAppName = dto.amneziaAppName || null;
+    }
     return this.serversRepository.save(server);
   }
 
@@ -210,6 +214,13 @@ export class ServersService {
       await this.ensureReservedUpstreamPeer(serverProtocol);
     }
     return serverProtocol;
+  }
+
+  // Вызывается только после явного подтверждения администратором в диалоге
+  // KERNEL_REBOOT_REQUIRED (см. VpnProvisioningService.checkKernelModuleReadiness) — сама
+  // перезагрузка прерывает ВСЕ активные подключения на сервере на время перезагрузки.
+  async rebootForKernelModule(serverId: string, dto: RebootForKernelModuleDto): Promise<{ message: string }> {
+    return this.vpnProvisioningService.rebootForKernelModule(serverId, dto.protocol);
   }
 
   // Заранее поднимает системный upstream-peer на только что установленном протоколе —

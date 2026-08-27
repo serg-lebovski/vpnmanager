@@ -5,7 +5,7 @@ import { DataSource, In, IsNull, LessThanOrEqual, MoreThan, Not, Repository } fr
 import { Bridge } from '../bridges/bridge.entity';
 import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { decryptSecret, encryptSecret } from '../common/encryption.util';
-import { PeerDeviceType, PeerSource, PeerStatus, Role, ServerProtocolStatus } from '../common/enums';
+import { PeerDeviceType, PeerSource, PeerStatus, Role, ServerProtocolStatus, VpnProtocol } from '../common/enums';
 import { LoadBalancerService } from '../load-balancer/load-balancer.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Organization } from '../organizations/organization.entity';
@@ -14,6 +14,7 @@ import { Server } from '../servers/server.entity';
 import { TelegramRegistration } from '../telegram-bot/telegram-registration.entity';
 import { PeerSpec } from '../vpn/vpn-driver.interface';
 import { VpnProvisioningService } from '../vpn/vpn-provisioning.service';
+import { AmneziaContainerInput, buildAmneziaAppConfig } from './amnezia-config.util';
 import { buildClientConfig } from './config-generator.util';
 import { CreatePeerDto } from './dto/create-peer.dto';
 import { UpdatePeerDto } from './dto/update-peer.dto';
@@ -155,11 +156,11 @@ export class PeersService {
       }
     }
 
-    const serverProtocol = dto.bridgeId
-      ? await this.findBridgeClientProtocol(requester, dto.bridgeId, dto.protocol)
-      : dto.serverId
-        ? await this.findActiveServerProtocolByServer(dto.serverId, dto.protocol)
-        : await this.loadBalancerService.pickServerProtocol(dto.protocol, allowedServerIds);
+    if (dto.multiProtocol) {
+      return this.createMultiProtocol(requester, dto, organizationId, allowedServerIds);
+    }
+
+    const serverProtocol = await this.resolveServerProtocolForCreate(requester, dto, dto.protocol, allowedServerIds);
 
     return this.createInternal(serverProtocol, {
       organizationId,
@@ -167,6 +168,65 @@ export class PeersService {
       source: PeerSource.CREATED,
       createdByUserId: requester.userId,
     });
+  }
+
+  private async resolveServerProtocolForCreate(
+    requester: AuthenticatedUser,
+    dto: CreatePeerDto,
+    protocol: CreatePeerDto['protocol'],
+    allowedServerIds: string[] | undefined,
+  ): Promise<ServerProtocol> {
+    return dto.bridgeId
+      ? this.findBridgeClientProtocol(requester, dto.bridgeId, protocol)
+      : dto.serverId
+        ? this.findActiveServerProtocolByServer(dto.serverId, protocol)
+        : this.loadBalancerService.pickServerProtocol(protocol, allowedServerIds);
+  }
+
+  // «Мультиконфиг» — один логический peer сразу на двух протоколах (WireGuard и
+  // AmneziaWG), выдаваемый одним .vpn-файлом для официального приложения AmneziaVPN, где
+  // протокол переключается прямо внутри приложения (см. amnezia-config.util.ts). Технически
+  // это ДВА обычных Peer (свои ключи/IP — WG и AmneziaWG не могут делить один ServerProtocol
+  // с его собственной сетью/интерфейсом), связанных Peer.pairedPeerId в обе стороны;
+  // revoke/purge/переименование/срок действия на одном каскадом применяются к другому
+  // (см. revoke/purge/update). Требует, чтобы ОБА протокола были активны на выбранном
+  // мосту/сервере — если хотя бы один не резолвится, откатываем уже созданный первый peer,
+  // не оставляя половинчатый "мульти"-peer без пары.
+  private async createMultiProtocol(
+    requester: AuthenticatedUser,
+    dto: CreatePeerDto,
+    organizationId: string | null,
+    allowedServerIds: string[] | undefined,
+  ): Promise<Peer> {
+    const wireguardProtocol = await this.resolveServerProtocolForCreate(requester, dto, VpnProtocol.WIREGUARD, allowedServerIds);
+    const amneziawgProtocol = await this.resolveServerProtocolForCreate(requester, dto, VpnProtocol.AMNEZIAWG, allowedServerIds);
+
+    const wireguardPeer = await this.createInternal(wireguardProtocol, {
+      organizationId,
+      name: dto.name,
+      source: PeerSource.CREATED,
+      createdByUserId: requester.userId,
+    });
+
+    let amneziawgPeer: Peer;
+    try {
+      amneziawgPeer = await this.createInternal(amneziawgProtocol, {
+        organizationId,
+        name: dto.name,
+        source: PeerSource.CREATED,
+        createdByUserId: requester.userId,
+      });
+    } catch (error) {
+      await this.revokeInternal(wireguardPeer);
+      await this.peersRepository.remove(wireguardPeer);
+      throw error;
+    }
+
+    wireguardPeer.pairedPeerId = amneziawgPeer.id;
+    amneziawgPeer.pairedPeerId = wireguardPeer.id;
+    await this.peersRepository.save([wireguardPeer, amneziawgPeer]);
+
+    return wireguardPeer;
   }
 
   // Переименование доступно всем, у кого есть доступ к peer'у (см. findOneScoped); смена
@@ -221,11 +281,50 @@ export class PeersService {
       }
     }
 
+    // Организация/имя/срок действия — с точки зрения администратора атрибуты ОДНОГО
+    // логического peer'а мультиконфига, а не двух независимых записей (см.
+    // createMultiProtocol) — рассинхронизация была бы более запутанной, чем лишний write.
+    if (peer.pairedPeerId) {
+      await this.applyToPairedPeer(peer.pairedPeerId, dto);
+    }
+
     const withRelations = await this.peersRepository.findOneOrFail({
       where: { id: saved.id },
       relations: ['serverProtocol', 'serverProtocol.server'],
     });
     return this.toListItem(withRelations);
+  }
+
+  // Роли уже проверены на первичном peer'е в update() — тот же requester и та же операция,
+  // повторная проверка прав здесь не нужна. Ошибка синхронизации истечения срока на парном
+  // протоколе не должна проваливать весь update (основной peer уже сохранён) — только
+  // откатывает expiresAt самого парного peer'а и логируется.
+  private async applyToPairedPeer(pairedId: string, dto: UpdatePeerDto): Promise<void> {
+    const paired = await this.peersRepository.findOne({ where: { id: pairedId } });
+    if (!paired) {
+      return;
+    }
+    if (dto.organizationId !== undefined) {
+      paired.organizationId = dto.organizationId;
+    }
+    if (dto.name !== undefined) {
+      paired.name = dto.name;
+    }
+    let previousExpiresAt: Date | null | undefined;
+    if (dto.expiresAt !== undefined) {
+      previousExpiresAt = paired.expiresAt;
+      paired.expiresAt = dto.expiresAt === null ? null : new Date(dto.expiresAt);
+    }
+    await this.peersRepository.save(paired);
+    if (dto.expiresAt !== undefined) {
+      try {
+        await this.syncServerPeers(paired.serverProtocolId);
+      } catch (error) {
+        paired.expiresAt = previousExpiresAt ?? null;
+        await this.peersRepository.save(paired);
+        this.logger.warn(`Не удалось синхронизировать срок действия парного peer'а мультиконфига (${paired.id}): ${(error as Error).message}`);
+      }
+    }
   }
 
   // Системный upstream-peer моста на backend-сервере — не привязан к организации, не
@@ -275,20 +374,38 @@ export class PeersService {
     return saved;
   }
 
+  // Отзыв каскадом применяется и к парному peer'у мультиконфига (см. createMultiProtocol) —
+  // с точки зрения администратора это один логический peer, отзыв должен убрать доступ на
+  // ОБОИХ протоколах, а не только на том, что попался в списке первым.
   async revoke(requester: AuthenticatedUser, id: string): Promise<void> {
     const peer = await this.findOneScoped(requester, id);
     await this.revokeInternal(peer);
+    if (peer.pairedPeerId) {
+      const paired = await this.peersRepository.findOne({ where: { id: peer.pairedPeerId } });
+      if (paired && paired.status !== PeerStatus.REVOKED) {
+        await this.revokeInternal(paired);
+      }
+    }
   }
 
   // Безвозвратное удаление записи — разрешено только для уже отозванных peers (сначала
   // отзыв, потом удаление; это гарантирует, что peer уже убран с сервера через
-  // syncServerPeers перед тем, как мы потеряем о нём всякую память).
+  // syncServerPeers перед тем, как мы потеряем о нём всякую память). Каскадом удаляет и
+  // парный peer мультиконфига, если он тоже уже отозван — иначе оставляет его как есть
+  // (не блокирует purge половины пары ошибкой про вторую половину: paired мог быть отозван
+  // отдельно позже своим чередом).
   async purge(requester: AuthenticatedUser, id: string): Promise<void> {
     const peer = await this.findOneScoped(requester, id);
     if (peer.status !== PeerStatus.REVOKED) {
       throw new BadRequestException('Можно удалить только уже отозванный peer — сначала отзовите его');
     }
     await this.peersRepository.remove(peer);
+    if (peer.pairedPeerId) {
+      const paired = await this.peersRepository.findOne({ where: { id: peer.pairedPeerId } });
+      if (paired && paired.status === PeerStatus.REVOKED) {
+        await this.peersRepository.remove(paired);
+      }
+    }
   }
 
   // Безвозвратное удаление системного upstream-peer — аналог purge(), но без требования
@@ -339,13 +456,7 @@ export class PeersService {
     const server = await this.serversRepository.findOneOrFail({ where: { id: serverProtocol.serverId } });
     const privateKey = decryptSecret(peer.privateKeyEnc);
     const presharedKey = peer.presharedKeyEnc ? decryptSecret(peer.presharedKeyEnc) : null;
-    // Если serverProtocol — клиентский интерфейс моста с заданным domainName, Endpoint в
-    // конфиге должен указывать на домен, а не на IP self-сервера (см. Bridge.domainName) —
-    // так peer переживёт переезд self-сервера на новый хост/IP после смены DNS-записи.
-    const bridge = await this.bridgesRepository.findOne({
-      where: [{ wireguardClientProtocolId: serverProtocol.id }, { amneziawgClientProtocolId: serverProtocol.id }],
-    });
-    const endpointServer = bridge?.domainName ? { ...server, host: bridge.domainName } : server;
+    const endpointServer = await this.resolveEndpointServer(serverProtocol, server);
     const content = buildClientConfig(peer, privateKey, endpointServer, serverProtocol, presharedKey);
     // \p{L}/\p{N} — буква/цифра ЛЮБОГО алфавита, не только латиница — иначе кириллическое
     // имя (например, ФИО из Telegram-бота) целиком превращалось бы в подчёркивания и файл
@@ -353,6 +464,71 @@ export class PeersService {
     // схлопываются в одно "_", чтобы не плодить "Иванов___Иван".
     const safeName = peer.name.replace(/[^\p{L}\p{N}_-]+/gu, '_');
     return { filename: `${safeName}.conf`, content };
+  }
+
+  // Если serverProtocol — клиентский интерфейс моста с заданным domainName, Endpoint в
+  // конфиге должен указывать на домен, а не на IP self-сервера (см. Bridge.domainName) —
+  // так peer переживёт переезд self-сервера на новый хост/IP после смены DNS-записи.
+  // Общий для обычного .conf (buildDownloadableConfig) и .vpn мультиконфига
+  // (getAmneziaAppConfig) — оба должны одинаково резолвить Endpoint.
+  private async resolveEndpointServer(serverProtocol: ServerProtocol, server: Server): Promise<Server> {
+    const bridge = await this.bridgesRepository.findOne({
+      where: [{ wireguardClientProtocolId: serverProtocol.id }, { amneziawgClientProtocolId: serverProtocol.id }],
+    });
+    return bridge?.domainName ? { ...server, host: bridge.domainName } : server;
+  }
+
+  // Дополнительный способ скачать peer — файл .vpn для официального приложения AmneziaVPN
+  // (формат "vpn://...", см. amnezia-config.util.ts), НЕ заменяет обычный .conf/QR-код —
+  // тот остаётся как есть для wg-quick/awg-quick и любых других клиентов. Если у peer'а есть
+  // пара (мультиконфиг, см. createMultiProtocol), в файл попадают ОБА протокола — внутри
+  // приложения AmneziaVPN пользователь переключается между ними без повторного импорта;
+  // для обычного одно-протокольного peer'а получится файл с одним протоколом внутри —
+  // тоже валиден, просто без возможности переключения.
+  async getAmneziaAppConfig(requester: AuthenticatedUser, id: string): Promise<{ filename: string; content: string }> {
+    const peer = await this.findOneScoped(requester, id);
+    const peersInGroup = [peer];
+    if (peer.pairedPeerId) {
+      const paired = await this.peersRepository.findOne({ where: { id: peer.pairedPeerId } });
+      if (paired) {
+        peersInGroup.push(paired);
+      }
+    }
+    return this.buildAmneziaAppConfigFor(peersInGroup);
+  }
+
+  // Общий сборщик .vpn для панели (getAmneziaAppConfig) и Telegram-бота/портала (см. ниже
+  // createMultiProtocolForTelegramRegistration/getAmneziaAppConfigForTelegramRegistration) —
+  // на вход 1 peer (одно-протокольный) либо 2 (пара мультиконфига).
+  private async buildAmneziaAppConfigFor(peersInGroup: Peer[]): Promise<{ filename: string; content: string }> {
+    const containers: AmneziaContainerInput[] = [];
+    for (const groupPeer of peersInGroup) {
+      if (!groupPeer.privateKeyEnc) {
+        throw new BadRequestException(
+          `Для peer "${groupPeer.name}" приватный ключ недоступен (импортирован из уже существующей настройки VPN) — отзовите его и создайте новый через сервис.`,
+        );
+      }
+      const serverProtocol = await this.serverProtocolsRepository.findOneOrFail({ where: { id: groupPeer.serverProtocolId } });
+      const server = await this.serversRepository.findOneOrFail({ where: { id: serverProtocol.serverId } });
+      const endpointServer = await this.resolveEndpointServer(serverProtocol, server);
+      containers.push({
+        protocol: serverProtocol.protocol,
+        peer: groupPeer,
+        privateKey: decryptSecret(groupPeer.privateKeyEnc),
+        presharedKey: groupPeer.presharedKeyEnc ? decryptSecret(groupPeer.presharedKeyEnc) : null,
+        server: endpointServer,
+        serverProtocol,
+      });
+    }
+
+    // Имя ПРОФИЛЯ, которое видит клиент в приложении AmneziaVPN, — НЕ имя peer'а (у peers,
+    // выданных через Telegram-бота/портал, это ФИО клиента — не то, что должно всплывать
+    // в приложении как "название сервера", см. Server.amneziaAppName). Имя файла при этом
+    // остаётся по peer'у — практичнее для администратора, различающего файлы на диске.
+    const description = containers[0].server.amneziaAppName?.trim() || containers[0].server.name;
+    const content = buildAmneziaAppConfig(containers, description);
+    const safeName = peersInGroup[0].name.replace(/[^\p{L}\p{N}_-]+/gu, '_');
+    return { filename: `${safeName}.vpn`, content };
   }
 
   // --- Telegram-бот (telegram-bot/) — создание/перевыпуск peer без AuthenticatedUser ---
@@ -363,8 +539,11 @@ export class PeersService {
   // (см. create()), только собранный целиком, а не выбранный за пользователя. key —
   // непрозрачный идентификатор ("bridge:<id>"/"server:<id>"), передаётся обратно в
   // resolveUpstreamOption при фактическом создании peer'а.
-  async listUpstreamOptions(organization: Organization, protocol: CreatePeerDto['protocol']): Promise<Array<{ key: string; label: string }>> {
-    const options: Array<{ key: string; label: string }> = [];
+  async listUpstreamOptions(
+    organization: Organization,
+    protocol: CreatePeerDto['protocol'],
+  ): Promise<Array<{ key: string; label: string; isDefault?: boolean }>> {
+    const options: Array<{ key: string; label: string; isDefault?: boolean }> = [];
     const bridges = await this.bridgesRepository.find({
       where: [{ organizationId: IsNull() }, { organizationId: organization.id }],
     });
@@ -378,7 +557,7 @@ export class PeersService {
       }
       const active = await this.serverProtocolsRepository.exists({ where: { id: serverProtocolId, status: ServerProtocolStatus.ACTIVE } });
       if (active) {
-        options.push({ key: `bridge:${bridge.id}`, label: `Мост «${bridge.name}»` });
+        options.push({ key: `bridge:${bridge.id}`, label: `Мост «${bridge.name}»`, isDefault: bridge.isDefault });
       }
     }
     if (organization.allowedServerIds.length > 0) {
@@ -416,7 +595,30 @@ export class PeersService {
     if (!serverProtocol) {
       throw new BadRequestException('Клиентский интерфейс моста не установлен или неактивен');
     }
+    await this.assertBridgeCapacity(bridge);
     return serverProtocol;
+  }
+
+  // Bridge.maxPeers — независимый от Server.maxPeers лимит (тот общий на ВСЕ мосты одного
+  // self-сервера, см. комментарий у поля). Считает активные peers по ОБОИМ клиентским
+  // протоколам моста сразу (мультиконфиг даёт по одному peer'у на каждый — оба считаются),
+  // без системного upstream-peer (это не клиент, а сам мост). null — лимита нет.
+  private async assertBridgeCapacity(bridge: Bridge): Promise<void> {
+    if (bridge.maxPeers === null || bridge.maxPeers === undefined) {
+      return;
+    }
+    const protocolIds = [bridge.wireguardClientProtocolId, bridge.amneziawgClientProtocolId].filter(
+      (id): id is string => !!id,
+    );
+    if (protocolIds.length === 0) {
+      return;
+    }
+    const count = await this.peersRepository.count({
+      where: { serverProtocolId: In(protocolIds), status: PeerStatus.ACTIVE, source: Not(PeerSource.BRIDGE_UPSTREAM) },
+    });
+    if (count >= bridge.maxPeers) {
+      throw new BadRequestException(`На мосту «${bridge.name}» достигнут лимит peers (${bridge.maxPeers})`);
+    }
   }
 
   // upstreamKey — явный выбор пользователя (см. listUpstreamOptions), если бот уже спросил
@@ -445,13 +647,15 @@ export class PeersService {
     return this.buildDownloadableConfig(peer);
   }
 
-  // Фолбэк, когда upstreamKey не передан: первый доступный мост, иначе авто-баланс среди
+  // Фолбэк, когда upstreamKey не передан: мост "по умолчанию" (Bridge.isDefault), если он
+  // среди доступных организации, иначе первый доступный мост, иначе авто-баланс среди
   // allowedServerIds — тот же дух, что у org_user без явного выбора моста/сервера в create().
   private async pickServerProtocolForOrganization(organization: Organization, protocol: CreatePeerDto['protocol']): Promise<ServerProtocol> {
     const bridges = await this.bridgesRepository.find({
       where: [{ organizationId: IsNull() }, { organizationId: organization.id }],
     });
-    const bridge = bridges.find((b) => !organization.blockedBridgeIds.includes(b.id));
+    const candidates = bridges.filter((b) => !organization.blockedBridgeIds.includes(b.id));
+    const bridge = candidates.find((b) => b.isDefault) ?? candidates[0];
     if (bridge) {
       return this.findBridgeClientProtocolByBridge(bridge, protocol);
     }
@@ -476,6 +680,195 @@ export class PeersService {
       await this.peersRepository.remove(existing);
     }
     return this.createForTelegramRegistration(registration, organization, protocol, deviceType, upstreamKey);
+  }
+
+  // --- Мультиконфиг (WireGuard + AmneziaWG одним .vpn-файлом, см. amnezia-config.util.ts)
+  // через Telegram-бота/веб-портал — тот же принцип, что и createMultiProtocol() панели
+  // (см. выше), только без AuthenticatedUser/org-скоупинга (как и остальные методы этого
+  // блока), плюс сразу проставляет telegramRegistrationId/deviceType на ОБА peer'а пары.
+
+  // Аналог listUpstreamOptions, но оставляет только те мосты/серверы, где активны СРАЗУ
+  // ОБА протокола — мультиконфиг должен указывать на один и тот же endpoint для обоих
+  // протоколов, а не на два разных сервера с независимой балансировкой.
+  async listMultiProtocolUpstreamOptions(organization: Organization): Promise<Array<{ key: string; label: string; isDefault?: boolean }>> {
+    const options: Array<{ key: string; label: string; isDefault?: boolean }> = [];
+    const bridges = await this.bridgesRepository.find({
+      where: [{ organizationId: IsNull() }, { organizationId: organization.id }],
+    });
+    for (const bridge of bridges) {
+      if (organization.blockedBridgeIds.includes(bridge.id) || !bridge.wireguardClientProtocolId || !bridge.amneziawgClientProtocolId) {
+        continue;
+      }
+      const [wgActive, awgActive] = await Promise.all([
+        this.serverProtocolsRepository.exists({ where: { id: bridge.wireguardClientProtocolId, status: ServerProtocolStatus.ACTIVE } }),
+        this.serverProtocolsRepository.exists({ where: { id: bridge.amneziawgClientProtocolId, status: ServerProtocolStatus.ACTIVE } }),
+      ]);
+      if (wgActive && awgActive) {
+        options.push({ key: `bridge:${bridge.id}`, label: `Мост «${bridge.name}»`, isDefault: bridge.isDefault });
+      }
+    }
+    if (organization.allowedServerIds.length > 0) {
+      const activeProtocols = await this.serverProtocolsRepository.find({
+        where: { status: ServerProtocolStatus.ACTIVE, serverId: In(organization.allowedServerIds) },
+        relations: ['server'],
+      });
+      const byServer = new Map<string, { name: string; protocols: Set<VpnProtocol> }>();
+      for (const sp of activeProtocols) {
+        const entry = byServer.get(sp.serverId) ?? { name: sp.server.name, protocols: new Set<VpnProtocol>() };
+        entry.protocols.add(sp.protocol);
+        byServer.set(sp.serverId, entry);
+      }
+      for (const [serverId, entry] of byServer) {
+        if (entry.protocols.has(VpnProtocol.WIREGUARD) && entry.protocols.has(VpnProtocol.AMNEZIAWG)) {
+          options.push({ key: `server:${serverId}`, label: `Напрямую: ${entry.name}` });
+        }
+      }
+    }
+    return options;
+  }
+
+  private async resolveMultiProtocolUpstreamOption(
+    organization: Organization,
+    key: string,
+  ): Promise<{ wireguard: ServerProtocol; amneziawg: ServerProtocol }> {
+    const [kind, id] = key.split(':');
+    if (kind === 'bridge') {
+      const bridge = await this.bridgesRepository.findOneOrFail({ where: { id } });
+      const [wireguard, amneziawg] = await Promise.all([
+        this.findBridgeClientProtocolByBridge(bridge, VpnProtocol.WIREGUARD),
+        this.findBridgeClientProtocolByBridge(bridge, VpnProtocol.AMNEZIAWG),
+      ]);
+      return { wireguard, amneziawg };
+    }
+    if (kind === 'server') {
+      const [wireguard, amneziawg] = await Promise.all([
+        this.findActiveServerProtocolByServer(id, VpnProtocol.WIREGUARD),
+        this.findActiveServerProtocolByServer(id, VpnProtocol.AMNEZIAWG),
+      ]);
+      return { wireguard, amneziawg };
+    }
+    throw new BadRequestException('Некорректный выбор сервера');
+  }
+
+  private async pickMultiProtocolServerProtocolForOrganization(
+    organization: Organization,
+  ): Promise<{ wireguard: ServerProtocol; amneziawg: ServerProtocol }> {
+    const bridges = await this.bridgesRepository.find({
+      where: [{ organizationId: IsNull() }, { organizationId: organization.id }],
+    });
+    const candidates = bridges.filter(
+      (b) => !organization.blockedBridgeIds.includes(b.id) && b.wireguardClientProtocolId && b.amneziawgClientProtocolId,
+    );
+    const bridge = candidates.find((b) => b.isDefault) ?? candidates[0];
+    if (bridge) {
+      const [wireguard, amneziawg] = await Promise.all([
+        this.findBridgeClientProtocolByBridge(bridge, VpnProtocol.WIREGUARD),
+        this.findBridgeClientProtocolByBridge(bridge, VpnProtocol.AMNEZIAWG),
+      ]);
+      return { wireguard, amneziawg };
+    }
+    if (organization.allowedServerIds.length === 0) {
+      throw new BadRequestException('Для вашей организации ещё не настроен доступ ни к одному серверу или мосту с обоими протоколами');
+    }
+    const activeProtocols = await this.serverProtocolsRepository.find({
+      where: { status: ServerProtocolStatus.ACTIVE, serverId: In(organization.allowedServerIds) },
+    });
+    const byServer = new Map<string, Set<VpnProtocol>>();
+    for (const sp of activeProtocols) {
+      const protocols = byServer.get(sp.serverId) ?? new Set<VpnProtocol>();
+      protocols.add(sp.protocol);
+      byServer.set(sp.serverId, protocols);
+    }
+    const matchingServerId = [...byServer.entries()].find(
+      ([, protocols]) => protocols.has(VpnProtocol.WIREGUARD) && protocols.has(VpnProtocol.AMNEZIAWG),
+    )?.[0];
+    if (!matchingServerId) {
+      throw new BadRequestException('Ни один доступный сервер или мост не имеет активными сразу оба протокола (WireGuard и AmneziaWG)');
+    }
+    const [wireguard, amneziawg] = await Promise.all([
+      this.findActiveServerProtocolByServer(matchingServerId, VpnProtocol.WIREGUARD),
+      this.findActiveServerProtocolByServer(matchingServerId, VpnProtocol.AMNEZIAWG),
+    ]);
+    return { wireguard, amneziawg };
+  }
+
+  async createMultiProtocolForTelegramRegistration(
+    registration: TelegramRegistration,
+    organization: Organization,
+    deviceType: PeerDeviceType,
+    upstreamKey?: string,
+  ): Promise<{ filename: string; content: string }> {
+    const { wireguard, amneziawg } = upstreamKey
+      ? await this.resolveMultiProtocolUpstreamOption(organization, upstreamKey)
+      : await this.pickMultiProtocolServerProtocolForOrganization(organization);
+    const deviceLabel = deviceType === PeerDeviceType.PHONE ? 'телефон' : 'ПК';
+    const name = `${registration.fullName} — ${deviceLabel}`;
+
+    const wireguardPeer = await this.createInternal(wireguard, {
+      organizationId: organization.id,
+      name,
+      source: PeerSource.CREATED,
+      createdByUserId: null,
+    });
+    let amneziawgPeer: Peer;
+    try {
+      amneziawgPeer = await this.createInternal(amneziawg, {
+        organizationId: organization.id,
+        name,
+        source: PeerSource.CREATED,
+        createdByUserId: null,
+      });
+    } catch (error) {
+      await this.revokeInternal(wireguardPeer);
+      await this.peersRepository.remove(wireguardPeer);
+      throw error;
+    }
+
+    wireguardPeer.pairedPeerId = amneziawgPeer.id;
+    wireguardPeer.telegramRegistrationId = registration.id;
+    wireguardPeer.deviceType = deviceType;
+    amneziawgPeer.pairedPeerId = wireguardPeer.id;
+    amneziawgPeer.telegramRegistrationId = registration.id;
+    amneziawgPeer.deviceType = deviceType;
+    await this.peersRepository.save([wireguardPeer, amneziawgPeer]);
+
+    return this.buildAmneziaAppConfigFor([wireguardPeer, amneziawgPeer]);
+  }
+
+  // В отличие от reissueForTelegramRegistration (findOne — рассчитан на ровно один peer на
+  // устройство) снимает ВСЕ активные peers этого устройства сразу — их может быть два
+  // (пара мультиконфига), либо один (если раньше был выдан обычный одно-протокольный конфиг,
+  // а теперь пользователь переключается на мультиконфиг тем же устройством).
+  async reissueMultiProtocolForTelegramRegistration(
+    registration: TelegramRegistration,
+    organization: Organization,
+    deviceType: PeerDeviceType,
+    upstreamKey?: string,
+  ): Promise<{ filename: string; content: string }> {
+    const existing = await this.peersRepository.find({
+      where: { telegramRegistrationId: registration.id, deviceType, status: PeerStatus.ACTIVE },
+    });
+    for (const peer of existing) {
+      await this.revokeInternal(peer);
+      await this.peersRepository.remove(peer);
+    }
+    return this.createMultiProtocolForTelegramRegistration(registration, organization, deviceType, upstreamKey);
+  }
+
+  // Повторное скачивание уже выданного мультиконфига — аналог
+  // getDownloadableConfigForTelegramRegistration, но по .vpn/buildAmneziaAppConfigFor;
+  // peers может быть 1 (одно-протокольный, тоже валиден для этого формата) или 2 (пара).
+  async getAmneziaAppConfigForTelegramRegistration(
+    registrationId: string,
+    deviceType: PeerDeviceType,
+  ): Promise<{ filename: string; content: string }> {
+    const peers = await this.peersRepository.find({
+      where: { telegramRegistrationId: registrationId, deviceType, status: PeerStatus.ACTIVE },
+    });
+    if (peers.length === 0) {
+      throw new NotFoundException('Конфиг для этого устройства ещё не выдан');
+    }
+    return this.buildAmneziaAppConfigFor(peers);
   }
 
   // Для отображения "уже есть peer для этого устройства?" в диалоге бота и для отзыва всех
@@ -652,6 +1045,7 @@ export class PeersService {
     if (!serverProtocol || serverProtocol.status !== 'active') {
       throw new BadRequestException('Клиентский интерфейс моста не установлен или неактивен');
     }
+    await this.assertBridgeCapacity(bridge);
     return serverProtocol;
   }
 

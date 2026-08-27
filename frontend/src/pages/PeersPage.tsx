@@ -27,6 +27,10 @@ import BlockIcon from '@mui/icons-material/Block';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DownloadIcon from '@mui/icons-material/Download';
 import EditIcon from '@mui/icons-material/Edit';
+import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
+import KeyboardArrowRightIcon from '@mui/icons-material/KeyboardArrowRight';
+import PhonelinkRingIcon from '@mui/icons-material/PhonelinkRing';
+import QrCodeIcon from '@mui/icons-material/QrCode';
 import QrCode2Icon from '@mui/icons-material/QrCode2';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, useEffect, useMemo, useState } from 'react';
@@ -36,8 +40,10 @@ import { fetchOrganizations } from '../api/organizations';
 import {
   CreatePeerInput,
   createPeer,
+  downloadPeerAmneziaConfig,
   downloadPeerConfig,
   fetchAllowedServers,
+  fetchPeerAmneziaQrCodeUrl,
   fetchPeerQrCodeUrl,
   fetchPeers,
   purgePeer,
@@ -52,6 +58,8 @@ const statusColor: Record<string, 'success' | 'default'> = {
   active: 'success',
   revoked: 'default',
 };
+
+const protocolLabels: Record<VpnProtocol, string> = { wireguard: 'WireGuard', amneziawg: 'AmneziaWG' };
 
 // Сентинел для «Клиент» в форме создания peer — отличает осознанный выбор «без клиента»
 // (organizationId: null отправится на бэкенд) от ещё не подгруженного значения по
@@ -70,6 +78,206 @@ function serverLabel(peer: PeerEntity, bridges?: BridgeEntity[]): string {
     return `Мост «${bridge.name}»`;
   }
   return peer.serverProtocol?.server?.name ?? '—';
+}
+
+interface PeerRowHandlers {
+  bridges?: BridgeEntity[];
+  isSuperAdmin: boolean;
+  onEdit: (peer: PeerEntity) => void;
+  onShowQr: (peer: PeerEntity) => void;
+  onShowAmneziaQr: (peer: PeerEntity) => void;
+  onRevoke: (id: string) => void;
+  onPurge: (id: string) => void;
+}
+
+function PeerStatusChips({ peer, isSuperAdmin }: { peer: PeerEntity; isSuperAdmin: boolean }) {
+  return (
+    <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap>
+      <Chip size="small" label={peer.status} color={statusColor[peer.status]} />
+      {peer.needsRecreation && (
+        <Chip
+          size="small"
+          color="warning"
+          label="нужно пересоздать"
+          title="Ключ не расшифровывается текущим ключом шифрования панели (обычно после восстановления БД на другом сервере) — отзовите и создайте заново"
+        />
+      )}
+      {isSuperAdmin && peer.isExpired && (
+        <Chip
+          size="small"
+          color="error"
+          label="истёк"
+          title={`Срок действия истёк ${new Date(peer.expiresAt!).toLocaleDateString()} — peer не отозван, но не применяется на сервере (интернета нет)`}
+        />
+      )}
+      {isSuperAdmin && !peer.isExpired && peer.expiresAt && (
+        <Chip size="small" variant="outlined" label={`до ${new Date(peer.expiresAt).toLocaleDateString()}`} />
+      )}
+    </Stack>
+  );
+}
+
+// Обычная (не мультиконфиг) строка peer'а — используется и для одиночных peers, и для
+// развёрнутых детей группы мультиконфига (см. MultiConfigGroupRows).
+function PeerTableRow({
+  peer,
+  bridges,
+  isSuperAdmin,
+  onEdit,
+  onShowQr,
+  onShowAmneziaQr,
+  onRevoke,
+  onPurge,
+  indent,
+}: PeerRowHandlers & { peer: PeerEntity; indent?: boolean }) {
+  return (
+    <TableRow>
+      <TableCell sx={indent ? { pl: 5 } : undefined}>{peer.name}</TableCell>
+      <TableCell>
+        {peer.serverProtocol ? protocolLabels[peer.serverProtocol.protocol] : '—'} · {peer.allowedIp}
+      </TableCell>
+      <TableCell>{serverLabel(peer, bridges)}</TableCell>
+      <TableCell>
+        <PeerStatusChips peer={peer} isSuperAdmin={isSuperAdmin} />
+      </TableCell>
+      <TableCell align="right">
+        <Stack direction="row" spacing={0.25} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
+          <Tooltip title="Изменить">
+            <IconButton size="small" onClick={() => onEdit(peer)}>
+              <EditIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="Скачать конфиг">
+            <span>
+              <IconButton size="small" disabled={peer.source === 'imported'} onClick={() => downloadPeerConfig(peer.id, peer.name)}>
+                <DownloadIcon fontSize="small" />
+              </IconButton>
+            </span>
+          </Tooltip>
+          <Tooltip title="QR-код">
+            <span>
+              <IconButton size="small" disabled={peer.source === 'imported'} onClick={() => onShowQr(peer)}>
+                <QrCode2Icon fontSize="small" />
+              </IconButton>
+            </span>
+          </Tooltip>
+          <Tooltip title="Скачать .vpn для приложения AmneziaVPN">
+            <span>
+              <IconButton size="small" disabled={peer.source === 'imported'} onClick={() => downloadPeerAmneziaConfig(peer.id, peer.name)}>
+                <PhonelinkRingIcon fontSize="small" />
+              </IconButton>
+            </span>
+          </Tooltip>
+          <Tooltip title="QR-код для .vpn (AmneziaVPN)">
+            <span>
+              <IconButton size="small" disabled={peer.source === 'imported'} onClick={() => onShowAmneziaQr(peer)}>
+                <QrCodeIcon fontSize="small" />
+              </IconButton>
+            </span>
+          </Tooltip>
+          {peer.status === 'active' && (
+            <Tooltip title="Отозвать">
+              <IconButton size="small" color="warning" onClick={() => onRevoke(peer.id)}>
+                <BlockIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          )}
+          {peer.status === 'revoked' && (
+            <Tooltip title="Удалить">
+              <IconButton size="small" color="error" onClick={() => onPurge(peer.id)}>
+                <DeleteOutlineIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          )}
+        </Stack>
+      </TableCell>
+    </TableRow>
+  );
+}
+
+// Пара мультиконфига (см. Peer.pairedPeerId) — свёрнута в одну сводную строку (плюсик
+// разворачивает); пока свёрнуто, скачивание с этой строки отдаёт .vpn для AmneziaVPN
+// (оба протокола сразу), а не .conf одного из них — разворачивание нужно именно за тем,
+// чтобы увидеть/скачать конфиг каждого протокола по отдельности.
+function MultiConfigGroupRows({
+  groupKey,
+  a,
+  b,
+  bridges,
+  isSuperAdmin,
+  expanded,
+  onToggle,
+  onEdit,
+  onShowQr,
+  onShowAmneziaQr,
+  onRevoke,
+  onPurge,
+}: PeerRowHandlers & { groupKey: string; a: PeerEntity; b: PeerEntity; expanded: boolean; onToggle: (key: string) => void }) {
+  return (
+    <>
+      <TableRow hover>
+        <TableCell>
+          <Stack direction="row" spacing={0.5} alignItems="center">
+            <IconButton size="small" onClick={() => onToggle(groupKey)}>
+              {expanded ? <KeyboardArrowDownIcon fontSize="small" /> : <KeyboardArrowRightIcon fontSize="small" />}
+            </IconButton>
+            <span>{a.name}</span>
+          </Stack>
+        </TableCell>
+        <TableCell>WireGuard + AmneziaWG</TableCell>
+        <TableCell>{serverLabel(a, bridges)}</TableCell>
+        <TableCell>
+          <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap>
+            <PeerStatusChips peer={a} isSuperAdmin={isSuperAdmin} />
+            <Chip size="small" variant="outlined" color="info" label="мультиконфиг" />
+          </Stack>
+        </TableCell>
+        <TableCell align="right">
+          <Stack direction="row" spacing={0.25} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
+            <Tooltip title="Изменить">
+              <IconButton size="small" onClick={() => onEdit(a)}>
+                <EditIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title="Скачать .vpn для приложения AmneziaVPN (оба протокола)">
+              <span>
+                <IconButton size="small" disabled={a.source === 'imported'} onClick={() => downloadPeerAmneziaConfig(a.id, a.name)}>
+                  <PhonelinkRingIcon fontSize="small" />
+                </IconButton>
+              </span>
+            </Tooltip>
+            <Tooltip title="QR-код для .vpn (AmneziaVPN, оба протокола)">
+              <span>
+                <IconButton size="small" disabled={a.source === 'imported'} onClick={() => onShowAmneziaQr(a)}>
+                  <QrCodeIcon fontSize="small" />
+                </IconButton>
+              </span>
+            </Tooltip>
+            {a.status === 'active' && (
+              <Tooltip title="Отозвать (оба протокола)">
+                <IconButton size="small" color="warning" onClick={() => onRevoke(a.id)}>
+                  <BlockIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            )}
+            {a.status === 'revoked' && (
+              <Tooltip title="Удалить (оба протокола)">
+                <IconButton size="small" color="error" onClick={() => onPurge(a.id)}>
+                  <DeleteOutlineIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            )}
+          </Stack>
+        </TableCell>
+      </TableRow>
+      {expanded && (
+        <>
+          <PeerTableRow peer={a} bridges={bridges} isSuperAdmin={isSuperAdmin} onEdit={onEdit} onShowQr={onShowQr} onShowAmneziaQr={onShowAmneziaQr} onRevoke={onRevoke} onPurge={onPurge} indent />
+          <PeerTableRow peer={b} bridges={bridges} isSuperAdmin={isSuperAdmin} onEdit={onEdit} onShowQr={onShowQr} onShowAmneziaQr={onShowAmneziaQr} onRevoke={onRevoke} onPurge={onPurge} indent />
+        </>
+      )}
+    </>
+  );
 }
 
 export function PeersPage() {
@@ -215,10 +423,31 @@ export function PeersPage() {
     setQrUrl(url);
   }
 
+  async function handleShowAmneziaQr(peer: PeerEntity) {
+    const url = await fetchPeerAmneziaQrCodeUrl(peer.id);
+    setQrPeer(peer);
+    setQrUrl(url);
+  }
+
   type SortKey = 'name' | 'server' | 'status';
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  // Пары мультиконфига (см. Peer.pairedPeerId) свёрнуты в одну сводную строку по
+  // умолчанию — ключ группы не зависит от порядка a/b (сортировка может их менять
+  // местами), иначе состояние "развёрнуто" терялось бы при пересортировке.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  function groupKey(a: PeerEntity, b: PeerEntity): string {
+    return [a.id, b.id].sort().join(':');
+  }
+  function toggleGroup(key: string) {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) {
@@ -247,6 +476,30 @@ export function PeersPage() {
     });
     return sortDir === 'asc' ? sorted : sorted.reverse();
   }, [peers, bridges, search, sortKey, sortDir]);
+
+  // Сворачивает пары мультиконфига (Peer.pairedPeerId) в одну сводную строку — партнёр
+  // рендерится отдельной строкой только при разворачивании. Если партнёр не попал в
+  // текущую выдачу (например, отфильтрован поиском) — показываем peer как обычный
+  // одиночный, не пытаясь строить группу из половины пары.
+  type PeerRowGroup = { type: 'group'; a: PeerEntity; b: PeerEntity } | { type: 'single'; peer: PeerEntity };
+  const groupedRows = useMemo<PeerRowGroup[]>(() => {
+    const byId = new Map(visiblePeers.map((p) => [p.id, p]));
+    const seen = new Set<string>();
+    const rows: PeerRowGroup[] = [];
+    for (const peer of visiblePeers) {
+      if (seen.has(peer.id)) continue;
+      const partner = peer.pairedPeerId ? byId.get(peer.pairedPeerId) : undefined;
+      if (partner && !seen.has(partner.id)) {
+        seen.add(peer.id);
+        seen.add(partner.id);
+        rows.push({ type: 'group', a: peer, b: partner });
+      } else {
+        seen.add(peer.id);
+        rows.push({ type: 'single', peer });
+      }
+    }
+    return rows;
+  }, [visiblePeers]);
 
   return (
     <Stack spacing={3}>
@@ -287,13 +540,26 @@ export function PeersPage() {
               <TextField
                 select
                 label="Протокол"
-                value={form.protocol}
-                onChange={(e) => setForm({ ...form, protocol: e.target.value as VpnProtocol })}
+                value={form.multiProtocol ? 'multi' : form.protocol}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  if (value === 'multi') {
+                    setForm({ ...form, multiProtocol: true });
+                    return;
+                  }
+                  setForm({ ...form, protocol: value as VpnProtocol, multiProtocol: false });
+                }}
                 size="small"
                 fullWidth
+                helperText={
+                  form.multiProtocol
+                    ? "Создаст сразу два peer'а и выдаст один .vpn-файл для AmneziaVPN — протокол переключается прямо внутри приложения. Требует, чтобы на мосту/сервере были активны оба протокола."
+                    : undefined
+                }
               >
                 <MenuItem value="wireguard">WireGuard</MenuItem>
                 <MenuItem value="amneziawg">AmneziaWG</MenuItem>
+                <MenuItem value="multi">AmneziaWG + WireGuard</MenuItem>
               </TextField>
               {bridges && bridges.length > 0 && (
                 <TextField
@@ -450,78 +716,42 @@ export function PeersPage() {
               </TableRow>
             </TableHead>
             <TableBody>
-              {visiblePeers.map((peer) => (
-                <TableRow key={peer.id}>
-                  <TableCell>{peer.name}</TableCell>
-                  <TableCell>{peer.allowedIp}</TableCell>
-                  <TableCell>{serverLabel(peer, bridges)}</TableCell>
-                  <TableCell>
-                    <Stack direction="row" spacing={0.5} alignItems="center">
-                      <Chip size="small" label={peer.status} color={statusColor[peer.status]} />
-                      {peer.needsRecreation && (
-                        <Chip
-                          size="small"
-                          color="warning"
-                          label="нужно пересоздать"
-                          title="Ключ не расшифровывается текущим ключом шифрования панели (обычно после восстановления БД на другом сервере) — отзовите и создайте заново"
-                        />
-                      )}
-                      {isSuperAdmin && peer.isExpired && (
-                        <Chip
-                          size="small"
-                          color="error"
-                          label="истёк"
-                          title={`Срок действия истёк ${new Date(peer.expiresAt!).toLocaleDateString()} — peer не отозван, но не применяется на сервере (интернета нет)`}
-                        />
-                      )}
-                      {isSuperAdmin && !peer.isExpired && peer.expiresAt && (
-                        <Chip size="small" variant="outlined" label={`до ${new Date(peer.expiresAt).toLocaleDateString()}`} />
-                      )}
-                    </Stack>
-                  </TableCell>
-                  <TableCell align="right">
-                    <Stack direction="row" spacing={0.25} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
-                      <Tooltip title="Изменить">
-                        <IconButton size="small" onClick={() => openEdit(peer)}>
-                          <EditIcon fontSize="small" />
-                        </IconButton>
-                      </Tooltip>
-                      <Tooltip title="Скачать конфиг">
-                        <span>
-                          <IconButton
-                            size="small"
-                            disabled={peer.source === 'imported'}
-                            onClick={() => downloadPeerConfig(peer.id, peer.name)}
-                          >
-                            <DownloadIcon fontSize="small" />
-                          </IconButton>
-                        </span>
-                      </Tooltip>
-                      <Tooltip title="QR-код">
-                        <span>
-                          <IconButton size="small" disabled={peer.source === 'imported'} onClick={() => handleShowQr(peer)}>
-                            <QrCode2Icon fontSize="small" />
-                          </IconButton>
-                        </span>
-                      </Tooltip>
-                      {peer.status === 'active' && (
-                        <Tooltip title="Отозвать">
-                          <IconButton size="small" color="warning" onClick={() => revokeMutation.mutate(peer.id)}>
-                            <BlockIcon fontSize="small" />
-                          </IconButton>
-                        </Tooltip>
-                      )}
-                      {peer.status === 'revoked' && (
-                        <Tooltip title="Удалить">
-                          <IconButton size="small" color="error" onClick={() => purgeMutation.mutate(peer.id)}>
-                            <DeleteOutlineIcon fontSize="small" />
-                          </IconButton>
-                        </Tooltip>
-                      )}
-                    </Stack>
-                  </TableCell>
-                </TableRow>
-              ))}
+              {groupedRows.map((row) => {
+                if (row.type === 'single') {
+                  return (
+                    <PeerTableRow
+                      key={row.peer.id}
+                      peer={row.peer}
+                      bridges={bridges}
+                      isSuperAdmin={isSuperAdmin}
+                      onEdit={openEdit}
+                      onShowQr={handleShowQr}
+                      onShowAmneziaQr={handleShowAmneziaQr}
+                      onRevoke={(id) => revokeMutation.mutate(id)}
+                      onPurge={(id) => purgeMutation.mutate(id)}
+                    />
+                  );
+                }
+                const key = groupKey(row.a, row.b);
+                const expanded = expandedGroups.has(key);
+                return (
+                  <MultiConfigGroupRows
+                    key={key}
+                    groupKey={key}
+                    a={row.a}
+                    b={row.b}
+                    bridges={bridges}
+                    isSuperAdmin={isSuperAdmin}
+                    expanded={expanded}
+                    onToggle={toggleGroup}
+                    onEdit={openEdit}
+                    onShowQr={handleShowQr}
+                    onShowAmneziaQr={handleShowAmneziaQr}
+                    onRevoke={(id) => revokeMutation.mutate(id)}
+                    onPurge={(id) => purgeMutation.mutate(id)}
+                  />
+                );
+              })}
               {!isLoading && visiblePeers.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={5}>{search ? 'Ничего не найдено' : 'Peers пока нет'}</TableCell>

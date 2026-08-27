@@ -20,8 +20,9 @@ export interface Fail2banStatus {
   bannedCount: number;
 }
 
-// См. VpnProvisioningService.ensureKernelModuleReady — автоперезагрузка сервера, когда DKMS
-// уже собрал модуль протокола под другое ядро, чем сейчас загружено. GRACE — не проверять
+// См. VpnProvisioningService.rebootForKernelModule — перезагрузка сервера (после явного
+// подтверждения администратором, см. checkKernelModuleReadiness), когда DKMS уже собрал
+// модуль протокола под другое ядро, чем сейчас загружено. GRACE — не проверять
 // доступность сразу после отправки "reboot" (серверу нужно время просто НАЧАТЬ выключаться,
 // иначе первая же проба TCP ещё застаёт живой sshd и ложно решает, что сервер "уже вернулся").
 // TIMEOUT — с запасом под proxy_read_timeout 300s на /api/ (см. nginx.conf.template).
@@ -83,27 +84,62 @@ export class VpnProvisioningService {
   // раз к этому моменту, иначе dkms status ещё пуст (см. вызовы ниже: сначала пакеты, потом
   // эта проверка).
   //
-  // ВАЖНО: это перезагрузка ВСЕГО сервера — если на нём уже есть другие активные
-  // протоколы/peers, они на время перезагрузки (обычно 30-90с) тоже недоступны. Это
-  // неизбежное следствие смены ядра, а не наша прихоть — обойти без реальной перезагрузки
-  // нельзя (модуль физически отсутствует в /lib/modules/<текущее ядро>).
+  // ВАЖНО: перезагрузка — это перезагрузка ВСЕГО сервера — если на нём уже есть другие
+  // активные протоколы/peers, они на время перезагрузки (обычно 30-90с) тоже недоступны.
+  // Это неизбежное следствие смены ядра, не обойти без реальной перезагрузки (модуль
+  // физически отсутствует в /lib/modules/<текущее ядро>). Раньше эта перезагрузка
+  // происходила АВТОМАТИЧЕСКИ и молча — реальный пойманный вживую случай (2026-08-27):
+  // рассинхронизация обнаружилась в момент, когда на сервере УЖЕ было больше 20 живых
+  // клиентских peers, и все они на минуту отвалились без предупреждения и без единого
+  // следа в audit-log/bridge-log (сам вызов install()/connectAsClient() не обязательно
+  // приходит из-под аутентифицированного HTTP-запроса, который логируется). Теперь
+  // рассинхронизация даёт явную ошибку с просьбой подтвердить перезагрузку (см.
+  // KERNEL_REBOOT_REQUIRED ниже и rebootForKernelModule) — админ должен явно решить,
+  // прерывать ли живые подключения прямо сейчас или отложить до менее нагруженного момента.
   //
   // Если модуль вообще не собран (rebootKernel: null, см. KernelModuleStatus) —
   // перезагрузка не поможет, ничего не делаем и даём install()/connectAsClient() провалиться
   // как обычно — withKernelModuleHint даст пользователю ручную инструкцию.
-  private async ensureKernelModuleReady(server: Server, connection: SshConnectionParams, driver: VpnDriver): Promise<void> {
+  private async checkKernelModuleReadiness(server: Server, connection: SshConnectionParams, driver: VpnDriver): Promise<void> {
     const status = await this.sshService.withConnection(connection, (ssh) => driver.checkKernelModuleStatus(ssh));
     if (status.ready || !status.rebootKernel) {
       return;
     }
-    this.logger.warn(
+    const message =
       `Модуль ${driver.protocol} на сервере "${server.name}" собран для ядра ${status.rebootKernel}, но сервер ` +
-        `сейчас работает на другом ядре — перезагружаю сервер, чтобы применить его (до ${KERNEL_REBOOT_TIMEOUT_MS / 1000}с)…`,
-    );
+      `сейчас работает на другом ядре. Требуется перезагрузка сервера, чтобы применить нужный модуль — она прервёт ` +
+      `ВСЕ активные подключения на этом сервере на 30-90с. Подтвердите перезагрузку и повторите действие.`;
     this.bridgeLogService.log(
       LogLevel.WARN,
-      `Автоперезагрузка сервера "${server.name}": модуль ${driver.protocol} собран не под текущее ядро`,
+      `Требуется подтверждение перезагрузки сервера "${server.name}": модуль ${driver.protocol} собран не под текущее ядро`,
     );
+    // code — структурированный маркер для фронтенда (см. getErrorMessage/KernelRebootConfirmDialog
+    // на фронте), чтобы отличить именно этот случай от обычной ошибки и предложить кнопку
+    // "Перезагрузить и повторить" вместо просто текста ошибки.
+    throw new BadRequestException({
+      code: 'KERNEL_REBOOT_REQUIRED',
+      message,
+      serverId: server.id,
+      serverName: server.name,
+      protocol: driver.protocol,
+    });
+  }
+
+  // Собственно перезагрузка + ожидание готовности модуля — вызывается ТОЛЬКО после явного
+  // подтверждения администратором (см. ServersController.rebootForKernelModule), в отличие
+  // от checkKernelModuleReadiness выше, которая сама никогда не перезагружает.
+  async rebootForKernelModule(serverId: string, protocol: VpnProtocol): Promise<{ message: string }> {
+    const server = await this.serversRepository.findOne({ where: { id: serverId } });
+    if (!server) {
+      throw new NotFoundException('Сервер не найден');
+    }
+    const driver = this.driverFor(protocol);
+    const connection = this.connectionParams(server);
+
+    this.logger.warn(
+      `Подтверждена перезагрузка сервера "${server.name}" для применения модуля ${protocol} (до ${KERNEL_REBOOT_TIMEOUT_MS / 1000}с)…`,
+    );
+    this.bridgeLogService.log(LogLevel.WARN, `Подтверждена перезагрузка сервера "${server.name}" для модуля ${protocol}`);
     try {
       await this.sshService.withConnection(connection, (ssh) => this.sshService.exec(ssh, 'reboot'));
     } catch {
@@ -117,20 +153,20 @@ export class VpnProvisioningService {
         await new Promise((resolve) => setTimeout(resolve, KERNEL_REBOOT_SSHD_SETTLE_MS));
         const recheck = await this.sshService.withConnection(connection, (ssh) => driver.checkKernelModuleStatus(ssh));
         if (!recheck.ready) {
-          const message = `Сервер "${server.name}" перезагрузился, но модуль ${driver.protocol} всё ещё недоступен для текущего ` +
+          const message = `Сервер "${server.name}" перезагрузился, но модуль ${protocol} всё ещё недоступен для текущего ` +
             `ядра — возможно, загрузчик выбирает не ту версию ядра по умолчанию. Проверьте по SSH "uname -r" и "dkms status".`;
           this.bridgeLogService.log(LogLevel.ERROR, message);
-          throw new Error(message);
+          throw new BadRequestException(message);
         }
-        this.logger.log(`Сервер "${server.name}" вернулся после перезагрузки, модуль ${driver.protocol} готов`);
-        this.bridgeLogService.log(LogLevel.INFO, `Сервер "${server.name}" вернулся после перезагрузки, модуль ${driver.protocol} готов`);
-        return;
+        this.logger.log(`Сервер "${server.name}" вернулся после перезагрузки, модуль ${protocol} готов`);
+        this.bridgeLogService.log(LogLevel.INFO, `Сервер "${server.name}" вернулся после перезагрузки, модуль ${protocol} готов`);
+        return { message: `Сервер "${server.name}" перезагружен, модуль ${protocol} готов — повторите действие` };
       }
       await new Promise((resolve) => setTimeout(resolve, KERNEL_REBOOT_POLL_MS));
     }
     const timeoutMessage = `Сервер "${server.name}" не вернулся в сеть после перезагрузки в течение ${KERNEL_REBOOT_TIMEOUT_MS / 1000}с`;
     this.bridgeLogService.log(LogLevel.ERROR, timeoutMessage);
-    throw new Error(timeoutMessage);
+    throw new BadRequestException(timeoutMessage);
   }
 
   async installProtocol(
@@ -223,7 +259,7 @@ export class VpnProvisioningService {
     // этот лог (Настройки → «Логи» → backend).
     this.logger.log(`Установка ${protocol} на сервере "${server.name}" (${server.host}:${resolvedPort})…`);
     try {
-      await this.ensureKernelModuleReady(server, connection, driver);
+      await this.checkKernelModuleReadiness(server, connection, driver);
       // Версию забираем в ТОЙ ЖЕ SSH-сессии, что и саму установку — не открываем отдельное
       // подключение только ради неё.
       const result = await this.sshService.withConnection(connection, async (ssh) => {
@@ -243,11 +279,40 @@ export class VpnProvisioningService {
       this.logger.log(`${protocol} успешно установлен на сервере "${server.name}" (интерфейс ${result.interfaceName})`);
     } catch (error) {
       serverProtocol.status = ServerProtocolStatus.ERROR;
-      serverProtocol.lastError = (error as Error).message;
-      this.logger.error(`Установка ${protocol} на сервере "${server.name}" не удалась: ${(error as Error).message}`);
+      serverProtocol.lastError = this.extractErrorMessage(error);
+      this.logger.error(`Установка ${protocol} на сервере "${server.name}" не удалась: ${serverProtocol.lastError}`);
+      // KERNEL_REBOOT_REQUIRED — не обычная неудача установки, а запрос подтверждения у
+      // пользователя (см. checkKernelModuleReadiness/rebootForKernelModule ниже): состояние
+      // сохраняем как обычно (чтобы lastError был виден при перезагрузке страницы), но саму
+      // ошибку пробрасываем дальше — иначе она бы осела 200-м ответом с status=error, и
+      // фронтенд не смог бы отличить её от произвольного сбоя SSH, чтобы показать диалог
+      // подтверждения перезагрузки вместо обычного текста ошибки.
+      await this.serverProtocolsRepository.save(serverProtocol);
+      if (this.isKernelRebootRequiredError(error)) {
+        throw error;
+      }
+      return serverProtocol;
     }
 
     return this.serverProtocolsRepository.save(serverProtocol);
+  }
+
+  private extractErrorMessage(error: unknown): string {
+    if (error instanceof BadRequestException) {
+      const response = error.getResponse();
+      if (typeof response === 'object' && response && 'message' in response) {
+        return String((response as { message: unknown }).message);
+      }
+    }
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  private isKernelRebootRequiredError(error: unknown): boolean {
+    if (!(error instanceof BadRequestException)) {
+      return false;
+    }
+    const response = error.getResponse();
+    return typeof response === 'object' && response !== null && (response as { code?: string }).code === 'KERNEL_REBOOT_REQUIRED';
   }
 
   async getInstalledVersion(serverProtocol: ServerProtocol, server: Server): Promise<string | null> {
@@ -410,7 +475,7 @@ export class VpnProvisioningService {
   ): Promise<void> {
     const driver = this.driverFor(protocol);
     const connection = this.connectionParams(selfServer);
-    await this.ensureKernelModuleReady(selfServer, connection, driver);
+    await this.checkKernelModuleReadiness(selfServer, connection, driver);
     await this.sshService.withConnection(connection, (ssh) => driver.connectAsClient(ssh, interfaceName, config, routeTable));
   }
 

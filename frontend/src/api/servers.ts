@@ -21,7 +21,10 @@ export async function createServer(input: CreateServerInput): Promise<ServerEnti
   return data;
 }
 
-export async function updateServer(id: string, input: { name?: string; maxPeers?: number }): Promise<ServerEntity> {
+export async function updateServer(
+  id: string,
+  input: { name?: string; maxPeers?: number; amneziaAppName?: string | null },
+): Promise<ServerEntity> {
   const { data } = await apiClient.patch<ServerEntity>(`/servers/${id}`, input);
   return data;
 }
@@ -49,6 +52,14 @@ export async function testServerConnection(id: string): Promise<{ ok: boolean; i
 
 export async function rebootServer(id: string): Promise<{ message: string }> {
   const { data } = await apiClient.post(`/servers/${id}/reboot`);
+  return data;
+}
+
+// Подтверждённая администратором перезагрузка сервера, когда установка/подключение
+// upstream упёрлись в KERNEL_REBOOT_REQUIRED (см. KernelRebootConfirmDialog) — модуль
+// протокола собран не под текущее ядро, только перезагрузка сервера применит нужный.
+export async function rebootForKernelModule(serverId: string, protocol: VpnProtocol): Promise<{ message: string }> {
+  const { data } = await apiClient.post(`/servers/${serverId}/reboot-for-kernel-module`, { protocol });
   return data;
 }
 

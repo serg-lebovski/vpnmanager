@@ -21,7 +21,7 @@ import {
   Typography,
 } from '@mui/material';
 import { useQuery } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { fetchOrganizations } from '../api/organizations';
 import { fetchServers } from '../api/servers';
 import {
@@ -50,6 +50,33 @@ function formatBytesTotal(bytes: number): string {
 function formatMb(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} ГБ`;
   return `${Math.round(mb)} МБ`;
+}
+
+// PersistentKeepalive у клиентских конфигов = 25с — активное устройство рукопожатится
+// заметно чаще этого порога, поэтому "недавно" (последние 3 минуты) читаем как "сейчас
+// подключён", а не просто "было соединение когда-то".
+const ONLINE_THRESHOLD_SECONDS = 3 * 60;
+
+function formatLastHandshake(latestHandshake: number): string {
+  if (!latestHandshake) return 'Никогда';
+  const secondsAgo = Date.now() / 1000 - latestHandshake;
+  if (secondsAgo < ONLINE_THRESHOLD_SECONDS) return 'Сейчас в сети';
+  if (secondsAgo < 3600) return `${Math.floor(secondsAgo / 60)} мин назад`;
+  if (secondsAgo < 86400) return `${Math.floor(secondsAgo / 3600)} ч назад`;
+  return new Date(latestHandshake * 1000).toLocaleString();
+}
+
+function isRecentlyOnline(latestHandshake: number): boolean {
+  return latestHandshake > 0 && Date.now() / 1000 - latestHandshake < ONLINE_THRESHOLD_SECONDS;
+}
+
+function formatEndpointIp(endpoint: string | null): string {
+  if (!endpoint) return '—';
+  // "ip:port" или "[ipv6]:port" — отсекаем порт, панели интересен только адрес клиента.
+  const ipv6Match = endpoint.match(/^\[(.+)\]:\d+$/);
+  if (ipv6Match) return ipv6Match[1];
+  const lastColon = endpoint.lastIndexOf(':');
+  return lastColon > 0 ? endpoint.slice(0, lastColon) : endpoint;
 }
 
 // Условный опорный уровень для индикатора "Сеть" — у SSH-опроса нет способа узнать
@@ -174,6 +201,66 @@ function ServerLoadRow({ server }: { server: DashboardServerStats }) {
         />
       </Box>
     </Stack>
+  );
+}
+
+// Сводка "какой протокол на каком сервере используется" — считается на лету из живого
+// снапшота (DashboardPeerStats уже несёт serverName+protocol на каждый активный peer),
+// без отдельного запроса к бэкенду.
+interface ServerProtocolBreakdown {
+  serverName: string;
+  wireguard: number;
+  amneziawg: number;
+}
+
+function ProtocolsByServerSection({ peers }: { peers: DashboardPeerStats[] }) {
+  const rows = useMemo<ServerProtocolBreakdown[]>(() => {
+    const byServer = new Map<string, ServerProtocolBreakdown>();
+    for (const peer of peers) {
+      const entry = byServer.get(peer.serverName) ?? { serverName: peer.serverName, wireguard: 0, amneziawg: 0 };
+      if (peer.protocol === 'wireguard') {
+        entry.wireguard += 1;
+      } else if (peer.protocol === 'amneziawg') {
+        entry.amneziawg += 1;
+      }
+      byServer.set(peer.serverName, entry);
+    }
+    return Array.from(byServer.values()).sort((a, b) => a.serverName.localeCompare(b.serverName));
+  }, [peers]);
+
+  return (
+    <Paper sx={{ p: 2 }}>
+      <Typography variant="subtitle1" mb={1}>
+        Протоколы по серверам
+      </Typography>
+      <TableContainer sx={{ overflowX: 'auto' }}>
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell>Сервер</TableCell>
+              <TableCell>WireGuard</TableCell>
+              <TableCell>AmneziaWG</TableCell>
+              <TableCell>Всего активных peers</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {rows.map((row) => (
+              <TableRow key={row.serverName}>
+                <TableCell>{row.serverName}</TableCell>
+                <TableCell>{row.wireguard}</TableCell>
+                <TableCell>{row.amneziawg}</TableCell>
+                <TableCell>{row.wireguard + row.amneziawg}</TableCell>
+              </TableRow>
+            ))}
+            {rows.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={4}>Нет активных peers</TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </TableContainer>
+    </Paper>
   );
 }
 
@@ -444,6 +531,8 @@ export function DashboardPage() {
         </Stack>
       </Paper>
 
+      <ProtocolsByServerSection peers={peers} />
+
       <Paper sx={{ p: 2 }}>
         <Typography variant="subtitle1" mb={2}>
           Трафик активных peers
@@ -458,6 +547,8 @@ export function DashboardPage() {
               <TableCell>↓ Скачивание</TableCell>
               <TableCell>↑ Отдача</TableCell>
               <TableCell>Всего получено / отправлено</TableCell>
+              <TableCell>Последнее рукопожатие</TableCell>
+              <TableCell>IP-адрес клиента</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -471,11 +562,21 @@ export function DashboardPage() {
                 <TableCell>
                   {formatBytesTotal(peer.rxBytesTotal)} / {formatBytesTotal(peer.txBytesTotal)}
                 </TableCell>
+                <TableCell>
+                  <Typography
+                    variant="body2"
+                    color={isRecentlyOnline(peer.latestHandshake) ? 'success.main' : 'text.secondary'}
+                    fontWeight={isRecentlyOnline(peer.latestHandshake) ? 600 : 400}
+                  >
+                    {formatLastHandshake(peer.latestHandshake)}
+                  </Typography>
+                </TableCell>
+                <TableCell>{formatEndpointIp(peer.endpoint)}</TableCell>
               </TableRow>
             ))}
             {peers.length === 0 && (
               <TableRow>
-                <TableCell colSpan={6}>{connected ? 'Нет активных peers' : 'Загрузка...'}</TableCell>
+                <TableCell colSpan={8}>{connected ? 'Нет активных peers' : 'Загрузка...'}</TableCell>
               </TableRow>
             )}
           </TableBody>

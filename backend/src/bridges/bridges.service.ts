@@ -297,7 +297,25 @@ export class BridgesService {
       }
       bridge.bypassDestinations = parsed;
     }
+    if (dto.isDefault !== undefined) {
+      bridge.isDefault = dto.isDefault;
+    }
+    if (dto.maxPeers !== undefined) {
+      bridge.maxPeers = dto.maxPeers;
+    }
     const saved = await this.bridgesRepository.save(bridge);
+
+    // Только ОДИН мост может быть "по умолчанию" одновременно — сбрасываем флаг у всех
+    // остальных ПОСЛЕ сохранения этого (не в одной транзакции: невелика цена гонки для
+    // чисто UX-настройки, зато код проще — ordinary update, без блокировок).
+    if (dto.isDefault === true) {
+      await this.bridgesRepository
+        .createQueryBuilder()
+        .update(Bridge)
+        .set({ isDefault: false })
+        .where('id != :id', { id: saved.id })
+        .execute();
+    }
 
     // В отличие от имени/организации (чистая косметика в БД), список обхода нужно сразу
     // применить на self-сервере — не дожидаясь ближайшего тика refreshBypassRules.

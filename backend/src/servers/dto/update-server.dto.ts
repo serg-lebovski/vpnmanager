@@ -13,4 +13,11 @@ export class UpdateServerDto {
   @Min(1)
   @IsOptional()
   maxPeers?: number;
+
+  // Имя профиля в официальном приложении AmneziaVPN (см. Server.amneziaAppName) — пустая
+  // строка/null сбрасывает на дефолт (используется обычное name). Не задано вообще — не
+  // менять текущее значение.
+  @IsString()
+  @IsOptional()
+  amneziaAppName?: string | null;
 }
