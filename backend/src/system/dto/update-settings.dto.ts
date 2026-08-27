@@ -51,4 +51,12 @@ export class UpdateSettingsDto {
   @MinLength(1)
   @IsOptional()
   deployBranch?: string;
+
+  // Имя профиля в официальном приложении AmneziaVPN по умолчанию (см.
+  // SystemSettings.amneziaAppName) — null/пустая строка сбрасывает на внутреннее имя
+  // сервера (как было до этой настройки).
+  @IsString()
+  @ValidateIf((_, value) => value !== null)
+  @IsOptional()
+  amneziaAppName?: string | null;
 }

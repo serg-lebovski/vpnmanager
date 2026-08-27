@@ -13,6 +13,9 @@ export interface SystemSettings {
   telegramBridgeId: string | null;
   telegramWelcomeMessage: string | null;
   deployBranch: string;
+  // Имя профиля по умолчанию в приложении AmneziaVPN (см. Server.amneziaAppName для
+  // переопределения на конкретном сервере/мосту) — null, если не задано.
+  amneziaAppName: string | null;
   updatedAt: string;
 }
 
@@ -33,6 +36,7 @@ export interface UpdateSettingsInput {
   telegramBridgeId?: string | null;
   telegramWelcomeMessage?: string;
   deployBranch?: string;
+  amneziaAppName?: string | null;
 }
 
 export async function updateSettings(input: UpdateSettingsInput): Promise<SystemSettings> {

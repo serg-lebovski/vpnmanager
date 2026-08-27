@@ -56,6 +56,13 @@ export class SystemSettings {
   @Column({ name: 'deploy_branch', default: 'main' })
   deployBranch: string;
 
+  // Имя профиля, которое официальное приложение AmneziaVPN покажет клиенту при импорте
+  // .vpn-мультиконфига (см. PeersService.buildAmneziaAppConfigFor) — глобальный дефолт для
+  // всех серверов/мостов, у которых своё имя (Server.amneziaAppName) не задано явно. null —
+  // используется внутреннее имя сервера (то, что видит только админ в панели), как и раньше.
+  @Column({ name: 'amnezia_app_name', type: 'varchar', nullable: true })
+  amneziaAppName: string | null;
+
   @UpdateDateColumn({ name: 'updated_at' })
   updatedAt: Date;
 }

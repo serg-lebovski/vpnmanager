@@ -34,5 +34,6 @@ import { UpdateService } from './update.service';
   ],
   controllers: [SystemController],
   providers: [BackupService, UpdateService, SystemGateway, LogsService, CertbotService, NginxConfigService, SettingsService, RestoreService],
+  exports: [SettingsService],
 })
 export class SystemModule {}

@@ -6,6 +6,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
 import { Organization } from '../organizations/organization.entity';
 import { ServerProtocol } from '../servers/server-protocol.entity';
 import { Server } from '../servers/server.entity';
+import { SystemModule } from '../system/system.module';
 import { VpnModule } from '../vpn/vpn.module';
 import { Peer } from './peer.entity';
 import { PeersController } from './peers.controller';
@@ -17,6 +18,7 @@ import { PeersService } from './peers.service';
     LoadBalancerModule,
     VpnModule,
     NotificationsModule,
+    SystemModule,
   ],
   controllers: [PeersController],
   providers: [PeersService],

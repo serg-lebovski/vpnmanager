@@ -187,6 +187,23 @@ export function SettingsPage() {
     }
   }, [settings]);
 
+  const [amneziaAppNameInput, setAmneziaAppNameInput] = useState('');
+  const [amneziaAppNameSaved, setAmneziaAppNameSaved] = useState(false);
+  useEffect(() => {
+    if (settings) {
+      setAmneziaAppNameInput(settings.amneziaAppName ?? '');
+    }
+  }, [settings]);
+  const saveAmneziaAppNameMutation = useMutation({
+    mutationFn: () => updateSettings({ amneziaAppName: amneziaAppNameInput.trim() || null }),
+    onSuccess: () => {
+      refetchSettings();
+      setSettingsError(null);
+      setAmneziaAppNameSaved(true);
+    },
+    onError: (err) => setSettingsError(getErrorMessage(err, 'Не удалось сохранить имя профиля AmneziaVPN')),
+  });
+
   const saveDomainMutation = useMutation({
     mutationFn: () => updateSettings({ domain: domainInput.trim(), letsEncryptEmail: emailInput.trim() }),
     onSuccess: () => {
@@ -527,6 +544,43 @@ export function SettingsPage() {
           Сейчас уведомляет об истечении срока действия peer'а и об ошибке автообновления
           сертификата. «Маршрут через мост» — исходящие запросы к Telegram Bot API идут через
           upstream-туннель выбранного моста вместо прямого подключения с self-сервера.
+        </Typography>
+      </Paper>
+
+      <Paper sx={{ p: 2 }}>
+        <Typography variant="subtitle1" mb={2}>
+          AmneziaVPN
+        </Typography>
+        <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="flex-start">
+          <TextField
+            label="Имя профиля по умолчанию"
+            size="small"
+            value={amneziaAppNameInput}
+            onChange={(e) => {
+              setAmneziaAppNameInput(e.target.value);
+              setAmneziaAppNameSaved(false);
+            }}
+            placeholder="например, название вашего сервиса"
+            helperText="Так будет называться профиль в приложении AmneziaVPN у клиента при импорте .vpn-мультиконфига"
+            sx={{ minWidth: 320 }}
+          />
+          <Button
+            variant="outlined"
+            disabled={saveAmneziaAppNameMutation.isPending}
+            onClick={() => saveAmneziaAppNameMutation.mutate()}
+          >
+            Сохранить
+          </Button>
+        </Stack>
+        {amneziaAppNameSaved && (
+          <Alert severity="success" sx={{ mt: 2 }} onClose={() => setAmneziaAppNameSaved(false)}>
+            Сохранено.
+          </Alert>
+        )}
+        <Typography variant="caption" color="text.secondary" display="block" mt={2}>
+          Применяется, если у конкретного сервера/моста не задано своё имя (см. кнопку
+          «Переименовать» на странице «Серверы») — там оно имеет приоритет над этим общим
+          значением. Пусто — клиент увидит внутреннее имя сервера, как было раньше.
         </Typography>
       </Paper>
 

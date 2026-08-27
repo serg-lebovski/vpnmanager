@@ -11,6 +11,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { Organization } from '../organizations/organization.entity';
 import { ServerProtocol } from '../servers/server-protocol.entity';
 import { Server } from '../servers/server.entity';
+import { SettingsService } from '../system/settings.service';
 import { TelegramRegistration } from '../telegram-bot/telegram-registration.entity';
 import { PeerSpec } from '../vpn/vpn-driver.interface';
 import { VpnProvisioningService } from '../vpn/vpn-provisioning.service';
@@ -61,6 +62,7 @@ export class PeersService {
     private readonly loadBalancerService: LoadBalancerService,
     private readonly vpnProvisioningService: VpnProvisioningService,
     private readonly notificationsService: NotificationsService,
+    private readonly settingsService: SettingsService,
   ) {}
 
   async findAllForRequester(requester: AuthenticatedUser, organizationId?: string): Promise<PeerListItem[]> {
@@ -525,7 +527,11 @@ export class PeersService {
     // выданных через Telegram-бота/портал, это ФИО клиента — не то, что должно всплывать
     // в приложении как "название сервера", см. Server.amneziaAppName). Имя файла при этом
     // остаётся по peer'у — практичнее для администратора, различающего файлы на диске.
-    const description = containers[0].server.amneziaAppName?.trim() || containers[0].server.name;
+    // Приоритет: своё имя у конкретного сервера/моста → глобальный дефолт из «Настроек»
+    // (SystemSettings.amneziaAppName, чтобы не проставлять одно и то же имя на каждом
+    // сервере отдельно) → внутреннее имя сервера как последний фолбэк (как было раньше).
+    const settings = await this.settingsService.getOrCreate();
+    const description = containers[0].server.amneziaAppName?.trim() || settings.amneziaAppName?.trim() || containers[0].server.name;
     const content = buildAmneziaAppConfig(containers, description);
     const safeName = peersInGroup[0].name.replace(/[^\p{L}\p{N}_-]+/gu, '_');
     return { filename: `${safeName}.vpn`, content };

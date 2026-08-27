@@ -129,6 +129,9 @@ export class SettingsService implements OnModuleInit {
     if (dto.deployBranch !== undefined) {
       settings.deployBranch = dto.deployBranch;
     }
+    if (dto.amneziaAppName !== undefined) {
+      settings.amneziaAppName = dto.amneziaAppName?.trim() || null;
+    }
 
     const saved = await this.settingsRepository.save(settings);
     setCorsAllowedDomain(saved.domain);
