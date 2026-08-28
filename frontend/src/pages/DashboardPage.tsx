@@ -57,17 +57,23 @@ function formatMb(mb: number): string {
 // подключён", а не просто "было соединение когда-то".
 const ONLINE_THRESHOLD_SECONDS = 3 * 60;
 
-function formatLastHandshake(latestHandshake: number): string {
+// nowMs — момент "сейчас" ИЗ САМОГО СНАПШОТА (DashboardSnapshot.timestamp, часы backend'а),
+// а не Date.now() браузера клиента — иначе рассинхронизация часов на компьютере
+// администратора (даже безобидная, например неверный часовой пояс) делает "давно назад"
+// из peer'а, который на самом деле был на связи секунду назад (пойманный вживую случай:
+// счётчики трафика КБ/с — серверные, оставались живыми, а "рукопожатие" — считалось на
+// клиенте и застревало на часах разницы).
+function formatLastHandshake(latestHandshake: number, nowMs: number): string {
   if (!latestHandshake) return 'Никогда';
-  const secondsAgo = Date.now() / 1000 - latestHandshake;
+  const secondsAgo = nowMs / 1000 - latestHandshake;
   if (secondsAgo < ONLINE_THRESHOLD_SECONDS) return 'Сейчас в сети';
   if (secondsAgo < 3600) return `${Math.floor(secondsAgo / 60)} мин назад`;
   if (secondsAgo < 86400) return `${Math.floor(secondsAgo / 3600)} ч назад`;
   return new Date(latestHandshake * 1000).toLocaleString();
 }
 
-function isRecentlyOnline(latestHandshake: number): boolean {
-  return latestHandshake > 0 && Date.now() / 1000 - latestHandshake < ONLINE_THRESHOLD_SECONDS;
+function isRecentlyOnline(latestHandshake: number, nowMs: number): boolean {
+  return latestHandshake > 0 && nowMs / 1000 - latestHandshake < ONLINE_THRESHOLD_SECONDS;
 }
 
 function formatEndpointIp(endpoint: string | null): string {
@@ -498,6 +504,10 @@ export function DashboardPage() {
     };
   }, []);
 
+  // Время сервера из самого снапшота — см. formatLastHandshake/isRecentlyOnline выше про то,
+  // почему не Date.now() браузера.
+  const nowMs = timestamp ? new Date(timestamp).getTime() : Date.now();
+
   return (
     <Stack spacing={3}>
       <Stack direction="row" justifyContent="space-between" alignItems="center">
@@ -565,10 +575,10 @@ export function DashboardPage() {
                 <TableCell>
                   <Typography
                     variant="body2"
-                    color={isRecentlyOnline(peer.latestHandshake) ? 'success.main' : 'text.secondary'}
-                    fontWeight={isRecentlyOnline(peer.latestHandshake) ? 600 : 400}
+                    color={isRecentlyOnline(peer.latestHandshake, nowMs) ? 'success.main' : 'text.secondary'}
+                    fontWeight={isRecentlyOnline(peer.latestHandshake, nowMs) ? 600 : 400}
                   >
-                    {formatLastHandshake(peer.latestHandshake)}
+                    {formatLastHandshake(peer.latestHandshake, nowMs)}
                   </Typography>
                 </TableCell>
                 <TableCell>{formatEndpointIp(peer.endpoint)}</TableCell>
