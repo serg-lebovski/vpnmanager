@@ -349,7 +349,6 @@ export function SettingsPage() {
               helperText="Кнопка «Обновить» подтянет код именно из этой ветки"
             >
               <MenuItem value="main">main</MenuItem>
-              <MenuItem value="beta">beta</MenuItem>
             </TextField>
           </Stack>
         )}
