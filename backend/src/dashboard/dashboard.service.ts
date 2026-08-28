@@ -432,7 +432,10 @@ export class DashboardService {
       .select('s.peerId', 'peerId')
       .addSelect('MAX(s.peerName)', 'peerName')
       .addSelect('MAX(s.serverName)', 'serverName')
-      .addSelect('MAX(s.organizationId)', 'organizationId')
+      // MAX(uuid) не существует в Postgres как агрегатная функция — приводим к тексту (сам
+      // порядок не важен, у всех строк одного peerId одинаковый organizationId, MAX здесь
+      // просто способ выбрать одно представительное значение внутри GROUP BY).
+      .addSelect('MAX(s.organizationId::text)', 'organizationId')
       .addSelect('SUM(s.rxBytes)', 'rxBytes')
       .addSelect('SUM(s.txBytes)', 'txBytes')
       .where('s.sampledAt >= :from', { from: this.rangeStart(range) })
