@@ -4,8 +4,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { randomBytes } from 'crypto';
 import { NodeSSH } from 'node-ssh';
 import { Repository } from 'typeorm';
+import { Bridge } from '../bridges/bridge.entity';
 import { decryptSecret, encryptSecret } from '../common/encryption.util';
 import { SshService } from '../ssh/ssh.service';
+import { SettingsService } from '../system/settings.service';
 import { VpnProvisioningService } from '../vpn/vpn-provisioning.service';
 import { Server } from './server.entity';
 
@@ -48,8 +50,10 @@ export class MtProxyService {
 
   constructor(
     @InjectRepository(Server) private readonly serversRepository: Repository<Server>,
+    @InjectRepository(Bridge) private readonly bridgesRepository: Repository<Bridge>,
     private readonly sshService: SshService,
     private readonly vpnProvisioningService: VpnProvisioningService,
+    private readonly settingsService: SettingsService,
   ) {}
 
   async getStatus(serverId: string): Promise<MtProxyStatus> {
@@ -96,7 +100,33 @@ export class MtProxyService {
     server.mtProxyUpdatedAt = new Date();
     await this.serversRepository.save(server);
     this.logger.log(`MTProto-proxy установлен на сервере "${server.name}" (порт ${port})`);
+
+    // Best-effort — если в «Настройках» → «Маршрут через мост» задан мост (тот же признак,
+    // что и у Telegram-бота панели: self-сервер не может дозвониться до Telegram напрямую),
+    // сразу применяем ту же маршрутизацию к самому mtproxy — иначе клиенты подключаются к
+    // прокси успешно, а сам прокси не может дозвониться до датацентров Telegram (см.
+    // VpnProvisioningService.setupMtProxyRouting). Самовосстановление при рестарте backend'а
+    // — через тот же хук, что и у Telegram-бота, см. SettingsService.onModuleInit.
+    void this.applyMtProxyRoutingBestEffort(server);
+
     return this.toStatus(server);
+  }
+
+  private async applyMtProxyRoutingBestEffort(server: Server): Promise<void> {
+    try {
+      const settings = await this.settingsService.getOrCreate();
+      if (!settings.telegramBridgeId) {
+        return;
+      }
+      const bridge = await this.bridgesRepository.findOne({ where: { id: settings.telegramBridgeId } });
+      if (!bridge) {
+        return;
+      }
+      await this.vpnProvisioningService.setupMtProxyRouting(server, bridge);
+      this.logger.log(`Маршрутизация Telegram для mtproxy на сервере "${server.name}" применена (мост "${bridge.name}")`);
+    } catch (error) {
+      this.logger.warn(`Не удалось настроить маршрутизацию Telegram для mtproxy на сервере "${server.name}": ${(error as Error).message}`);
+    }
   }
 
   private async ensureProxySourceInstalled(ssh: NodeSSH): Promise<void> {

@@ -157,9 +157,23 @@ export class SettingsService implements OnModuleInit {
           this.bridgeLogService.log(LogLevel.WARN, 'Маршрутизация Telegram: мост или self-сервер не найден', bridgeId);
           return;
         }
-        return this.vpnProvisioningService.setupTelegramRouting(selfServer, bridge).then(() => {
-          this.bridgeLogService.log(LogLevel.INFO, 'Маршрутизация Telegram через мост применена', bridge.id, bridge.name);
-        });
+        const tasks = [
+          this.vpnProvisioningService.setupTelegramRouting(selfServer, bridge).then(() => {
+            this.bridgeLogService.log(LogLevel.INFO, 'Маршрутизация Telegram через мост применена', bridge.id, bridge.name);
+          }),
+        ];
+        // mtproxy на этом же self-сервере (если установлен) страдает от той же блокировки
+        // Telegram напрямую — та же причина, что и у Bot API, см. MtProxyService.
+        // applyMtProxyRoutingBestEffort/VpnProvisioningService.setupMtProxyRouting. Не
+        // блокирует Telegram-бота, если mtproxy не настроен на этом хосте (mtProxyPort пуст).
+        if (selfServer.mtProxyPort) {
+          tasks.push(
+            this.vpnProvisioningService.setupMtProxyRouting(selfServer, bridge).then(() => {
+              this.bridgeLogService.log(LogLevel.INFO, 'Маршрутизация Telegram для mtproxy применена', bridge.id, bridge.name);
+            }),
+          );
+        }
+        return Promise.all(tasks);
       })
       .catch((error) => {
         this.logger.warn(`Не удалось настроить маршрутизацию Telegram через мост: ${(error as Error).message}`);

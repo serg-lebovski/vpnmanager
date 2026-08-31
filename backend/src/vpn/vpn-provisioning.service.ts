@@ -793,4 +793,65 @@ export class VpnProvisioningService {
       );
     });
   }
+
+  // Реальный datacenter-адреса Telegram (не домен — mtprotoproxy.py обращается к ним
+  // напрямую по IP из своего кода, DNS тут ни при чём) — MTProxyService.deployService
+  // разворачивает постоянный процесс на self-сервере, который сам должен уметь дозвониться
+  // именно сюда, иначе клиенты подключаются к прокси успешно, а сам прокси не может
+  // передать их данные дальше в Telegram. Пойманный вживую случай (2026-08-31): self-сервер
+  // в стране, где заблокирован сам Telegram (тот же класс проблемы, что и у Telegram-бота
+  // панели, см. setupTelegramRouting выше) — "Unable to connect to 149.154.167.51 443" в
+  // логах systemd-юнита раз за разом, при этом сам процесс исправно запущен и слушает порт.
+  // Список статический (не резолвится через getent, в отличие от api.telegram.org) — те же
+  // адреса встроены в исходники самого mtprotoproxy.py.
+  private static readonly TELEGRAM_DC_IPS = [
+    '149.154.175.50',
+    '149.154.167.51',
+    '149.154.175.100',
+    '149.154.167.91',
+    '149.154.171.5',
+    '149.154.161.144',
+    '91.108.4.136',
+    '149.154.165.109',
+  ];
+  // Отдельная метка (≠ BYPASS_FWMARK, ≠ TELEGRAM_FWMARK) — тот же приём, что и у
+  // setupTelegramRouting, но для другого потока (исходящие от mtproxy, не от backend'а) и
+  // с фиксированным списком IP вместо DNS.
+  private static readonly MTPROXY_FWMARK = '0x2c';
+  private static readonly MTPROXY_RULE_PRIORITY = 86;
+
+  async setupMtProxyRouting(selfServer: Server, bridge: Bridge): Promise<void> {
+    const connection = this.connectionParams(selfServer);
+    const ipsetName = `vpnmgr-mtp-${bridge.id.replace(/-/g, '').slice(0, 16)}`;
+    const fwmark = VpnProvisioningService.MTPROXY_FWMARK;
+
+    await this.sshService.withConnection(connection, async (ssh) => {
+      await this.sshService.execOrThrow(ssh, `which ipset >/dev/null 2>&1 || (apt-get update -y && apt-get install -y ipset)`);
+      await this.sshService.execOrThrow(ssh, `ipset create ${ipsetName} hash:net -exist`);
+      for (const ip of VpnProvisioningService.TELEGRAM_DC_IPS) {
+        await this.sshService.execOrThrow(ssh, `ipset add ${ipsetName} ${ip}/32 -exist`);
+      }
+
+      await this.sshService.execOrThrow(
+        ssh,
+        `ip rule show | grep -q "fwmark ${fwmark} lookup ${bridge.routeTable}" || ` +
+          `ip rule add fwmark ${fwmark} lookup ${bridge.routeTable} priority ${VpnProvisioningService.MTPROXY_RULE_PRIORITY}`,
+      );
+      await this.sshService.execOrThrow(
+        ssh,
+        `iptables -t mangle -C OUTPUT -m set --match-set ${ipsetName} dst -j MARK --set-mark ${fwmark} 2>/dev/null || ` +
+          `iptables -t mangle -A OUTPUT -m set --match-set ${ipsetName} dst -j MARK --set-mark ${fwmark}`,
+      );
+      await this.sshService.execOrThrow(
+        ssh,
+        `iptables -t nat -C POSTROUTING -o ${bridge.upstreamInterfaceName} -m mark --mark ${fwmark} -j MASQUERADE 2>/dev/null || ` +
+          `iptables -t nat -A POSTROUTING -o ${bridge.upstreamInterfaceName} -m mark --mark ${fwmark} -j MASQUERADE`,
+      );
+      // В отличие от setupTelegramRouting (трафик backend'а из Docker-контейнера — реально
+      // FORWARDED-пакеты) mtproxy — обычный systemd-процесс прямо на хосте: его исходящие
+      // пакеты и ответные пакеты от Telegram (адресованные обратно на IP self-сервера)
+      // проходят OUTPUT/INPUT, а не FORWARD — цепочка FORWARD тут вообще не участвует, и
+      // добавлять в неё правила не нужно (дефолтная политика OUTPUT/INPUT — ACCEPT).
+    });
+  }
 }
