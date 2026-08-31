@@ -243,6 +243,10 @@ function PortalStatusView({ token }: { token: string }) {
               <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-all' }}>
                 Вручную: сервер {status.mtProxy.server}, порт {status.mtProxy.port}, секрет {status.mtProxy.secret}
               </Typography>
+              <Alert severity="warning">
+                Удалите этот прокси из Telegram после регистрации и получения VPN — ссылка
+                действует 24 часа, после чего перестанет работать.
+              </Alert>
             </Stack>
           )}
         </Paper>
