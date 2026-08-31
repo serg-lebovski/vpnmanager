@@ -320,6 +320,11 @@ export function PeersPage() {
   const [error, setError] = useState<string | null>(null);
   const [qrPeer, setQrPeer] = useState<PeerEntity | null>(null);
   const [qrUrl, setQrUrl] = useState<string | null>(null);
+  // Форма создания раньше жила в постоянной боковой панели фиксированной ширины (320px) —
+  // на средних экранах она заметно поджимала таблицу peers (особенно колонку «Действия» с
+  // несколькими иконками — та начинала переноситься и выглядела неопрятно). Вынесена в
+  // диалог, чтобы таблица всегда занимала всю ширину страницы.
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
 
   // Если мост доступен и пользователь не выбрал сервер явно — создаём через мост по
   // умолчанию (это и есть весь смысл моста — обычные серверы прямым выбором не должны
@@ -359,6 +364,7 @@ export function PeersPage() {
       queryClient.invalidateQueries({ queryKey: ['peers'] });
       setForm(applyDefaultBridgeSelection({ protocol: 'wireguard', name: '' }));
       setError(null);
+      setCreateDialogOpen(false);
     },
     onError: (err) => setError(getErrorMessage(err, 'Не удалось создать peer')),
   });
@@ -503,7 +509,12 @@ export function PeersPage() {
 
   return (
     <Stack spacing={3}>
-      <Typography variant="h5">Peers (учётные записи VPN)</Typography>
+      <Stack direction="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" useFlexGap gap={2}>
+        <Typography variant="h5">Peers (учётные записи VPN)</Typography>
+        <Button variant="contained" onClick={() => setCreateDialogOpen(true)}>
+          Добавить peer
+        </Button>
+      </Stack>
 
       {isSuperAdmin && (
         <TextField
@@ -522,11 +533,9 @@ export function PeersPage() {
         </TextField>
       )}
 
-      <Stack direction={{ xs: 'column', md: 'row' }} spacing={3} alignItems="flex-start">
-        <Paper sx={{ p: 2, width: { xs: '100%', md: 320 }, flexShrink: 0 }}>
-          <Typography variant="subtitle1" mb={2}>
-            Новый peer
-          </Typography>
+      <Dialog open={createDialogOpen} onClose={() => setCreateDialogOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle>Новый peer</DialogTitle>
+        <DialogContent>
           <form onSubmit={handleSubmit}>
             <Stack spacing={1.5}>
               <TextField
@@ -674,9 +683,10 @@ export function PeersPage() {
               {error}
             </Alert>
           )}
-        </Paper>
+        </DialogContent>
+      </Dialog>
 
-        <Paper sx={{ p: 2, width: '100%', flex: 1, minWidth: 0 }}>
+      <Paper sx={{ p: 2, width: '100%' }}>
           <TextField
             size="small"
             label="Поиск (название, IP, сервер)"
@@ -760,8 +770,7 @@ export function PeersPage() {
             </TableBody>
           </Table>
           </TableContainer>
-        </Paper>
-      </Stack>
+      </Paper>
 
       <Dialog open={!!qrPeer} onClose={() => setQrPeer(null)}>
         <DialogTitle>QR-код: {qrPeer?.name}</DialogTitle>
