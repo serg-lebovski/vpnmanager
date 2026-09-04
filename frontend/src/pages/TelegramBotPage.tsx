@@ -28,7 +28,7 @@ import {
   Typography,
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { ChangeEvent, ReactNode, useEffect, useRef, useState } from 'react';
 import { getErrorMessage } from '../api/errors';
 import { fetchSettings, updateSettings } from '../api/settings';
 import {
@@ -62,6 +62,48 @@ function readFileAsDataUri(file: File): Promise<string> {
   });
 }
 
+// Плейсхолдер, который вставляет "Вставить картинку" (см. insertImagesAtCursor) прямо в
+// текст в месте курсора — та же схема, что и на бэкенде (см.
+// backend/src/telegram-bot/markdown-to-telegram-html.util.ts и telegram-bot.service.ts —
+// INLINE_IMAGE_TOKEN), N — индекс в images. Используется и здесь для превью списка постов,
+// чтобы админ видел картинку ровно там же, где её увидит бот.
+const INLINE_IMAGE_TOKEN = /\[\[img:(\d+)\]\]/g;
+
+// Рендерит body с плейсхолдерами как чередующиеся текст/картинки — для превью в списке уже
+// опубликованных постов ниже формы. Картинки без плейсхолдера (старые посты) идут отдельным
+// рядом под текстом, как и раньше.
+function renderPostPreview(body: string, images: string[]): { textNodes: ReactNode; trailingImages: string[] } {
+  const used = new Set<number>();
+  const parts: ReactNode[] = [];
+  let lastIndex = 0;
+  let key = 0;
+  for (const match of body.matchAll(INLINE_IMAGE_TOKEN)) {
+    const before = body.slice(lastIndex, match.index);
+    if (before.trim()) {
+      parts.push(<span key={key++}>{before}</span>);
+    }
+    const index = Number(match[1]);
+    used.add(index);
+    if (images[index]) {
+      parts.push(
+        <Box
+          key={key++}
+          component="img"
+          src={images[index]}
+          alt=""
+          sx={{ display: 'block', maxWidth: '100%', maxHeight: 200, borderRadius: 1, my: 0.5 }}
+        />,
+      );
+    }
+    lastIndex = match.index! + match[0].length;
+  }
+  const tail = body.slice(lastIndex);
+  if (tail.trim()) {
+    parts.push(<span key={key++}>{tail}</span>);
+  }
+  return { textNodes: parts, trailingImages: images.filter((_, i) => !used.has(i)) };
+}
+
 interface ContentSectionProps {
   description: string;
   items: TelegramContentPost[] | undefined;
@@ -74,7 +116,13 @@ interface ContentSectionProps {
 }
 
 // Общая форма+лента для новостей и инструкций — у них одинаковая структура контента
-// (заголовок+текст+картинки), различается только назначение и то, как их отдаёт бот.
+// (заголовок+текст+картинки), различается только назначение и то, как их отдаёт бот. Текст
+// поддерживает markdown (**жирный**, *курсив*, ~~зачёркнутый~~, `код`, [текст](ссылка)) — бот
+// конвертирует его в HTML-разметку Telegram при отправке (см. backend markdown-to-telegram-
+// html.util.ts). Картинки вставляются кнопкой прямо в место курсора — Telegram не умеет
+// показывать изображение "внутри" одного сообщения, поэтому фактически это отправка
+// последовательности сообщений (текст/картинка/текст/…) в том порядке, в каком они стоят
+// здесь в редакторе.
 function ContentSection({
   description,
   items,
@@ -89,20 +137,64 @@ function ContentSection({
   const [body, setBody] = useState('');
   const [images, setImages] = useState<string[]>([]);
   const [imageError, setImageError] = useState<string | null>(null);
+  const bodyRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const handleFiles = async (fileList: FileList | null) => {
-    if (!fileList) {
+  // Курсор берём из ЖИВОГО DOM-узла textarea (selectionStart/End) в момент клика — а не из
+  // React-состояния, которого для позиции курсора просто нет. Все новые файлы добавляются
+  // ОДНИМ обновлением state (а не по одному в цикле) — иначе индексы токенов разъехались бы:
+  // images.length, использованный для второго файла, всё ещё указывал бы на значение ДО
+  // добавления первого (React батчит setState).
+  const insertImagesAtCursor = async (fileList: FileList | null) => {
+    if (!fileList || fileList.length === 0) {
       return;
     }
     setImageError(null);
+    const newImages: string[] = [];
     for (const file of Array.from(fileList)) {
       if (file.size > MAX_IMAGE_BYTES) {
         setImageError(`Файл «${file.name}» больше 5 МБ — пропущен.`);
         continue;
       }
-      const dataUri = await readFileAsDataUri(file);
-      setImages((prev) => [...prev, dataUri]);
+      newImages.push(await readFileAsDataUri(file));
     }
+    if (newImages.length === 0) {
+      return;
+    }
+    const startIndex = images.length;
+    const tokens = newImages.map((_, i) => `[[img:${startIndex + i}]]`).join('\n');
+    const textarea = bodyRef.current;
+    const start = textarea?.selectionStart ?? body.length;
+    const end = textarea?.selectionEnd ?? body.length;
+    const before = body.slice(0, start);
+    const after = body.slice(end);
+    const insertion = `${before && !before.endsWith('\n') ? '\n' : ''}${tokens}\n`;
+    setBody(before + insertion + after);
+    setImages((prev) => [...prev, ...newImages]);
+    const caretPos = (before + insertion).length;
+    requestAnimationFrame(() => {
+      textarea?.focus();
+      textarea?.setSelectionRange(caretPos, caretPos);
+    });
+  };
+
+  // Убирает саму картинку И её плейсхолдер из текста, сдвигая индексы всех токенов ПОСЛЕ
+  // удалённого на 1 вниз — иначе после удаления они указывали бы не на те картинки.
+  const removeImage = (index: number) => {
+    setImages((prev) => prev.filter((_, i) => i !== index));
+    setBody((prev) =>
+      prev
+        .replace(new RegExp(`\\[\\[img:${index}\\]\\]\\n?`, 'g'), '')
+        .replace(/\[\[img:(\d+)\]\]/g, (match, n: string) => (Number(n) > index ? `[[img:${Number(n) - 1}]]` : match)),
+    );
+  };
+
+  const handleMdUpload = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) {
+      return;
+    }
+    setBody(await file.text());
   };
 
   const handleSubmit = () => {
@@ -121,17 +213,25 @@ function ContentSection({
       <Stack spacing={1.5} sx={{ maxWidth: 480, mb: 3 }}>
         <TextField label="Заголовок (необязательно)" value={title} onChange={(e) => setTitle(e.target.value)} />
         <TextField
-          label="Текст (ссылки можно вставлять прямо в текст — бот покажет их кликабельными)"
+          label="Текст"
+          helperText="Markdown: **жирный**, *курсив*, ~~зачёркнутый~~, `код`, [текст](ссылка). Обычные ссылки бот тоже сам подсвечивает кликабельными."
           multiline
-          minRows={3}
-          maxRows={10}
+          minRows={5}
+          maxRows={16}
           value={body}
           onChange={(e) => setBody(e.target.value)}
+          inputRef={bodyRef}
         />
-        <Button component="label" variant="outlined" sx={{ alignSelf: 'flex-start' }}>
-          Прикрепить картинки
-          <input type="file" accept="image/*" multiple hidden onChange={(e) => handleFiles(e.target.files)} />
-        </Button>
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          <Button component="label" variant="outlined" size="small">
+            Вставить картинку
+            <input type="file" accept="image/*" multiple hidden onChange={(e) => insertImagesAtCursor(e.target.files)} />
+          </Button>
+          <Button component="label" variant="outlined" size="small">
+            Загрузить .md
+            <input type="file" accept=".md,.markdown,text/markdown,text/plain" hidden onChange={handleMdUpload} />
+          </Button>
+        </Stack>
         {images.length > 0 && (
           <Stack direction="row" spacing={1} flexWrap="wrap">
             {images.map((img, index) => (
@@ -139,7 +239,7 @@ function ContentSection({
                 <Box component="img" src={img} alt="" sx={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 1 }} />
                 <IconButton
                   size="small"
-                  onClick={() => setImages((prev) => prev.filter((_, i) => i !== index))}
+                  onClick={() => removeImage(index)}
                   sx={{ position: 'absolute', top: -10, right: -10, bgcolor: 'background.paper', boxShadow: 1 }}
                 >
                   <CloseIcon fontSize="small" />
@@ -154,35 +254,38 @@ function ContentSection({
         </Button>
       </Stack>
       <Stack spacing={1.5}>
-        {items?.map((post) => (
-          <Paper key={post.id} variant="outlined" sx={{ p: 1.5 }}>
-            <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
-              <Box sx={{ minWidth: 0 }}>
-                {post.title && (
-                  <Typography variant="subtitle2" sx={{ wordBreak: 'break-word' }}>
-                    {post.title}
+        {items?.map((post) => {
+          const { textNodes, trailingImages } = renderPostPreview(post.body, post.images);
+          return (
+            <Paper key={post.id} variant="outlined" sx={{ p: 1.5 }}>
+              <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
+                <Box sx={{ minWidth: 0 }}>
+                  {post.title && (
+                    <Typography variant="subtitle2" sx={{ wordBreak: 'break-word' }}>
+                      {post.title}
+                    </Typography>
+                  )}
+                  <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                    {textNodes}
                   </Typography>
-                )}
-                <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                  {post.body}
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  {new Date(post.createdAt).toLocaleString()}
-                </Typography>
-              </Box>
-              <Button size="small" color="error" onClick={() => onDelete(post.id)} disabled={isDeleting} sx={{ flexShrink: 0 }}>
-                Удалить
-              </Button>
-            </Stack>
-            {post.images.length > 0 && (
-              <Stack direction="row" spacing={1} mt={1} flexWrap="wrap">
-                {post.images.map((img, index) => (
-                  <Box key={index} component="img" src={img} alt="" sx={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 1 }} />
-                ))}
+                  <Typography variant="caption" color="text.secondary">
+                    {new Date(post.createdAt).toLocaleString()}
+                  </Typography>
+                </Box>
+                <Button size="small" color="error" onClick={() => onDelete(post.id)} disabled={isDeleting} sx={{ flexShrink: 0 }}>
+                  Удалить
+                </Button>
               </Stack>
-            )}
-          </Paper>
-        ))}
+              {trailingImages.length > 0 && (
+                <Stack direction="row" spacing={1} mt={1} flexWrap="wrap">
+                  {trailingImages.map((img, index) => (
+                    <Box key={index} component="img" src={img} alt="" sx={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 1 }} />
+                  ))}
+                </Stack>
+              )}
+            </Paper>
+          );
+        })}
         {!isLoading && (items?.length ?? 0) === 0 && (
           <Typography variant="body2" color="text.secondary">
             {emptyText}

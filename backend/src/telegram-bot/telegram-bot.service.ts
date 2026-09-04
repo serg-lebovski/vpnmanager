@@ -8,10 +8,19 @@ import { PeerDeviceType, LogLevel, TelegramContentKind, TelegramRegistrationStat
 import { NotificationsService } from '../notifications/notifications.service';
 import { Organization } from '../organizations/organization.entity';
 import { PeersService } from '../peers/peers.service';
+import { markdownToTelegramHtml } from './markdown-to-telegram-html.util';
 import { findOrganizationByQuery } from './organization-lookup.util';
 import { TelegramBotLog } from './telegram-bot-log.entity';
+import { TelegramContentPost } from './telegram-content-post.entity';
 import { TelegramContentService } from './telegram-content.service';
 import { TelegramRegistration } from './telegram-registration.entity';
+
+// Плейсхолдер, который вставляет редактор новостей/инструкций (TelegramBotPage.tsx) прямо
+// в текст поста в месте, куда администратор поставил картинку — см. ContentSection.
+// insertImageAtCursor. N — индекс в TelegramContentPost.images. Старые посты (созданные до
+// этой фичи) плейсхолдеров не содержат — их картинки просто уходят следом за текстом целиком,
+// тем же способом, что и раньше (см. sendContentPost ниже).
+const INLINE_IMAGE_TOKEN = /\[\[img:(\d+)\]\]/g;
 
 const POLL_INTERVAL_MS = 3_000;
 const API_TIMEOUT_MS = 10_000;
@@ -198,9 +207,7 @@ export class TelegramBotService {
 
   // Новости — последние NEWS_FEED_LIMIT штук (лента может расти неограниченно, отправлять
   // всё целиком каждый раз не нужно); инструкции — все сразу (limit=undefined, их обычно
-  // немного, и это не растущая лента, а справочный набор карточек). Каждый пост — отдельное
-  // текстовое сообщение (без ограничения на длину caption) плюс картинки отдельными
-  // сообщениями following — тот же sendPhotoToChat, что и для QR-кода.
+  // немного, и это не растущая лента, а справочный набор карточек).
   private async sendContentFeed(
     chatId: string,
     kind: TelegramContentKind,
@@ -213,14 +220,61 @@ export class TelegramBotService {
       return;
     }
     for (const post of posts) {
-      const text = post.title ? `${post.title}\n\n${post.body}` : post.body;
-      await this.notificationsService.sendToChat(chatId, text);
-      for (const image of post.images) {
-        const parsed = this.parseImageDataUri(image);
-        if (parsed) {
-          await this.notificationsService.sendPhotoToChat(chatId, parsed.buffer, undefined, parsed.mimeType);
-        }
+      await this.sendContentPost(chatId, post);
+    }
+  }
+
+  // Заголовок оформляется жирным той же markdown→HTML веткой, что и тело (см.
+  // markdownToTelegramHtml) — единый конвейер вместо отдельного форматирования заголовка.
+  // Тело режется по плейсхолдерам [[img:N]] (см. ContentSection.insertImageAtCursor во
+  // фронтенде) на чередующиеся текстовые/картиночные сегменты — Telegram не умеет вставлять
+  // изображение "внутрь" одного текстового сообщения, поэтому визуальный эффект "картинка
+  // среди текста" достигается последовательностью отдельных сообщений в нужном порядке.
+  // Картинки, на которые в тексте нет плейсхолдера (посты, созданные до этой фичи, или
+  // просто "прикреплённые" без точной позиции), уходят следом, как и раньше.
+  private async sendContentPost(chatId: string, post: TelegramContentPost): Promise<void> {
+    const titlePrefix = post.title ? `**${post.title}**\n\n` : '';
+    const fullBody = titlePrefix + post.body;
+
+    const usedImageIndexes = new Set<number>();
+    const segments: Array<{ text: string } | { imageIndex: number }> = [];
+    let lastIndex = 0;
+    for (const match of fullBody.matchAll(INLINE_IMAGE_TOKEN)) {
+      const textBefore = fullBody.slice(lastIndex, match.index);
+      if (textBefore.trim()) {
+        segments.push({ text: textBefore });
       }
+      const imageIndex = Number(match[1]);
+      segments.push({ imageIndex });
+      usedImageIndexes.add(imageIndex);
+      lastIndex = match.index! + match[0].length;
+    }
+    const tail = fullBody.slice(lastIndex);
+    if (tail.trim()) {
+      segments.push({ text: tail });
+    }
+
+    for (const segment of segments) {
+      if ('text' in segment) {
+        const html = markdownToTelegramHtml(segment.text);
+        if (html) {
+          await this.notificationsService.sendToChat(chatId, html, undefined, 'HTML');
+        }
+      } else {
+        await this.sendPostImage(chatId, post.images[segment.imageIndex]);
+      }
+    }
+    for (let i = 0; i < post.images.length; i++) {
+      if (!usedImageIndexes.has(i)) {
+        await this.sendPostImage(chatId, post.images[i]);
+      }
+    }
+  }
+
+  private async sendPostImage(chatId: string, dataUri: string | undefined): Promise<void> {
+    const parsed = dataUri && this.parseImageDataUri(dataUri);
+    if (parsed) {
+      await this.notificationsService.sendPhotoToChat(chatId, parsed.buffer, undefined, parsed.mimeType);
     }
   }
 

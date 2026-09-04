@@ -97,9 +97,14 @@ export class NotificationsService {
   // на каждого получателя отдельно, чтобы один заблокировавший бота не сорвал остальных).
   // Возвращает message_id отправленного сообщения — нужен рассылке (telegram-bot/), чтобы
   // потом иметь возможность закрепить/удалить именно это сообщение в конкретном чате.
-  async sendToChat(chatId: string, text: string, replyMarkup?: unknown): Promise<number> {
+  // parseMode='HTML' — для постов новостей/инструкций (см. TelegramBotService.
+  // sendContentPost), которые администратор пишет в Markdown, а бот отправляет уже
+  // сконвертированным в поддерживаемый Telegram HTML-подмножество (см.
+  // markdown-to-telegram-html.util.ts). Остальные вызовы (обычные ответы бота) не передают
+  // этот параметр — обычный plain text, как и раньше.
+  async sendToChat(chatId: string, text: string, replyMarkup?: unknown, parseMode?: 'HTML'): Promise<number> {
     const token = await this.requireBotToken();
-    const body = await this.post(token, 'sendMessage', { chat_id: chatId, text, reply_markup: replyMarkup });
+    const body = await this.post(token, 'sendMessage', { chat_id: chatId, text, reply_markup: replyMarkup, parse_mode: parseMode });
     return (body as { result: { message_id: number } }).result.message_id;
   }
 
