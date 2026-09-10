@@ -517,6 +517,27 @@ export class VpnProvisioningService {
         ssh,
         `sysctl -w net.ipv4.ip_forward=1 && (grep -q net.ipv4.ip_forward /etc/sysctl.d/99-vpnmanager.conf 2>/dev/null || echo net.ipv4.ip_forward=1 >> /etc/sysctl.d/99-vpnmanager.conf)`,
       );
+
+      // TCP MSS clamping для трафика через upstream-туннель (в ОБЕ стороны — SYN клиента и
+      // SYN-ACK сервера). Мост — это туннель поверх туннеля: клиент уже пришёл к нам через
+      // WG/AWG, и его трафик мы заворачиваем ещё в один WG/AWG до upstream. Реальный путь до
+      // upstream почти всегда узнее 1500 (BRIDGE_UPSTREAM_MTU=1280 на самом туннеле,
+      // см. base-wireguard-like.driver.ts). Без клампинга старые/без явного MTU клиентские
+      // конфиги договариваются об MSS по своему 1420 — их исходящий трафик проходит
+      // (пакеты клиента и так ≤1280), а обратный (ответы серверов размером под 1420) молча
+      // теряется в upstream-туннеле → "половина конфигов не работает". Клампинг до PMTU
+      // выправляет это на лету, БЕЗ перевыпуска уже розданных конфигов. Идемпотентно (-C).
+      await this.sshService.execOrThrow(
+        ssh,
+        `iptables -t mangle -C FORWARD -o ${upstreamInterfaceName} -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || ` +
+          `iptables -t mangle -A FORWARD -o ${upstreamInterfaceName} -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu`,
+      );
+      await this.sshService.execOrThrow(
+        ssh,
+        `iptables -t mangle -C FORWARD -i ${upstreamInterfaceName} -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || ` +
+          `iptables -t mangle -A FORWARD -i ${upstreamInterfaceName} -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu`,
+      );
+
       for (const { networkCidr, interfaceName } of clientInterfaces) {
         await this.sshService.execOrThrow(
           ssh,

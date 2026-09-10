@@ -27,6 +27,18 @@ interface ParsedPeerBlock {
 // Здесь ищем такие контейнеры по имени, если на хосте по стандартным путям ничего не нашли.
 const AMNEZIA_CONTAINER_CONF_SEARCH = `find /opt/amnezia -maxdepth 2 -iname '*.conf' 2>/dev/null`;
 
+// MTU upstream-туннеля моста (connectAsClient). wg-quick/awg-quick по умолчанию ставит
+// 1420 (= MTU интерфейса до endpoint'а минус 80), но upstream моста — это туннель ПОВЕРХ
+// того, через что клиент уже пришёл к нам: реальный путь до upstream-сервера часто узнее
+// 1500 (обфускация AmneziaWG, промежуточные туннели у самого upstream-провайдера и т.п.).
+// Поймано вживую (2026-09-10): интерфейс говорит MTU 1420, а пакеты крупнее ~1400 через
+// него молча теряются — клиентские конфиги с MTU=1280 работают, а старые/без MTU
+// договариваются об MSS по 1420, и их обратный трафик обрубается ("половина конфигов не
+// работает"). 1280 (минимум для IPv6, типовой безопасный дефолт у VPN-провайдеров) —
+// одинаково с клиентскими интерфейсами моста, весь тракт клиент→bridge→upstream
+// консистентен. MSS-клампинг в setupBridgeNat опирается на это значение.
+const BRIDGE_UPSTREAM_MTU = 1280;
+
 /**
  * Общая логика для протоколов, совместимых по формату с WireGuard (сам WireGuard и AmneziaWG).
  * Отличаются только бинарники/пути установки и наличием параметров обфускации.
@@ -435,7 +447,13 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
     // клиентов моста. Вместо этого маршрут через upstream добавляется вручную в
     // отдельную таблицу (см. ниже) — в основной таблице собственная связность
     // self-сервера остаётся нетронутой.
-    const lines: string[] = ['[Interface]', `PrivateKey = ${config.privateKey}`, `Address = ${config.address}`, 'Table = off'];
+    const lines: string[] = [
+      '[Interface]',
+      `PrivateKey = ${config.privateKey}`,
+      `Address = ${config.address}`,
+      `MTU = ${BRIDGE_UPSTREAM_MTU}`,
+      'Table = off',
+    ];
     if (config.dns) {
       lines.push(`DNS = ${config.dns}`);
     }
