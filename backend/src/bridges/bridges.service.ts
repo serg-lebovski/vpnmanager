@@ -443,17 +443,24 @@ export class BridgesService {
     const affected = await this.bridgesRepository.find({
       where: { upstreamServerProtocolId: In(deadServerProtocolIds) },
     });
+    // Исключаем ВСЕ client-протоколы ЛЮБОГО self-сервера (не только clientProtocolIds —
+    // две собственные протоколы ЭТОГО моста), иначе кандидатом мог стать client-протокол
+    // ДРУГОГО моста на том же self-сервере — тот же физический хост, тот же единственный
+    // внешний IP. Поймано вживую (2026-10-02): после удаления обоих внешних upstream-
+    // серверов альтернатива "нашлась" — client-протокол соседнего моста на собственном
+    // self-сервере — upstream моста стал указывать САМ НА СЕБЯ (замкнутый круг, трафик
+    // никуда не выходит, "подключился, но без интернета"), и без единой ошибки в логе.
+    const { selfServerIds } = await this.getSelfServerContext();
     for (const bridge of affected) {
       try {
         const current = await this.serverProtocolsRepository.findOneOrFail({
           where: { id: bridge.upstreamServerProtocolId! },
         });
-        const clientProtocolIds = this.clientProtocolIds(bridge);
         const candidates = await this.serverProtocolsRepository.find({
           where: { protocol: current.protocol, status: ServerProtocolStatus.ACTIVE },
         });
         const alternative = candidates.find(
-          (sp) => !deadServerProtocolIds.includes(sp.id) && !clientProtocolIds.includes(sp.id),
+          (sp) => !deadServerProtocolIds.includes(sp.id) && !selfServerIds.has(sp.serverId),
         );
         if (alternative) {
           this.logger.log(`Сервер удаляется — мост "${bridge.name}" переключается на другой upstream`);
@@ -729,10 +736,13 @@ export class BridgesService {
       relations: ['server'],
     });
 
-    const clientProtocolIds = this.clientProtocolIds(bridge);
+    // См. комментарий в reassignUpstreamAwayFrom — исключаем ВСЕ client-протоколы ЛЮБОГО
+    // self-сервера, не только двух собственных протоколов ЭТОГО моста, иначе автобаланс
+    // мог бы "переключить" upstream на client-протокол соседнего моста того же хоста.
+    const { selfServerIds } = await this.getSelfServerContext();
     const loads = await Promise.all(
       candidates
-        .filter((serverProtocol) => !clientProtocolIds.includes(serverProtocol.id))
+        .filter((serverProtocol) => !selfServerIds.has(serverProtocol.serverId))
         .map(async (serverProtocol) => ({
           serverProtocol,
           load: await this.computeLoad(serverProtocol),

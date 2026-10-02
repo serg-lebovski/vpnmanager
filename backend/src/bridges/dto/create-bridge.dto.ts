@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   ArrayMinSize,
@@ -35,6 +35,8 @@ export class BridgeClientProtocolInput {
 // САМОГО ПЕРВОГО моста в системе (см. BridgesService.create: дальше self-сервер уже
 // существует и переиспользуется для всех следующих мостов, эти поля игнорируются).
 export class SelfServerCredentialsInput {
+  // См. CreateServerDto.host — та же защита от невидимого хвостового пробела при вставке IP.
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
   @MinLength(1)
   host: string;
