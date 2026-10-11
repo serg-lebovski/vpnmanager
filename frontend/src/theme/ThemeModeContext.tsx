@@ -29,7 +29,27 @@ export function ThemeModeProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(STORAGE_KEY, mode);
   }, [mode]);
 
-  const theme = useMemo(() => createTheme({ palette: { mode } }), [mode]);
+  // Компактные дефолты для полей/кнопок/таблиц — раньше в разметке size="small" расставляли
+  // вручную на каждом TextField/Button отдельно (где-то забывали, из-за этого плотность
+  // "гуляла" от страницы к странице); теперь это дефолт темы — локальный size="small" в
+  // разметке страниц всё так же работает (явный проп всегда переопределяет тему), просто
+  // больше не обязателен для единообразной компактности.
+  const theme = useMemo(
+    () =>
+      createTheme({
+        palette: { mode },
+        components: {
+          MuiTextField: { defaultProps: { size: 'small' } },
+          MuiButton: { defaultProps: { size: 'small' } },
+          MuiIconButton: { defaultProps: { size: 'small' } },
+          MuiSelect: { defaultProps: { size: 'small' } },
+          MuiFormControl: { defaultProps: { size: 'small' } },
+          MuiChip: { defaultProps: { size: 'small' } },
+          MuiTableCell: { styleOverrides: { root: { paddingTop: 6, paddingBottom: 6 } } },
+        },
+      }),
+    [mode],
+  );
   const value = useMemo<ThemeModeContextValue>(
     () => ({ mode, toggleMode: () => setMode((prev) => (prev === 'light' ? 'dark' : 'light')) }),
     [mode],
