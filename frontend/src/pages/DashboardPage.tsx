@@ -17,6 +17,7 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  TableSortLabel,
   Tooltip,
   Typography,
 } from '@mui/material';
@@ -93,6 +94,12 @@ function formatEndpointIp(endpoint: string | null): string {
 const NETWORK_REFERENCE_BPS = (100 * 1024 * 1024) / 8;
 
 const protocolLabels: Record<string, string> = { wireguard: 'WireGuard', amneziawg: 'AmneziaWG' };
+
+// Сортировка таблицы "Трафик активных peers" — 'speed' считает по сумме rxBps+txBps (обе
+// колонки ↓/↑ ведут на один и тот же критерий, отдельно сортировать "только скачивание"
+// или "только отдачу" не просили), 'online' — по latestHandshake (свежее рукопожатие =
+// "сейчас в сети", см. isRecentlyOnline/formatLastHandshake).
+type TrafficSortKey = 'name' | 'server' | 'protocol' | 'speed' | 'online';
 
 function gaugeColor(percent: number | null): 'success' | 'warning' | 'error' | 'inherit' {
   if (percent === null) return 'inherit';
@@ -491,6 +498,8 @@ export function DashboardPage() {
   const [peers, setPeers] = useState<DashboardPeerStats[]>([]);
   const [connected, setConnected] = useState(false);
   const [timestamp, setTimestamp] = useState<string | null>(null);
+  const [trafficSortKey, setTrafficSortKey] = useState<TrafficSortKey>('speed');
+  const [trafficSortDir, setTrafficSortDir] = useState<'asc' | 'desc'>('desc');
 
   useEffect(() => {
     const socket = connectDashboardSocket((snapshot) => {
@@ -510,6 +519,37 @@ export function DashboardPage() {
   const nowMs = timestamp ? new Date(timestamp).getTime() : Date.now();
   const onlineServers = servers.filter((s) => s.online).length;
   const onlinePeers = peers.filter((p) => isRecentlyOnline(p.latestHandshake, nowMs)).length;
+
+  const sortedPeers = useMemo(() => {
+    const sorted = [...peers].sort((a, b) => {
+      switch (trafficSortKey) {
+        case 'speed':
+          return a.rxBps + a.txBps - (b.rxBps + b.txBps);
+        case 'online':
+          return a.latestHandshake - b.latestHandshake;
+        case 'protocol':
+          return (protocolLabels[a.protocol] ?? a.protocol).localeCompare(protocolLabels[b.protocol] ?? b.protocol);
+        case 'server':
+          return a.serverName.localeCompare(b.serverName);
+        case 'name':
+        default:
+          return a.name.localeCompare(b.name);
+      }
+    });
+    return trafficSortDir === 'asc' ? sorted : sorted.reverse();
+  }, [peers, trafficSortKey, trafficSortDir]);
+
+  function toggleTrafficSort(key: TrafficSortKey) {
+    if (trafficSortKey === key) {
+      setTrafficSortDir((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setTrafficSortKey(key);
+      // "Скорость"/"В сети" естественнее смотреть от большего к меньшему при первом клике
+      // (кто качает активнее всех/кто онлайн — сверху); "Название"/"Протокол"/"Сервер" —
+      // наоборот, по алфавиту, как и ожидается от таких колонок.
+      setTrafficSortDir(key === 'speed' || key === 'online' ? 'desc' : 'asc');
+    }
+  }
 
   return (
     <Stack spacing={3}>
@@ -562,18 +602,42 @@ export function DashboardPage() {
         <Table size="small">
           <TableHead>
             <TableRow>
-              <TableCell>Название</TableCell>
-              <TableCell>Сервер</TableCell>
-              <TableCell>Протокол</TableCell>
-              <TableCell>↓ Скачивание</TableCell>
-              <TableCell>↑ Отдача</TableCell>
+              <TableCell sortDirection={trafficSortKey === 'name' ? trafficSortDir : false}>
+                <TableSortLabel active={trafficSortKey === 'name'} direction={trafficSortKey === 'name' ? trafficSortDir : 'asc'} onClick={() => toggleTrafficSort('name')}>
+                  Название
+                </TableSortLabel>
+              </TableCell>
+              <TableCell sortDirection={trafficSortKey === 'server' ? trafficSortDir : false}>
+                <TableSortLabel active={trafficSortKey === 'server'} direction={trafficSortKey === 'server' ? trafficSortDir : 'asc'} onClick={() => toggleTrafficSort('server')}>
+                  Сервер
+                </TableSortLabel>
+              </TableCell>
+              <TableCell sortDirection={trafficSortKey === 'protocol' ? trafficSortDir : false}>
+                <TableSortLabel active={trafficSortKey === 'protocol'} direction={trafficSortKey === 'protocol' ? trafficSortDir : 'asc'} onClick={() => toggleTrafficSort('protocol')}>
+                  Протокол
+                </TableSortLabel>
+              </TableCell>
+              <TableCell sortDirection={trafficSortKey === 'speed' ? trafficSortDir : false}>
+                <TableSortLabel active={trafficSortKey === 'speed'} direction={trafficSortKey === 'speed' ? trafficSortDir : 'desc'} onClick={() => toggleTrafficSort('speed')}>
+                  ↓ Скачивание
+                </TableSortLabel>
+              </TableCell>
+              <TableCell sortDirection={trafficSortKey === 'speed' ? trafficSortDir : false}>
+                <TableSortLabel active={trafficSortKey === 'speed'} direction={trafficSortKey === 'speed' ? trafficSortDir : 'desc'} onClick={() => toggleTrafficSort('speed')}>
+                  ↑ Отдача
+                </TableSortLabel>
+              </TableCell>
               <TableCell>Всего получено / отправлено</TableCell>
-              <TableCell>Последнее рукопожатие</TableCell>
+              <TableCell sortDirection={trafficSortKey === 'online' ? trafficSortDir : false}>
+                <TableSortLabel active={trafficSortKey === 'online'} direction={trafficSortKey === 'online' ? trafficSortDir : 'desc'} onClick={() => toggleTrafficSort('online')}>
+                  Последнее рукопожатие
+                </TableSortLabel>
+              </TableCell>
               <TableCell>IP-адрес клиента</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
-            {peers.map((peer) => (
+            {sortedPeers.map((peer) => (
               <TableRow key={peer.peerId}>
                 <TableCell>{peer.name}</TableCell>
                 <TableCell>{peer.serverName}</TableCell>
