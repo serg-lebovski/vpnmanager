@@ -468,6 +468,22 @@ export class BridgesService {
           await this.setUpstream(bridge.id, alternative.id);
         } else {
           this.logger.warn(`Сервер удаляется — для моста "${bridge.name}" не нашлось альтернативного upstream`);
+          // Раньше здесь только логировали предупреждение — сам bridge.status оставался
+          // прежним (обычно ACTIVE от последнего успешного переключения). Поймано вживую
+          // (2026-10-11): удаление/переустановка protocol'а единственного внешнего upstream-
+          // сервера молча обрывало ссылку (upstreamServerProtocolId → NULL через ON DELETE
+          // SET NULL ПОСЛЕ этого вызова), а статус моста продолжал показывать ACTIVE —
+          // админ переключал upstream заново через UI, видел "успех" в логе, но при
+          // следующем таком же удалении/переустановке всё повторялось, и выглядело так,
+          // будто переключение "не сохраняется". Явно помечаем мост ERROR, чтобы это было
+          // видно в UI, а не только строкой в журнале, которую легко пропустить.
+          bridge.status = BridgeStatus.ERROR;
+          bridge.lastError = 'Upstream-сервер удалён, альтернативы не нашлось — выберите upstream вручную';
+          // Явно, не дожидаясь ON DELETE SET NULL от каскада (сработает только ПОСЛЕ того,
+          // как вызывающий код реально удалит сам ServerProtocol/Server) — бронируем
+          // согласованное состояние прямо сейчас, а не полагаемся на порядок операций снаружи.
+          bridge.upstreamServerProtocolId = null;
+          await this.bridgesRepository.save(bridge);
           this.bridgeLogService.log(
             LogLevel.WARN,
             'Сервер-upstream удаляется — альтернативы не нашлось, мост останется без upstream',
