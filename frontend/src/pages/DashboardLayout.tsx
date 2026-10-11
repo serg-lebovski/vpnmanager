@@ -224,7 +224,25 @@ export function DashboardLayout() {
       ) : (
         <Box
           component="nav"
-          sx={{ width: DRAWER_WIDTH, flexShrink: 0, borderRight: 1, borderColor: 'divider', bgcolor: 'background.paper' }}
+          sx={{
+            width: DRAWER_WIDTH,
+            flexShrink: 0,
+            borderRight: 1,
+            borderColor: 'divider',
+            bgcolor: 'background.paper',
+            // Без этого сайдбар растягивался на высоту ВСЕГО flex-контейнера (по умолчанию
+            // align-items: stretch), а она равна высоте самой длинной страницы справа —
+            // на страницах с большой таблицей (Peers, Мост) нижние пункты меню
+            // ("Настройки", "Журнал действий") уезжали на тысячи пикселей вниз за пределы
+            // видимой области вместо того, чтобы остаться закреплёнными на экране.
+            // Пойманный вживую случай: пользователь физически не мог "попасть в
+            // настройки" — пункт существовал в DOM, но визуально был недостижим без
+            // прокрутки всей страницы до конца.
+            position: 'sticky',
+            top: 0,
+            height: '100vh',
+            overflowY: 'auto',
+          }}
         >
           {sidebarContent}
         </Box>
