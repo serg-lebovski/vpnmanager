@@ -24,6 +24,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { fetchOrganizations } from '../api/organizations';
 import { fetchServers } from '../api/servers';
+import { StatCard } from '../components/StatCard';
 import {
   connectDashboardSocket,
   DashboardPeerStats,
@@ -507,6 +508,8 @@ export function DashboardPage() {
   // Время сервера из самого снапшота — см. formatLastHandshake/isRecentlyOnline выше про то,
   // почему не Date.now() браузера.
   const nowMs = timestamp ? new Date(timestamp).getTime() : Date.now();
+  const onlineServers = servers.filter((s) => s.online).length;
+  const onlinePeers = peers.filter((p) => isRecentlyOnline(p.latestHandshake, nowMs)).length;
 
   return (
     <Stack spacing={3}>
@@ -518,6 +521,14 @@ export function DashboardPage() {
           color={connected ? 'success' : 'default'}
         />
       </Stack>
+
+      <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+        <StatCard label="Серверов" value={servers.length} />
+        <StatCard label="Серверов онлайн" value={onlineServers} color={onlineServers === servers.length ? 'success.main' : 'warning.main'} />
+        <StatCard label="Активных peers" value={peers.length} />
+        <StatCard label="Сейчас в сети" value={onlinePeers} color="success.main" />
+      </Stack>
+
       {!connected && (
         <Alert severity="info">
           Устанавливаем соединение для обновлений в реальном времени... Если сообщение не исчезает — проверьте, что

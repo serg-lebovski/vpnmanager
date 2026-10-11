@@ -37,6 +37,7 @@ import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { fetchBridges } from '../api/bridges';
 import { getErrorMessage } from '../api/errors';
 import { fetchOrganizations } from '../api/organizations';
+import { StatCard } from '../components/StatCard';
 import {
   CreatePeerInput,
   createPeer,
@@ -507,6 +508,9 @@ export function PeersPage() {
     return rows;
   }, [visiblePeers]);
 
+  const activePeersCount = peers?.filter((p) => p.status === 'active').length ?? 0;
+  const revokedPeersCount = peers?.filter((p) => p.status === 'revoked').length ?? 0;
+
   return (
     <Stack spacing={3}>
       <Stack direction="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" useFlexGap gap={2}>
@@ -514,6 +518,12 @@ export function PeersPage() {
         <Button variant="contained" onClick={() => setCreateDialogOpen(true)}>
           Добавить peer
         </Button>
+      </Stack>
+
+      <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+        <StatCard label="Всего peers" value={peers?.length ?? 0} />
+        <StatCard label="Активных" value={activePeersCount} color="success.main" />
+        <StatCard label="Отозванных" value={revokedPeersCount} color={revokedPeersCount > 0 ? 'warning.main' : 'text.primary'} />
       </Stack>
 
       {isSuperAdmin && (

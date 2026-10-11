@@ -1,5 +1,4 @@
 import {
-  AppBar,
   Box,
   Divider,
   Drawer,
@@ -20,6 +19,7 @@ import Brightness4Icon from '@mui/icons-material/Brightness4';
 import Brightness7Icon from '@mui/icons-material/Brightness7';
 import HistoryIcon from '@mui/icons-material/History';
 import HubIcon from '@mui/icons-material/Hub';
+import LogoutIcon from '@mui/icons-material/Logout';
 import MenuIcon from '@mui/icons-material/Menu';
 import DnsIcon from '@mui/icons-material/Dns';
 import BusinessIcon from '@mui/icons-material/Business';
@@ -28,8 +28,9 @@ import PeopleIcon from '@mui/icons-material/People';
 import SettingsIcon from '@mui/icons-material/Settings';
 import SpaceDashboardIcon from '@mui/icons-material/SpaceDashboard';
 import TelegramIcon from '@mui/icons-material/Telegram';
-import { ComponentType, useState } from 'react';
-import { Link as RouterLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { ComponentType, useEffect, useState } from 'react';
+import { Link as RouterLink, Outlet, useLocation } from 'react-router-dom';
+import { checkBackendHealth } from '../api/health';
 import { useAuth } from '../auth/AuthContext';
 import { useThemeMode } from '../theme/ThemeModeContext';
 
@@ -40,7 +41,8 @@ const roleLabels: Record<string, string> = {
   engineer: 'Инженер',
 };
 
-const DRAWER_WIDTH = 216;
+const DRAWER_WIDTH = 240;
+const STATUS_POLL_MS = 15_000;
 
 interface NavItem {
   path: string;
@@ -63,21 +65,60 @@ const NAV_ITEMS: NavItem[] = [
   { path: '/users', label: 'Пользователи', icon: ManageAccountsIcon, roles: ['super_admin', 'org_admin'] },
 ];
 
+// Отдельные от основной навигации — служебные разделы, в самом низу панели (тот же
+// паттерн, что и в референсе: "Настройки"/"Партнёрка" отдельным блоком под основным меню).
+const FOOTER_ITEMS: NavItem[] = [
+  { path: '/settings', label: 'Настройки', icon: SettingsIcon, roles: ['super_admin'] },
+  { path: '/audit-log', label: 'Журнал действий', icon: HistoryIcon, roles: ['super_admin'] },
+];
+
+function StatusDot({ ok }: { ok: boolean }) {
+  return (
+    <Box
+      sx={{
+        width: 8,
+        height: 8,
+        borderRadius: '50%',
+        bgcolor: ok ? 'success.main' : 'error.main',
+        boxShadow: ok ? '0 0 6px' : 'none',
+        flexShrink: 0,
+      }}
+    />
+  );
+}
+
 export function DashboardLayout() {
   const { user, logout } = useAuth();
   const { mode, toggleMode } = useThemeMode();
   const location = useLocation();
-  const navigate = useNavigate();
 
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const theme = useTheme();
   // Прежняя раскладка — горизонтальный ряд текстовых кнопок в AppBar — на десктопе у
-  // суперадмина (7 пунктов меню) превращалась в сплошную полосу без иерархии, а под
-  // "Настройки"/"Журнал действий" всё равно был отдельный выпадающий список. Постоянная
-  // боковая панель слева — привычный паттерн админ-панелей: пункты с иконками читаются
-  // быстрее построчно, чем в строку, и остаётся больше места под сам контент страницы.
+  // суперадмина (7 пунктов меню) превращалась в сплошную полосу без иерархии. Постоянная
+  // боковая панель слева — привычный паттерн админ-панелей (взят за образец по просьбе
+  // пользователя — тёмная тема, карточка профиля в сайдбаре, статус-индикатор сверху).
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+
+  // Лёгкий опрос доступности backend прямо для статус-индикатора в шапке ("ВСЕ СИСТЕМЫ
+  // РАБОТАЮТ" / недоступен) — отдельно от BackendStatusBanner (тот монтируется в App.tsx
+  // над роутами и показывает ПРЕДУПРЕЖДЕНИЕ только когда backend реально упал; этот
+  // индикатор, наоборот, всегда виден и в норме показывает позитивный статус).
+  const [backendOk, setBackendOk] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    async function poll() {
+      const ok = await checkBackendHealth();
+      if (!cancelled) setBackendOk(ok);
+    }
+    poll();
+    const interval = setInterval(poll, STATUS_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
 
   // "/" — только точное совпадение (иначе подсвечивался бы всегда, это префикс всех
   // путей); остальные вкладки — по префиксу, чтобы вложенные страницы (например,
@@ -87,42 +128,70 @@ export function DashboardLayout() {
   }
 
   const visibleItems = NAV_ITEMS.filter((item) => !item.roles || (user && item.roles.includes(user.role)));
-  const activeItem = visibleItems.find((item) => isActive(item.path));
+  const visibleFooterItems = FOOTER_ITEMS.filter((item) => !item.roles || (user && item.roles.includes(user.role)));
+  const activeItem = [...visibleItems, ...visibleFooterItems].find((item) => isActive(item.path));
+
+  const initial = user?.email?.[0]?.toUpperCase() ?? '?';
+
+  function renderNavButton({ path, label, icon: Icon }: NavItem) {
+    return (
+      <ListItemButton
+        key={path}
+        component={RouterLink}
+        to={path}
+        selected={isActive(path)}
+        onClick={() => setDrawerOpen(false)}
+        sx={{ mx: 1, borderRadius: 2, mb: 0.25 }}
+      >
+        <ListItemIcon sx={{ minWidth: 36 }}>
+          <Icon fontSize="small" />
+        </ListItemIcon>
+        <ListItemText primary={label} primaryTypographyProps={{ variant: 'body2' }} />
+      </ListItemButton>
+    );
+  }
 
   const sidebarContent = (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <Toolbar sx={{ gap: 1 }}>
-        <HubIcon color="primary" />
-        <Typography variant="subtitle1" fontWeight={600} noWrap>
-          VPN Manager
+        <StatusDot ok={backendOk} />
+        <Typography variant="subtitle1" fontWeight={700} letterSpacing={0.5} noWrap>
+          VPN MANAGER
         </Typography>
       </Toolbar>
       <Divider />
-      <List sx={{ flexGrow: 1, py: 1 }}>
-        {visibleItems.map(({ path, label, icon: Icon }) => (
-          <ListItemButton
-            key={path}
-            component={RouterLink}
-            to={path}
-            selected={isActive(path)}
-            onClick={() => setDrawerOpen(false)}
-            sx={{ mx: 1, borderRadius: 1, mb: 0.25 }}
-          >
-            <ListItemIcon sx={{ minWidth: 36 }}>
-              <Icon fontSize="small" />
-            </ListItemIcon>
-            <ListItemText primary={label} primaryTypographyProps={{ variant: 'body2' }} />
-          </ListItemButton>
-        ))}
-      </List>
-      <Divider />
+
       <Box sx={{ p: 1.5 }}>
         <Box
           onClick={(e) => setMenuAnchor(e.currentTarget)}
-          sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', borderRadius: 1, p: 1, '&:hover': { bgcolor: 'action.hover' } }}
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 1.25,
+            cursor: 'pointer',
+            borderRadius: 2,
+            p: 1,
+            bgcolor: 'action.hover',
+          }}
         >
+          <Box
+            sx={{
+              width: 36,
+              height: 36,
+              borderRadius: 1.5,
+              bgcolor: 'primary.main',
+              color: 'primary.contrastText',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontWeight: 700,
+              flexShrink: 0,
+            }}
+          >
+            {initial}
+          </Box>
           <Box sx={{ minWidth: 0 }}>
-            <Typography variant="body2" noWrap title={user?.email}>
+            <Typography variant="body2" fontWeight={600} noWrap title={user?.email}>
               {user?.email}
             </Typography>
             <Typography variant="caption" color="text.secondary" noWrap>
@@ -131,6 +200,18 @@ export function DashboardLayout() {
           </Box>
         </Box>
       </Box>
+
+      <Typography variant="caption" color="text.secondary" fontWeight={700} letterSpacing={0.8} sx={{ px: 2.5, mt: 1, mb: 0.5 }}>
+        РАЗДЕЛЫ
+      </Typography>
+      <List sx={{ flexGrow: 1, py: 0 }}>{visibleItems.map(renderNavButton)}</List>
+
+      {visibleFooterItems.length > 0 && (
+        <>
+          <Divider sx={{ mx: 1.5 }} />
+          <List sx={{ py: 1 }}>{visibleFooterItems.map(renderNavButton)}</List>
+        </>
+      )}
     </Box>
   );
 
@@ -150,37 +231,27 @@ export function DashboardLayout() {
       )}
 
       <Box sx={{ flexGrow: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-        <AppBar position="sticky" color="default" elevation={0} sx={{ borderBottom: 1, borderColor: 'divider' }}>
-          <Toolbar sx={{ gap: 1 }}>
-            {isMobile && (
-              <IconButton edge="start" aria-label="Меню" onClick={() => setDrawerOpen(true)}>
-                <MenuIcon />
-              </IconButton>
-            )}
-            <Typography variant="subtitle1" sx={{ flexGrow: 1 }} noWrap>
-              {activeItem?.label ?? 'VPN Manager'}
+        <Toolbar sx={{ gap: 1.5, borderBottom: 1, borderColor: 'divider', position: 'sticky', top: 0, bgcolor: 'background.default', zIndex: 1 }}>
+          {isMobile && (
+            <IconButton edge="start" aria-label="Меню" onClick={() => setDrawerOpen(true)}>
+              <MenuIcon />
+            </IconButton>
+          )}
+          <Typography variant="subtitle1" sx={{ flexGrow: 1 }} noWrap>
+            {activeItem?.label ?? 'VPN Manager'}
+          </Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, color: backendOk ? 'success.main' : 'error.main' }}>
+            <StatusDot ok={backendOk} />
+            <Typography variant="caption" fontWeight={700} letterSpacing={0.4} sx={{ display: { xs: 'none', sm: 'block' } }}>
+              {backendOk ? 'ВСЕ СИСТЕМЫ РАБОТАЮТ' : 'BACKEND НЕДОСТУПЕН'}
             </Typography>
-            <Tooltip title={mode === 'dark' ? 'Светлая тема' : 'Тёмная тема'}>
-              <IconButton onClick={toggleMode} size="small">
-                {mode === 'dark' ? <Brightness7Icon fontSize="small" /> : <Brightness4Icon fontSize="small" />}
-              </IconButton>
-            </Tooltip>
-            {user?.role === 'super_admin' && (
-              <>
-                <Tooltip title="Настройки">
-                  <IconButton component={RouterLink} to="/settings" size="small">
-                    <SettingsIcon fontSize="small" />
-                  </IconButton>
-                </Tooltip>
-                <Tooltip title="Журнал действий">
-                  <IconButton component={RouterLink} to="/audit-log" size="small">
-                    <HistoryIcon fontSize="small" />
-                  </IconButton>
-                </Tooltip>
-              </>
-            )}
-          </Toolbar>
-        </AppBar>
+          </Box>
+          <Tooltip title={mode === 'dark' ? 'Светлая тема' : 'Тёмная тема'}>
+            <IconButton onClick={toggleMode} size="small">
+              {mode === 'dark' ? <Brightness7Icon fontSize="small" /> : <Brightness4Icon fontSize="small" />}
+            </IconButton>
+          </Tooltip>
+        </Toolbar>
         <Menu anchorEl={menuAnchor} open={!!menuAnchor} onClose={() => setMenuAnchor(null)}>
           <MenuItem
             onClick={() => {
@@ -188,6 +259,9 @@ export function DashboardLayout() {
               logout();
             }}
           >
+            <ListItemIcon>
+              <LogoutIcon fontSize="small" />
+            </ListItemIcon>
             Выйти
           </MenuItem>
         </Menu>
