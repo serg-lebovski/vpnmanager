@@ -46,7 +46,7 @@
     "@types/qrcode": "^1.5.5",
     "jest": "^30.4.2",
     "ts-jest": "^29.4.12",
-    "typescript": "^5.7.2"
+    "typescript": "^7.0.2"
   },
   "jest": {
     "moduleFileExtensions": ["js", "json", "ts"],
