@@ -129,10 +129,13 @@ function PortalStatusView({ token }: { token: string }) {
   const statusQuery = useQuery({
     queryKey: ['portal-status', token],
     queryFn: () => fetchPortalStatus(token),
-    // Пока Telegram не привязан (или проксируется временная сессия) — опрашиваем почаще,
-    // чтобы страница сама отразила прогресс (пользователь настроил прокси/сделал /start в
-    // боте) без ручного обновления. Как только всё готово — обычный редкий опрос не нужен.
-    refetchInterval: (query) => (query.state.data?.linkedToTelegram ? false : 5_000),
+    // Пока Telegram не привязан — опрашиваем почаще, чтобы страница сама отразила прогресс
+    // (пользователь настроил прокси/сделал /start в боте) без ручного обновления. После
+    // привязки опрос не останавливаем совсем — кнопка MTProxy остаётся на странице всегда
+    // (см. ниже), а её секрет/ссылка меняются раз в сутки (MtProxyService.rotateSecrets) —
+    // реже опрашиваем, но не выключаем, иначе оставленная открытой вкладка показывала бы
+    // уже недействительную ссылку после ротации.
+    refetchInterval: (query) => (query.state.data?.linkedToTelegram ? 60_000 : 5_000),
   });
   const [issueDialog, setIssueDialog] = useState<IssueDialogState | null>(null);
   const [issueError, setIssueError] = useState<string | null>(null);
@@ -212,6 +215,29 @@ function PortalStatusView({ token }: { token: string }) {
         </Alert>
       )}
 
+      {/* Кнопка на MTProto-proxy — всегда на странице, независимо от привязки Telegram
+          (раньше показывалась только до привязки и пропадала навсегда после неё). Секрет/
+          ссылка меняются раз в сутки (MtProxyService.rotateSecrets) — href берётся прямо из
+          query-данных, которые опрашиваются и после привязки (см. refetchInterval выше), так
+          что кнопка сама подхватывает новую ссылку без перезагрузки страницы. */}
+      {status.mtProxy && (
+        <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
+          <Typography variant="subtitle2" mb={1}>
+            MTProto-proxy для Telegram
+          </Typography>
+          <Typography variant="body2" color="text.secondary" mb={1.5}>
+            Если Telegram заблокирован, подключите эту ссылку прокси в настройках Telegram —
+            бот и уведомления станут доступны.
+          </Typography>
+          <Button href={status.mtProxy.deepLink} target="_blank" rel="noopener" variant="contained" fullWidth sx={{ mb: 1 }}>
+            Открыть прокси-ссылку в Telegram
+          </Button>
+          <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-all' }}>
+            Вручную: сервер {status.mtProxy.server}, порт {status.mtProxy.port}, секрет {status.mtProxy.secret}
+          </Typography>
+        </Paper>
+      )}
+
       {status.linkedToTelegram ? (
         status.botDeepLink && (
           <Button href={status.botDeepLink} target="_blank" rel="noopener" variant="outlined" fullWidth sx={{ mb: 2 }}>
@@ -228,26 +254,9 @@ function PortalStatusView({ token }: { token: string }) {
             восстановить доступ, если ссылка на этот портал потеряется.
           </Typography>
           {status.botDeepLink && (
-            <Button href={status.botDeepLink} target="_blank" rel="noopener" variant="contained" fullWidth sx={{ mb: 1.5 }}>
+            <Button href={status.botDeepLink} target="_blank" rel="noopener" variant="contained" fullWidth>
               Открыть бота в Telegram
             </Button>
-          )}
-          {status.mtProxy && (
-            <Stack spacing={1}>
-              <Alert severity="info">
-                Telegram заблокирован? Настройте эту ссылку прокси в Telegram, затем откройте бота (кнопка выше).
-              </Alert>
-              <Button href={status.mtProxy.deepLink} target="_blank" rel="noopener" variant="outlined" fullWidth>
-                Открыть прокси-ссылку в Telegram
-              </Button>
-              <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-all' }}>
-                Вручную: сервер {status.mtProxy.server}, порт {status.mtProxy.port}, секрет {status.mtProxy.secret}
-              </Typography>
-              <Alert severity="warning">
-                Удалите этот прокси из Telegram после регистрации и получения VPN — ссылка
-                действует 24 часа, после чего перестанет работать.
-              </Alert>
-            </Stack>
           )}
         </Paper>
       )}
