@@ -669,7 +669,10 @@ export class BridgesService {
       // использует при построении UPDATE.
       bridge.upstreamServerProtocolId = target.id;
       bridge.upstreamServerProtocol = target;
+      // upstreamPeer/upstreamPeerId — тот же двойной маппинг (см. комментарий выше),
+      // чинится тем же способом.
       bridge.upstreamPeerId = systemPeer.id;
+      bridge.upstreamPeer = systemPeer;
       bridge.status = BridgeStatus.ACTIVE;
       const saved = await this.bridgesRepository.save(bridge);
 
