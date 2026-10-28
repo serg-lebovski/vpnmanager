@@ -482,7 +482,10 @@ export class BridgesService {
           // Явно, не дожидаясь ON DELETE SET NULL от каскада (сработает только ПОСЛЕ того,
           // как вызывающий код реально удалит сам ServerProtocol/Server) — бронируем
           // согласованное состояние прямо сейчас, а не полагаемся на порядок операций снаружи.
+          // upstreamServerProtocol (relation) обязательно обнулять ВМЕСТЕ с id — см. тот же
+          // комментарий в setUpstream ниже про двойной маппинг одной колонки.
           bridge.upstreamServerProtocolId = null;
+          bridge.upstreamServerProtocol = null;
           await this.bridgesRepository.save(bridge);
           this.bridgeLogService.log(
             LogLevel.WARN,
@@ -653,7 +656,19 @@ export class BridgesService {
       progress(90, 'Настройка NAT');
       await this.configureNat(selfServer, bridge);
 
+      // upstreamServerProtocolId — одновременно и @Column, и FK-колонка relation'а
+      // upstreamServerProtocol (@ManyToOne + @JoinColumn на ту же колонку, см.
+      // bridge.entity.ts) — известная ловушка TypeORM: если `bridge` был загружен С
+      // этим relation'ом, при save() TypeORM может пересобрать UPDATE по СТАРОМУ объекту
+      // relation'а в памяти и молча затереть только что присвоенный .Id обратно. Пойманный
+      // вживую инцидент: несколько подряд успешно залогированных переключений upstream
+      // (включая реальную пересборку туннеля на self-сервере) не сохранялись в БД —
+      // bridge.upstreamServerProtocolId откатывался на предыдущее значение, хотя live-
+      // интерфейс уже работал через новый сервер. Присваиваем relation явно, вместе с id,
+      // чтобы оба представления совпадали независимо от того, какое из них TypeORM
+      // использует при построении UPDATE.
       bridge.upstreamServerProtocolId = target.id;
+      bridge.upstreamServerProtocol = target;
       bridge.upstreamPeerId = systemPeer.id;
       bridge.status = BridgeStatus.ACTIVE;
       const saved = await this.bridgesRepository.save(bridge);
