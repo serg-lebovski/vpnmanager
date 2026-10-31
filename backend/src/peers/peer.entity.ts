@@ -93,6 +93,16 @@ export class Peer {
   @Column({ name: 'paired_peer_id', type: 'uuid', nullable: true })
   pairedPeerId: string | null;
 
+  // Последнее УСПЕШНОЕ рукопожатие этого ключа — в отличие от "живого" значения из `wg show
+  // dump` (см. PeerTransferStats.latestHandshake в DashboardService), которое сбрасывается
+  // в 0 при пересоздании интерфейса (переустановка протокола/down-up) и обнуляется, если
+  // клиент не выходил на связь больше суток — тогда UI показывал "никогда", даже если peer
+  // активно использовался неделю назад. DashboardService.buildPeerStats обновляет это поле,
+  // только когда видит handshake НОВЕЕ уже сохранённого — переживает рестарт интерфейса и
+  // backend, не требует, чтобы peer был "в сети" прямо сейчас.
+  @Column({ name: 'last_handshake_at', type: 'timestamptz', nullable: true })
+  lastHandshakeAt: Date | null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 }

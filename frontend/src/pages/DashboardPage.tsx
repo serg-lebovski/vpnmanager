@@ -278,7 +278,16 @@ function ProtocolsByServerSection({ peers }: { peers: DashboardPeerStats[] }) {
   );
 }
 
-const rangeLabels: Record<TrafficRange, string> = { day: 'День', week: 'Неделя', month: 'Месяц' };
+const rangeLabels: Record<TrafficRange, string> = {
+  day: 'День',
+  week: 'Неделя',
+  month: 'Месяц',
+  '2months': '2 месяца',
+  '3months': '3 месяца',
+  '6months': 'Полгода',
+  year: 'Год',
+};
+const RANGE_ORDER: TrafficRange[] = ['day', 'week', 'month', '2months', '3months', '6months', 'year'];
 
 const ALL_FILTER_VALUE = '__all__';
 
@@ -322,7 +331,7 @@ function TrafficSection() {
       <Stack direction="row" justifyContent="space-between" alignItems="center" mb={2} flexWrap="wrap" rowGap={1}>
         <Typography variant="subtitle1">История трафика</Typography>
         <Stack direction="row" spacing={1}>
-          {(['day', 'week', 'month'] as TrafficRange[]).map((r) => (
+          {RANGE_ORDER.map((r) => (
             <Chip
               key={r}
               size="small"

@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Interval } from '@nestjs/schedule';
+import { Cron, Interval } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, LessThan, Repository } from 'typeorm';
 import { PeerSource, PeerStatus, ServerProtocolStatus, VpnProtocol } from '../common/enums';
 import { Organization } from '../organizations/organization.entity';
 import { Peer } from '../peers/peer.entity';
@@ -60,7 +60,7 @@ export interface DashboardSnapshot {
   peers: DashboardPeerStats[];
 }
 
-export type TrafficRange = 'day' | 'week' | 'month';
+export type TrafficRange = 'day' | 'week' | 'month' | '2months' | '3months' | '6months' | 'year';
 
 export interface ServerTrafficRow {
   serverId: string;
@@ -292,6 +292,21 @@ export class DashboardService {
         this.lastSample.set(peer.id, { rxBytes: rxBytesTotal, txBytes: txBytesTotal, at: now });
       }
 
+      // Персист "последнего рукопожатия" переживает пересоздание интерфейса/рестарт backend —
+      // см. комментарий у Peer.lastHandshakeAt. Пишем только когда наблюдаемое значение РЕАЛЬНО
+      // новее уже сохранённого (а не на каждый опрос — handshake меняется раз в ~2 минуты при
+      // активном использовании, lastHandshake=0 после пересоздания интерфейса никогда не
+      // уменьшает уже сохранённую дату). Fire-and-forget — не блокирует сбор снапшота/WS.
+      if (sample && sample.latestHandshake > 0) {
+        const handshakeDate = new Date(sample.latestHandshake * 1000);
+        if (!peer.lastHandshakeAt || handshakeDate.getTime() > peer.lastHandshakeAt.getTime()) {
+          peer.lastHandshakeAt = handshakeDate;
+          void this.peersRepository.update(peer.id, { lastHandshakeAt: handshakeDate }).catch((error) => {
+            this.logger.warn(`Не удалось сохранить последнее рукопожатие peer "${peer.name}": ${(error as Error).message}`);
+          });
+        }
+      }
+
       return {
         peerId: peer.id,
         name: peer.name,
@@ -359,14 +374,43 @@ export class DashboardService {
     }
   }
 
+  // Без этого peer_traffic_samples растёт бесконечно (15-минутная гранулярность, по
+  // строке на пару peer+сервер за интервал) — не проблема для Postgres на горизонте
+  // месяцев, но раз теперь поддерживаем отчёты за "год" (см. TrafficRange), держим
+  // историю с запасом ЗАМЕТНО больше года (не ровно 365 дней — иначе отчёт "год" мог бы
+  // periodически упираться в выметенные вчера строки на самой границе диапазона).
+  private static readonly TRAFFIC_RETENTION_DAYS = 400;
+
+  @Cron('0 4 * * *')
+  private async pruneOldTrafficSamples(): Promise<void> {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - DashboardService.TRAFFIC_RETENTION_DAYS);
+    try {
+      const result = await this.trafficSamplesRepository.delete({ sampledAt: LessThan(cutoff) });
+      if (result.affected) {
+        this.logger.log(`Очищена история трафика старше ${DashboardService.TRAFFIC_RETENTION_DAYS} дней (${result.affected} строк)`);
+      }
+    } catch (error) {
+      this.logger.warn(`Не удалось очистить старую историю трафика: ${(error as Error).message}`);
+    }
+  }
+
   private rangeStart(range: TrafficRange): Date {
     const from = new Date();
     if (range === 'day') {
       from.setDate(from.getDate() - 1);
     } else if (range === 'week') {
       from.setDate(from.getDate() - 7);
-    } else {
+    } else if (range === 'month') {
       from.setMonth(from.getMonth() - 1);
+    } else if (range === '2months') {
+      from.setMonth(from.getMonth() - 2);
+    } else if (range === '3months') {
+      from.setMonth(from.getMonth() - 3);
+    } else if (range === '6months') {
+      from.setMonth(from.getMonth() - 6);
+    } else {
+      from.setFullYear(from.getFullYear() - 1);
     }
     return from;
   }

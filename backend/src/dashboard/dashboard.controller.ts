@@ -5,7 +5,7 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { DashboardService, TrafficRange } from './dashboard.service';
 
-const VALID_RANGES: TrafficRange[] = ['day', 'week', 'month'];
+const VALID_RANGES: TrafficRange[] = ['day', 'week', 'month', '2months', '3months', '6months', 'year'];
 
 // SUPER_ADMIN + ENGINEER — та же граница, что у живого дашборда (WS namespace 'dashboard'
 // пускает те же роли, см. dashboard.gateway.ts). ENGINEER — просмотр, без доступа к

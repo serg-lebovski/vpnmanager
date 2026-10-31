@@ -53,7 +53,7 @@ export function connectDashboardSocket(onSnapshot: (snapshot: DashboardSnapshot)
   return socket;
 }
 
-export type TrafficRange = 'day' | 'week' | 'month';
+export type TrafficRange = 'day' | 'week' | 'month' | '2months' | '3months' | '6months' | 'year';
 
 export interface ServerTrafficRow {
   serverId: string;

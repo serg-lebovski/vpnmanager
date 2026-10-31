@@ -62,6 +62,21 @@ const statusColor: Record<string, 'success' | 'default'> = {
 
 const protocolLabels: Record<VpnProtocol, string> = { wireguard: 'WireGuard', amneziawg: 'AmneziaWG' };
 
+// Та же схема, что и на Дашборде (см. formatLastHandshake в DashboardPage.tsx), но
+// источник — персистентное Peer.lastHandshakeAt, а не живой снапшот wg/awg show: не
+// обнуляется при пересоздании интерфейса/рестарте backend и не зависит от того, открыт ли
+// сейчас сам Дашборд.
+function formatLastSeen(lastHandshakeAt: string | null): string {
+  if (!lastHandshakeAt) {
+    return 'Никогда';
+  }
+  const seconds = (Date.now() - new Date(lastHandshakeAt).getTime()) / 1000;
+  if (seconds < 180) return 'Сейчас в сети';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} мин назад`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} ч назад`;
+  return new Date(lastHandshakeAt).toLocaleString();
+}
+
 // Сентинел для «Клиент» в форме создания peer — отличает осознанный выбор «без клиента»
 // (organizationId: null отправится на бэкенд) от ещё не подгруженного значения по
 // умолчанию (пустая строка, см. useEffect ниже).
@@ -141,6 +156,7 @@ function PeerTableRow({
       <TableCell>
         <PeerStatusChips peer={peer} isSuperAdmin={isSuperAdmin} />
       </TableCell>
+      <TableCell>{formatLastSeen(peer.lastHandshakeAt)}</TableCell>
       <TableCell align="right">
         <Stack direction="row" spacing={0.25} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
           <Tooltip title="Изменить">
@@ -232,6 +248,14 @@ function MultiConfigGroupRows({
             <PeerStatusChips peer={a} isSuperAdmin={isSuperAdmin} />
             <Chip size="small" variant="outlined" color="info" label="мультиконфиг" />
           </Stack>
+        </TableCell>
+        <TableCell>
+          {formatLastSeen(
+            [a.lastHandshakeAt, b.lastHandshakeAt]
+              .filter((v): v is string => v !== null)
+              .sort()
+              .pop() ?? null,
+          )}
         </TableCell>
         <TableCell align="right">
           <Stack direction="row" spacing={0.25} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
@@ -732,6 +756,7 @@ export function PeersPage() {
                     Статус
                   </TableSortLabel>
                 </TableCell>
+                <TableCell>Последний раз в сети</TableCell>
                 <TableCell align="right">Действия</TableCell>
               </TableRow>
             </TableHead>
@@ -774,7 +799,7 @@ export function PeersPage() {
               })}
               {!isLoading && visiblePeers.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={5}>{search ? 'Ничего не найдено' : 'Peers пока нет'}</TableCell>
+                  <TableCell colSpan={6}>{search ? 'Ничего не найдено' : 'Peers пока нет'}</TableCell>
                 </TableRow>
               )}
             </TableBody>
