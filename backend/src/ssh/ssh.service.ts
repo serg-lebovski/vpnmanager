@@ -166,13 +166,13 @@ export class SshService {
   // по стеку. Промис execCommand не отменяется по-настоящему (node-ssh/ssh2 такого не
   // умеют) — таймаут только возвращает управление вызывающему коду; сам SSH-канал
   // закрывается позже, при ssh.dispose() в withConnection.
-  private execWithTimeout(ssh: NodeSSH, command: string): Promise<ExecResult> {
+  private execWithTimeout(ssh: NodeSSH, command: string, stdin?: string): Promise<ExecResult> {
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.logger.error(`Команда не завершилась за ${SshService.EXEC_TIMEOUT_MS / 60000} мин, таймаут: ${command}`);
         resolve({ stdout: '', stderr: `Команда не завершилась за ${SshService.EXEC_TIMEOUT_MS / 60000} мин (таймаут)`, code: 124 });
       }, SshService.EXEC_TIMEOUT_MS);
-      ssh.execCommand(command, { execOptions: { pty: false } }).then(
+      ssh.execCommand(command, { stdin, execOptions: { pty: false } }).then(
         (result) => {
           clearTimeout(timer);
           resolve(result);
@@ -191,6 +191,18 @@ export class SshService {
 
   async execOrThrow(ssh: NodeSSH, command: string): Promise<string> {
     const result = await this.exec(ssh, command);
+    if (result.code !== 0) {
+      throw new Error(`Команда "${command}" завершилась с ошибкой (code ${result.code}): ${result.stderr || result.stdout}`);
+    }
+    return result.stdout.trim();
+  }
+
+  // Данные через stdin, а не в теле команды: у аргумента командной строки на сервере
+  // есть предел ~128 КБ (MAX_ARG_STRLEN), а сгенерированные скрипты/наборы адресов
+  // (например, ipset на тысячи записей) его легко превышают.
+  async execOrThrowWithStdin(ssh: NodeSSH, command: string, stdin: string): Promise<string> {
+    this.logger.debug(`exec (stdin ${stdin.length} байт): ${command}`);
+    const result = await this.execWithTimeout(ssh, command, stdin);
     if (result.code !== 0) {
       throw new Error(`Команда "${command}" завершилась с ошибкой (code ${result.code}): ${result.stderr || result.stdout}`);
     }
