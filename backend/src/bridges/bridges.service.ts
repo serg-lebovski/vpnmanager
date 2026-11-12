@@ -349,10 +349,6 @@ export class BridgesService {
       return;
     }
     await this.vpnProvisioningService.setupBridgeBypass(selfServer, bridge.id, clientInterfaces, bridge.bypassDestinations);
-    // Домены — ещё и через DNS моста (все поддомены, адреса "как у клиента"), см.
-    // VpnProvisioningService.setupBridgeDns. Пустой список доменов снимает DNS моста.
-    const domains = bridge.bypassDestinations.filter((entry) => classifyBypassEntry(entry)?.type === 'domain');
-    await this.vpnProvisioningService.setupBridgeDns(selfServer, bridge.id, clientInterfaces, domains, bridge.upstreamInterfaceName);
   }
 
   // Домены в списке обхода могут поменять IP (CDN и т.п.) без какого-либо действия
@@ -397,16 +393,6 @@ export class BridgesService {
   // каскадом (ON DELETE CASCADE) удалит и сам мост, и все peers, созданные для него.
   async remove(id: string): Promise<void> {
     const bridge = await this.findOneOrFail(id);
-    // Best-effort: self-сервер может быть недоступен — удаление моста из панели это не
-    // блокирует.
-    try {
-      const clientInterfaces = [bridge.wireguardClientProtocol, bridge.amneziawgClientProtocol]
-        .filter((sp): sp is ServerProtocol => Boolean(sp))
-        .map((sp) => ({ networkCidr: sp.networkCidr, interfaceName: sp.interfaceName }));
-      await this.vpnProvisioningService.teardownBridgeDns(this.getSelfServer(bridge), bridge.id, clientInterfaces);
-    } catch (error) {
-      this.logger.warn(`Не удалось снять DNS моста "${bridge.name}" при удалении: ${(error as Error).message}`);
-    }
     if (bridge.upstreamPeerId) {
       // revoke — снимает peer с upstream-сервера по SSH (пока запись ещё жива);
       // purge — убирает саму запись, чтобы она не висела в БД вечно как "отозванная,
@@ -669,11 +655,6 @@ export class BridgesService {
       // пропасть.
       progress(90, 'Настройка NAT');
       await this.configureNat(selfServer, bridge);
-      try {
-        await this.vpnProvisioningService.restartBridgeDns(selfServer, bridge.id);
-      } catch (error) {
-        this.logger.warn(`Не удалось перезапустить DNS моста "${bridge.name}" после смены upstream: ${(error as Error).message}`);
-      }
 
       // upstreamServerProtocolId — одновременно и @Column, и FK-колонка relation'а
       // upstreamServerProtocol (@ManyToOne + @JoinColumn на ту же колонку, см.

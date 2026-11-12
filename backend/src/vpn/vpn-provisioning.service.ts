@@ -11,14 +11,7 @@ import { ServerProtocol } from '../servers/server-protocol.entity';
 import { Server } from '../servers/server.entity';
 import { SshConnectionParams, SshService } from '../ssh/ssh.service';
 import { AmneziaWgDriver } from './amnezia-wg.driver';
-import {
-  bridgeDnsNames,
-  DYNAMIC_IPSET_TIMEOUT_SEC,
-  renderBridgeDnsConfig,
-  renderBridgeDnsUnit,
-  renderIpsetRestoreScript,
-} from './bridge-dns.util';
-import { assertSupportedCidr, gatewayAddress, nextCidr } from './network.util';
+import { assertSupportedCidr, nextCidr } from './network.util';
 import { PeerSpec, PeerTransferStats, ScannedPeer, UpstreamPeerConfig, VpnDriver } from './vpn-driver.interface';
 import { WireGuardDriver } from './wireguard.driver';
 
@@ -604,7 +597,10 @@ export class VpnProvisioningService {
     destinations: string[],
   ): Promise<void> {
     const connection = this.connectionParams(selfServer);
-    const ipsetName = bridgeDnsNames(bridgeId).staticIpset;
+    // ipset ограничивает длину имени (IPSET_MAXLEN=32) — префикс + 16 hex-символов id с
+    // запасом укладывается.
+    const ipsetName = `vpnmgr-byp-${bridgeId.replace(/-/g, '').slice(0, 16)}`;
+    const tmpSetName = `${ipsetName}-tmp`;
     const fwmark = VpnProvisioningService.BYPASS_FWMARK;
 
     await this.sshService.withConnection(connection, async (ssh) => {
@@ -634,9 +630,17 @@ export class VpnProvisioningService {
         ips.push(...new Set(resolved.map((ip) => `${ip}/32`)));
       }
 
-      // Весь набор одной командой `ipset restore` (через stdin) — раньше каждый адрес
-      // добавлялся отдельным SSH-вызовом, и список на тысячи записей применялся минутами.
-      await this.sshService.execOrThrowWithStdin(ssh, 'ipset restore', renderIpsetRestoreScript(ipsetName, ips));
+      // create -exist — идемпотентно (не падает, если ipset уже существует). swap вместо
+      // flush+add — атомарная замена содержимого, без "окна", когда набор пуст между
+      // пересчётами (домен временно не резолвится и т.п.).
+      await this.sshService.execOrThrow(ssh, `ipset create ${ipsetName} hash:net -exist`);
+      await this.sshService.execOrThrow(ssh, `ipset create ${tmpSetName} hash:net -exist`);
+      await this.sshService.execOrThrow(ssh, `ipset flush ${tmpSetName}`);
+      for (const ip of ips) {
+        await this.sshService.execOrThrow(ssh, `ipset add ${tmpSetName} ${ip} -exist`);
+      }
+      await this.sshService.execOrThrow(ssh, `ipset swap ${tmpSetName} ${ipsetName}`);
+      await this.sshService.execOrThrow(ssh, `ipset destroy ${tmpSetName}`);
 
       // Общее для ВСЕХ мостов на этом self-сервере правило — идемпотентно, безопасно
       // вызывать из каждого моста по отдельности.
@@ -675,132 +679,6 @@ export class VpnProvisioningService {
         );
       }
     });
-  }
-
-  // DNS-сервер моста для обхода upstream по доменам. Статический резолв в setupBridgeBypass
-  // находит IP только точно указанного имени и только так, как его видит сам self-сервер, —
-  // а клиент открывает поддомены (lk.gosuslugi.ru, cdn.*) и резолвит их своим DNS через
-  // тоннель, получая другие адреса CDN. Поэтому DNS-запросы клиентов моста прозрачно
-  // заворачиваются (REDIRECT порта 53) на dnsmasq моста: для доменов из списка и всех их
-  // поддоменов он спрашивает российский DNS напрямую и в момент ответа добавляет IP в
-  // динамический ipset (тот же fwmark обхода), остальное резолвит через тоннель моста.
-  // Конфиги клиентов перевыпускать не нужно. Не поможет клиентам с DoH/DoT (DNS не по 53
-  // порту) — для них остаётся статический резолв.
-  //
-  // Пустой список доменов — снимаем всё (teardownBridgeDns), чтобы не держать лишний DNS
-  // на пути клиентов. Идемпотентно: вызывается и при сохранении списка, и раз в 5 минут
-  // (BridgesService.refreshBypassRules), перезапускает dnsmasq только если конфиг изменился.
-  async setupBridgeDns(
-    selfServer: Server,
-    bridgeId: string,
-    clientInterfaces: Array<{ networkCidr: string; interfaceName: string }>,
-    domains: string[],
-    upstreamInterfaceName: string,
-  ): Promise<void> {
-    if (domains.length === 0 || clientInterfaces.length === 0) {
-      await this.teardownBridgeDns(selfServer, bridgeId, clientInterfaces);
-      return;
-    }
-    const names = bridgeDnsNames(bridgeId);
-    const fwmark = VpnProvisioningService.BYPASS_FWMARK;
-    const conf = renderBridgeDnsConfig({
-      listenAddresses: clientInterfaces.map((ci) => gatewayAddress(ci.networkCidr).split('/')[0]),
-      domains,
-      dynamicIpset: names.dynamicIpset,
-      upstreamInterface: upstreamInterfaceName,
-    });
-    const unit = renderBridgeDnsUnit(names);
-
-    const perInterface = clientInterfaces
-      .map(({ networkCidr, interfaceName }) =>
-        [
-          ...['udp', 'tcp'].map(
-            (proto) =>
-              `iptables -C INPUT -i ${interfaceName} -p ${proto} --dport 53 -j ACCEPT 2>/dev/null || ` +
-              `iptables -I INPUT 1 -i ${interfaceName} -p ${proto} --dport 53 -j ACCEPT`,
-          ),
-          `iptables -t mangle -C PREROUTING -s ${networkCidr} -m set --match-set ${names.dynamicIpset} dst -j MARK --set-mark ${fwmark} 2>/dev/null || ` +
-            `iptables -t mangle -A PREROUTING -s ${networkCidr} -m set --match-set ${names.dynamicIpset} dst -j MARK --set-mark ${fwmark}`,
-        ].join('\n'),
-      )
-      .join('\n');
-    // REDIRECT добавляется только ПОСЛЕ того, как dnsmasq реально запущен (set -e
-    // оборвёт скрипт раньше), — иначе DNS клиентов моста ушёл бы в никуда.
-    const redirects = clientInterfaces
-      .flatMap(({ interfaceName }) =>
-        ['udp', 'tcp'].map(
-          (proto) =>
-            `iptables -t nat -C PREROUTING -i ${interfaceName} -p ${proto} --dport 53 -j REDIRECT --to-ports 53 2>/dev/null || ` +
-            `iptables -t nat -A PREROUTING -i ${interfaceName} -p ${proto} --dport 53 -j REDIRECT --to-ports 53`,
-        ),
-      )
-      .join('\n');
-
-    const script = [
-      'set -e',
-      'command -v dnsmasq >/dev/null 2>&1 || (export DEBIAN_FRONTEND=noninteractive; apt-get update -y >/dev/null && apt-get install -y dnsmasq-base >/dev/null)',
-      'command -v ipset >/dev/null 2>&1 || (export DEBIAN_FRONTEND=noninteractive; apt-get update -y >/dev/null && apt-get install -y ipset >/dev/null)',
-      'mkdir -p /etc/vpnmanager',
-      `ipset create ${names.dynamicIpset} hash:net timeout ${DYNAMIC_IPSET_TIMEOUT_SEC} -exist`,
-      `cat > ${names.confPath}.new <<'VPNMGR_EOF'`,
-      conf.trimEnd(),
-      'VPNMGR_EOF',
-      `cat > ${names.unitPath}.new <<'VPNMGR_EOF'`,
-      unit.trimEnd(),
-      'VPNMGR_EOF',
-      'changed=0',
-      `if cmp -s ${names.confPath}.new ${names.confPath}; then rm -f ${names.confPath}.new; else mv ${names.confPath}.new ${names.confPath}; changed=1; fi`,
-      `if cmp -s ${names.unitPath}.new ${names.unitPath}; then rm -f ${names.unitPath}.new; else mv ${names.unitPath}.new ${names.unitPath}; systemctl daemon-reload; changed=1; fi`,
-      `systemctl enable ${names.unitName} >/dev/null 2>&1`,
-      `if [ "$changed" = 1 ]; then systemctl restart ${names.unitName}; else systemctl is-active --quiet ${names.unitName} || systemctl start ${names.unitName}; fi`,
-      'sleep 1',
-      `systemctl is-active --quiet ${names.unitName}`,
-      perInterface,
-      redirects,
-      '',
-    ].join('\n');
-
-    const connection = this.connectionParams(selfServer);
-    await this.sshService.withConnection(connection, (ssh) => this.sshService.execOrThrowWithStdin(ssh, 'bash -s', script));
-  }
-
-  // Полностью снимает DNS моста: пустой список доменов или удаление моста. Сначала REDIRECT
-  // (DNS клиентов сразу возвращается к их собственным серверам), потом сам dnsmasq.
-  // Best-effort по каждому шагу — правила могли уже исчезнуть (перезагрузка self-сервера).
-  async teardownBridgeDns(
-    selfServer: Server,
-    bridgeId: string,
-    clientInterfaces: Array<{ networkCidr: string; interfaceName: string }>,
-  ): Promise<void> {
-    const names = bridgeDnsNames(bridgeId);
-    const fwmark = VpnProvisioningService.BYPASS_FWMARK;
-    const removeRule = (rule: string, table = 'filter') =>
-      `while iptables -t ${table} -C ${rule} 2>/dev/null; do iptables -t ${table} -D ${rule}; done`;
-    const lines: string[] = [];
-    for (const { networkCidr, interfaceName } of clientInterfaces) {
-      for (const proto of ['udp', 'tcp']) {
-        lines.push(removeRule(`PREROUTING -i ${interfaceName} -p ${proto} --dport 53 -j REDIRECT --to-ports 53`, 'nat'));
-        lines.push(removeRule(`INPUT -i ${interfaceName} -p ${proto} --dport 53 -j ACCEPT`));
-      }
-      lines.push(removeRule(`PREROUTING -s ${networkCidr} -m set --match-set ${names.dynamicIpset} dst -j MARK --set-mark ${fwmark}`, 'mangle'));
-    }
-    lines.push(
-      `if [ -f ${names.unitPath} ]; then systemctl disable --now ${names.unitName} >/dev/null 2>&1 || true; rm -f ${names.unitPath}; systemctl daemon-reload; fi`,
-      `rm -f ${names.confPath}`,
-      `ipset destroy ${names.dynamicIpset} 2>/dev/null || true`,
-      'true',
-    );
-    const connection = this.connectionParams(selfServer);
-    await this.sshService.withConnection(connection, (ssh) => this.sshService.execOrThrowWithStdin(ssh, 'bash -s', lines.join('\n') + '\n'));
-  }
-
-  // При переключении upstream интерфейс тоннеля пересоздаётся, а dnsmasq отправляет
-  // запросы через него (server=...@iface) — перезапускаем, чтобы он заново привязался к
-  // новому интерфейсу. try-restart — ничего не делает, если DNS моста не включён.
-  async restartBridgeDns(selfServer: Server, bridgeId: string): Promise<void> {
-    const names = bridgeDnsNames(bridgeId);
-    const connection = this.connectionParams(selfServer);
-    await this.sshService.withConnection(connection, (ssh) => this.sshService.exec(ssh, `systemctl try-restart ${names.unitName}`));
   }
 
   // Устанавливает и настраивает fail2ban на клиентском VPS — вызывается при добавлении

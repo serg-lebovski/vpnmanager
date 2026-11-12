@@ -578,7 +578,7 @@ function BridgeCard({
                   fullWidth
                   value={editBypassText}
                   onChange={(e) => setEditBypassText(e.target.value)}
-                  helperText="Трафик к этим доменам/IP пойдёт напрямую с self-сервера, минуя upstream ('зарубежный' сервер). Домен охватывает и все свои поддомены"
+                  helperText="Трафик к этим доменам/IP пойдёт напрямую с self-сервера, минуя upstream ('зарубежный' сервер)"
                 />
                 <Button size="small" component="label">
                   Загрузить .txt
