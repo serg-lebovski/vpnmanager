@@ -424,21 +424,23 @@ export class BridgesService {
     }
 
     const installed = await this.installClientProtocol(selfServer.id, dto, bridge.routeTable, bridge.bypassDestinations);
-    installed.server = selfServer;
-    if (dto.protocol === VpnProtocol.WIREGUARD) {
-      bridge.wireguardClientProtocolId = installed.id;
-      bridge.wireguardClientProtocol = installed;
-    } else if (dto.protocol === VpnProtocol.AMNEZIAWG) {
-      bridge.amneziawgClientProtocolId = installed.id;
-      bridge.amneziawgClientProtocol = installed;
-    } else {
-      bridge.vlessClientProtocolId = installed.id;
-      bridge.vlessClientProtocol = installed;
-    }
-    const saved = await this.bridgesRepository.save(bridge);
+    // Точечный UPDATE одной колонки, НЕ save(bridge): установка идёт десятки секунд, и за это
+    // время upstream моста могли переключить (setUpstream). save() сравнивает объект в
+    // памяти (загруженный ДО установки, со старым upstream) с текущей строкой БД и молча
+    // откатил бы переключение upstream — пойманный вживую случай 2026-11-14 (добавление VLESS
+    // параллельно с переключением upstream на VLESS: БД вернулась на старый upstream, и при
+    // следующем переключении панель не остановила VLESS-клиент).
+    const column =
+      dto.protocol === VpnProtocol.WIREGUARD
+        ? 'wireguardClientProtocolId'
+        : dto.protocol === VpnProtocol.AMNEZIAWG
+          ? 'amneziawgClientProtocolId'
+          : 'vlessClientProtocolId';
+    await this.bridgesRepository.update(bridge.id, { [column]: installed.id });
     this.bridgeLogService.log(LogLevel.INFO, `Добавлен клиентский протокол ${dto.protocol} (порт ${installed.listenPort})`, bridge.id, bridge.name);
 
-    if (bridge.upstreamServerProtocolId) {
+    const saved = await this.findOneOrFail(bridgeId);
+    if (saved.upstreamServerProtocolId) {
       try {
         await this.configureNat(selfServer, saved);
         if (isWireGuardLike(dto.protocol) && bridge.bypassDestinations.length > 0) {
@@ -473,9 +475,8 @@ export class BridgesService {
     } catch (error) {
       this.logger.warn(`Не удалось снять VLESS моста "${bridge.name}" по SSH: ${(error as Error).message}`);
     }
-    bridge.vlessClientProtocolId = null;
-    bridge.vlessClientProtocol = null;
-    await this.bridgesRepository.save(bridge);
+    // Точечный UPDATE, не save(bridge) — см. комментарий в addClientProtocol.
+    await this.bridgesRepository.update(bridge.id, { vlessClientProtocolId: null });
     await this.peersRepository.update({ serverProtocolId: vless.id }, { status: PeerStatus.REVOKED });
     await this.peersRepository.delete({ serverProtocolId: vless.id });
     await this.serverProtocolsRepository.delete(vless.id);

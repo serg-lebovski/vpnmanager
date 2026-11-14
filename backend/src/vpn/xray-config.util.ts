@@ -310,6 +310,9 @@ export function renderSystemdUnit(input: {
     ...(input.execStartPost ? [`ExecStartPost=${input.execStartPost}`] : []),
     'Restart=always',
     'RestartSec=3',
+    // hev-socks5-tunnel может не реагировать на SIGTERM — без этого systemd ждал бы 90с
+    // перед SIGKILL, и столько же висело бы переключение upstream.
+    'TimeoutStopSec=5',
     'LimitNOFILE=1048576',
     '',
     '[Install]',

@@ -344,7 +344,8 @@ export class XrayDriver implements VpnDriver {
   private async stopClientUnits(ssh: NodeSSH, interfaceName: string): Promise<void> {
     await this.sshService.exec(
       ssh,
-      `systemctl disable --now ${tunUnitName(interfaceName)} ${xrayClientUnitName(interfaceName)} >/dev/null 2>&1 || true`,
+      `systemctl disable --now ${tunUnitName(interfaceName)} ${xrayClientUnitName(interfaceName)} >/dev/null 2>&1; ` +
+        `systemctl reset-failed ${tunUnitName(interfaceName)} ${xrayClientUnitName(interfaceName)} >/dev/null 2>&1; true`,
     );
   }
 

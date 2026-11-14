@@ -71,6 +71,14 @@ export class SshService {
               ? this.buildHostVerifier(params, (message) => (mismatch = message))
               : undefined,
         });
+        // node-ssh слушает 'error' только на время connect() — обрыв УЖЕ установленного
+        // соединения (ECONNRESET от сервера/провайдера посреди команды) шёл как необработанное
+        // 'error'-событие ssh2 Client и ронял ВЕСЬ процесс backend (пойманный вживую случай
+        // 2026-11-14: падение посреди установки VLESS). Сама команда при этом завершится
+        // ошибкой/таймаутом своим путём (см. execWithTimeout) — здесь только не даём упасть.
+        ssh.connection?.on('error', (error: Error) => {
+          this.logger.warn(`SSH-соединение с ${params.host} оборвалось: ${error.message}`);
+        });
         return ssh;
       } catch (error) {
         lastError = error as Error;

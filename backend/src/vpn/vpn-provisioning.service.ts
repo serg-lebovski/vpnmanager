@@ -172,6 +172,15 @@ export class VpnProvisioningService {
     throw new BadRequestException(timeoutMessage);
   }
 
+  // Установки, идущие прямо сейчас (serverId:protocol:port). Установка длится десятки секунд
+  // и дольше HTTP-таймаута фронтенда — повторное нажатие «Установить», пока первая ещё идёт,
+  // запускало ВТОРУЮ параллельную установку в ту же запись: каждая генерирует свои ключи, и
+  // в БД оседали ключи одной, а на сервере — другой (пойманный вживую случай 2026-11-14:
+  // VLESS на BitStart [DE] поставился дважды, мост подключался со старым ключом Reality и
+  // получал "received real certificate"). In-memory достаточно: backend — один процесс, а
+  // после его перезапуска незавершённой установки уже нет.
+  private readonly installsInProgress = new Set<string>();
+
   async installProtocol(
     serverId: string,
     protocol: VpnProtocol,
@@ -180,6 +189,29 @@ export class VpnProvisioningService {
     mtu?: number,
     interfaceName?: string,
     // Только для VLESS — см. InstallOptions.realitySni и ServerProtocol.xrayRouting.
+    extra?: { realitySni?: string; xrayRouting?: XrayRoutingOptions | null },
+  ): Promise<ServerProtocol> {
+    const lockKey = `${serverId}:${protocol}:${listenPort}`;
+    if (this.installsInProgress.has(lockKey)) {
+      throw new BadRequestException(
+        'Установка этого протокола на этом сервере уже идёт — дождитесь её окончания (статус обновится на карточке сервера)',
+      );
+    }
+    this.installsInProgress.add(lockKey);
+    try {
+      return await this.installProtocolUnlocked(serverId, protocol, listenPort, networkCidr, mtu, interfaceName, extra);
+    } finally {
+      this.installsInProgress.delete(lockKey);
+    }
+  }
+
+  private async installProtocolUnlocked(
+    serverId: string,
+    protocol: VpnProtocol,
+    listenPort: number,
+    networkCidr: string,
+    mtu?: number,
+    interfaceName?: string,
     extra?: { realitySni?: string; xrayRouting?: XrayRoutingOptions | null },
   ): Promise<ServerProtocol> {
     // У VLESS нет подсети клиентов (прокси, а не L3-туннель) — ни проверка формата сети,

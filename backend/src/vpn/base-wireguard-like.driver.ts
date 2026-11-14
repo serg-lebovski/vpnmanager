@@ -2,6 +2,7 @@ import { randomInt } from 'crypto';
 import { NodeSSH } from 'node-ssh';
 import { SshService } from '../ssh/ssh.service';
 import { gatewayAddress } from './network.util';
+import { tunUnitName, xrayClientUnitName } from './xray-config.util';
 import {
   DetectedInstallation,
   InstallOptions,
@@ -482,6 +483,7 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
     // снял интерфейс при переключении upstream МЕЖДУ ПРОТОКОЛАМИ — тогда `awg-quick up`
     // после `wg-quick`-интерфейса того же имени (или наоборот) падает с "already exists"
     // (поймано вживую: переключение WireGuard-upstream -> AmneziaWG-upstream).
+    await this.removeVlessClientUnits(ssh, interfaceName);
     await this.sshService.exec(ssh, `ip link delete ${interfaceName} >/dev/null 2>&1 || true`);
     try {
       await this.sshService.execOrThrow(ssh, `${this.quickBinary} up ${remotePath}`);
@@ -507,7 +509,23 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
     // WireGuard на AmneziaWG и обратно, интерфейс переиспользует то же имя) — упадёт с
     // "already exists". Подчищаем интерфейс напрямую, безусловно (это всегда НАШ upstream-
     // интерфейс, см. connectAsClient).
+    await this.removeVlessClientUnits(ssh, interfaceName);
     await this.sshService.exec(ssh, `ip link delete ${interfaceName} >/dev/null 2>&1 || true`);
+  }
+
+  // Под тем же именем upstream-интерфейса моста мог жить VLESS-upstream (Xray-клиент + TUN,
+  // см. XrayDriver.connectAsClient). Снимаем его юниты безусловно, НЕ полагаясь на то, что
+  // вызывающий код правильно знает предыдущий протокол upstream: пойманный вживую случай
+  // 2026-11-14 — БД ошибочно считала предыдущим AmneziaWG, VLESS-юниты остались работать,
+  // а hev-socks5-tunnel после удаления его TUN ушёл в холостой цикл на 100% CPU.
+  private async removeVlessClientUnits(ssh: NodeSSH, interfaceName: string): Promise<void> {
+    const units = [tunUnitName(interfaceName), xrayClientUnitName(interfaceName)];
+    await this.sshService.exec(
+      ssh,
+      `R=; for u in ${units.join(' ')}; do if [ -e /etc/systemd/system/$u.service ]; then systemctl disable --now $u >/dev/null 2>&1; ` +
+        `rm -f /etc/systemd/system/$u.service; R=1; fi; done; [ -n "$R" ] && systemctl daemon-reload; ` +
+        `systemctl reset-failed ${units.join(' ')} >/dev/null 2>&1; true`,
+    );
   }
 
   async detectExisting(ssh: NodeSSH): Promise<DetectedInstallation | null> {
