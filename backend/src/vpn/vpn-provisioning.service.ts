@@ -6,14 +6,15 @@ import { BridgeLogService } from '../bridge-log/bridge-log.service';
 import { Bridge } from '../bridges/bridge.entity';
 import { probeTcpPort } from '../common/tcp-probe.util';
 import { decryptSecret } from '../common/encryption.util';
-import { LogLevel, ServerProtocolStatus, VpnProtocol } from '../common/enums';
-import { ServerProtocol } from '../servers/server-protocol.entity';
+import { isWireGuardLike, LogLevel, ServerProtocolStatus, VpnProtocol } from '../common/enums';
+import { ServerProtocol, XrayRoutingOptions } from '../servers/server-protocol.entity';
 import { Server } from '../servers/server.entity';
 import { SshConnectionParams, SshService } from '../ssh/ssh.service';
 import { AmneziaWgDriver } from './amnezia-wg.driver';
 import { assertSupportedCidr, nextCidr } from './network.util';
 import { PeerSpec, PeerTransferStats, ScannedPeer, UpstreamPeerConfig, VpnDriver } from './vpn-driver.interface';
 import { WireGuardDriver } from './wireguard.driver';
+import { XrayDriver } from './xray.driver';
 
 export interface Fail2banStatus {
   installed: boolean;
@@ -40,6 +41,7 @@ export class VpnProvisioningService {
     private readonly sshService: SshService,
     private readonly wireGuardDriver: WireGuardDriver,
     private readonly amneziaWgDriver: AmneziaWgDriver,
+    private readonly xrayDriver: XrayDriver,
     @InjectRepository(Server) private readonly serversRepository: Repository<Server>,
     @InjectRepository(ServerProtocol) private readonly serverProtocolsRepository: Repository<ServerProtocol>,
     private readonly bridgeLogService: BridgeLogService,
@@ -47,6 +49,7 @@ export class VpnProvisioningService {
     this.drivers = {
       [VpnProtocol.WIREGUARD]: this.wireGuardDriver,
       [VpnProtocol.AMNEZIAWG]: this.amneziaWgDriver,
+      [VpnProtocol.VLESS]: this.xrayDriver,
     };
   }
 
@@ -176,8 +179,17 @@ export class VpnProvisioningService {
     networkCidr: string,
     mtu?: number,
     interfaceName?: string,
+    // Только для VLESS — см. InstallOptions.realitySni и ServerProtocol.xrayRouting.
+    extra?: { realitySni?: string; xrayRouting?: XrayRoutingOptions | null },
   ): Promise<ServerProtocol> {
-    assertSupportedCidr(networkCidr);
+    // У VLESS нет подсети клиентов (прокси, а не L3-туннель) — ни проверка формата сети,
+    // ни подбор свободной сети к нему не относятся.
+    const hasNetwork = isWireGuardLike(protocol);
+    if (hasNetwork) {
+      assertSupportedCidr(networkCidr);
+    } else {
+      networkCidr = '';
+    }
     const server = await this.serversRepository.findOne({ where: { id: serverId } });
     if (!server) {
       throw new NotFoundException('Сервер не найден');
@@ -222,7 +234,7 @@ export class VpnProvisioningService {
       }
     }
     let resolvedCidr = networkCidr;
-    while (usedCidrs.has(resolvedCidr)) {
+    while (hasNetwork && usedCidrs.has(resolvedCidr)) {
       resolvedCidr = nextCidr(resolvedCidr);
     }
     if (resolvedPort !== listenPort || resolvedCidr !== networkCidr) {
@@ -247,6 +259,9 @@ export class VpnProvisioningService {
     serverProtocol.networkCidr = resolvedCidr;
     serverProtocol.status = ServerProtocolStatus.INSTALLING;
     serverProtocol.lastError = null;
+    if (extra?.xrayRouting !== undefined) {
+      serverProtocol.xrayRouting = extra.xrayRouting;
+    }
     serverProtocol = await this.serverProtocolsRepository.save(serverProtocol);
 
     const driver = this.driverFor(protocol);
@@ -265,7 +280,7 @@ export class VpnProvisioningService {
       const result = await this.sshService.withConnection(connection, async (ssh) => {
         const installResult = await driver.install(
           { ssh, server, serverProtocol },
-          { listenPort: resolvedPort, networkCidr: resolvedCidr, mtu, interfaceName },
+          { listenPort: resolvedPort, networkCidr: resolvedCidr, mtu, interfaceName, realitySni: extra?.realitySni },
         );
         const packageVersion = await driver.getInstalledVersion({ ssh, server, serverProtocol });
         return { ...installResult, packageVersion };
@@ -678,6 +693,33 @@ export class VpnProvisioningService {
             `iptables -t nat -A POSTROUTING -s ${networkCidr} -m mark --mark ${fwmark} -j MASQUERADE`,
         );
       }
+    });
+  }
+
+  // Клиентский VLESS-протокол моста: Xray на self-сервере сам открывает исходящие
+  // соединения клиентов (это не форвардинг из подсети, как у WG/AWG, а трафик самого хоста),
+  // помечая их сокеты fwmark = mark (см. ServerProtocol.xrayRouting, renderXrayServerConfig).
+  // Здесь — куда такие пакеты уходят: `ip rule fwmark <mark> lookup <routeTable>` (таблица
+  // моста, в ней маршрут по умолчанию — upstream-интерфейс) + MASQUERADE на upstream на
+  // случай, если ядро выбрало исходным адресом не адрес upstream-интерфейса. Идемпотентно,
+  // вызывается при каждом setUpstream (как setupBridgeNat) — ip rule не переживает
+  // перезагрузку self-сервера. Приоритет 87 — после меток Telegram/MTProxy (85/86) и до
+  // правил клиентских подсетей (100).
+  private static readonly XRAY_BRIDGE_RULE_PRIORITY = 87;
+
+  async setupBridgeXrayRouting(selfServer: Server, upstreamInterfaceName: string, routeTable: number, mark: number): Promise<void> {
+    const connection = this.connectionParams(selfServer);
+    await this.sshService.withConnection(connection, async (ssh) => {
+      await this.sshService.execOrThrow(
+        ssh,
+        `ip rule show | grep -q "fwmark 0x${mark.toString(16)} lookup ${routeTable}" || ` +
+          `ip rule add fwmark ${mark} lookup ${routeTable} priority ${VpnProvisioningService.XRAY_BRIDGE_RULE_PRIORITY}`,
+      );
+      await this.sshService.execOrThrow(
+        ssh,
+        `iptables -t nat -C POSTROUTING -o ${upstreamInterfaceName} -m mark --mark ${mark} -j MASQUERADE 2>/dev/null || ` +
+          `iptables -t nat -A POSTROUTING -o ${upstreamInterfaceName} -m mark --mark ${mark} -j MASQUERADE`,
+      );
     });
   }
 

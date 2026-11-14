@@ -15,6 +15,16 @@ export enum Role {
 export enum VpnProtocol {
   WIREGUARD = 'wireguard',
   AMNEZIAWG = 'amneziawg',
+  // VLESS + XTLS-Reality поверх TCP (Xray-core, см. vpn/xray.driver.ts) — в отличие от
+  // WG/AWG не L3-туннель с подсетью клиентов, а прокси: клиент определяется UUID, своего IP
+  // в туннеле у него нет (Peer.allowedIp = '', ServerProtocol.networkCidr = '').
+  VLESS = 'vless',
+}
+
+// Протоколы с L3-интерфейсом и подсетью клиентов (WG/AWG) — для них имеет смысл
+// networkCidr/nextHostOctet/allowedIp, NAT по подсети и т.п.; VLESS этого не имеет.
+export function isWireGuardLike(protocol: VpnProtocol): boolean {
+  return protocol === VpnProtocol.WIREGUARD || protocol === VpnProtocol.AMNEZIAWG;
 }
 
 export enum ServerStatus {

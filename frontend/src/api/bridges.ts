@@ -34,7 +34,22 @@ export async function fetchCandidateServers(): Promise<BridgeCandidateServer[]> 
 export interface BridgeClientProtocolInput {
   protocol: VpnProtocol;
   listenPort: number;
-  networkCidr: string;
+  // Не нужна для VLESS (у него нет подсети клиентов).
+  networkCidr?: string;
+  // Только для VLESS — сайт маскировки Reality.
+  realitySni?: string;
+}
+
+// Добавить клиентский протокол (в первую очередь VLESS) к уже существующему мосту.
+export async function addBridgeClientProtocol(bridgeId: string, input: BridgeClientProtocolInput): Promise<BridgeEntity> {
+  const { data } = await apiClient.post<BridgeEntity>(`/bridges/${bridgeId}/client-protocols`, input);
+  return data;
+}
+
+// Снять VLESS с моста (удаляет и его peers). WireGuard/AmneziaWG так снять нельзя.
+export async function removeBridgeClientProtocol(bridgeId: string, protocol: VpnProtocol): Promise<BridgeEntity> {
+  const { data } = await apiClient.delete<BridgeEntity>(`/bridges/${bridgeId}/client-protocols/${protocol}`);
+  return data;
 }
 
 interface SelfServerCredentialsInput {

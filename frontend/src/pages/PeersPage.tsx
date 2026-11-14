@@ -45,6 +45,7 @@ import {
   downloadPeerConfig,
   fetchAllowedServers,
   fetchPeerAmneziaQrCodeUrl,
+  fetchPeerConfigText,
   fetchPeerQrCodeUrl,
   fetchPeers,
   purgePeer,
@@ -52,7 +53,7 @@ import {
   updatePeer,
 } from '../api/peers';
 import { fetchServers } from '../api/servers';
-import { BridgeEntity, PeerEntity, VpnProtocol } from '../api/types';
+import { BridgeEntity, PeerEntity, VPN_PROTOCOL_LABELS, VpnProtocol } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 
 const statusColor: Record<string, 'success' | 'default'> = {
@@ -60,7 +61,20 @@ const statusColor: Record<string, 'success' | 'default'> = {
   revoked: 'default',
 };
 
-const protocolLabels: Record<VpnProtocol, string> = { wireguard: 'WireGuard', amneziawg: 'AmneziaWG' };
+const protocolLabels = VPN_PROTOCOL_LABELS;
+
+// Клиентские протоколы, реально поднятые на мосту, — для авто-подстановки в форме.
+function bridgeProtocols(bridge: BridgeEntity): VpnProtocol[] {
+  return [
+    bridge.wireguardClientProtocolId && 'wireguard',
+    bridge.amneziawgClientProtocolId && 'amneziawg',
+    bridge.vlessClientProtocolId && 'vless',
+  ].filter(Boolean) as VpnProtocol[];
+}
+
+function isVlessPeer(peer: PeerEntity): boolean {
+  return peer.serverProtocol?.protocol === 'vless';
+}
 
 // Та же схема, что и на Дашборде (см. formatLastHandshake в DashboardPage.tsx), но
 // источник — персистентное Peer.lastHandshakeAt, а не живой снапшот wg/awg show: не
@@ -88,7 +102,10 @@ const DEFAULT_CLIENT_ORG_NAME = 'main';
 // (обычно скрытого от UI) self-сервера.
 function serverLabel(peer: PeerEntity, bridges?: BridgeEntity[]): string {
   const bridge = bridges?.find(
-    (b) => b.wireguardClientProtocolId === peer.serverProtocolId || b.amneziawgClientProtocolId === peer.serverProtocolId,
+    (b) =>
+      b.wireguardClientProtocolId === peer.serverProtocolId ||
+      b.amneziawgClientProtocolId === peer.serverProtocolId ||
+      b.vlessClientProtocolId === peer.serverProtocolId,
   );
   if (bridge) {
     return `Мост «${bridge.name}»`;
@@ -150,7 +167,8 @@ function PeerTableRow({
     <TableRow>
       <TableCell sx={indent ? { pl: 5 } : undefined}>{peer.name}</TableCell>
       <TableCell>
-        {peer.serverProtocol ? protocolLabels[peer.serverProtocol.protocol] : '—'} · {peer.allowedIp}
+        {peer.serverProtocol ? protocolLabels[peer.serverProtocol.protocol] : '—'}
+        {peer.allowedIp ? ` · ${peer.allowedIp}` : ''}
       </TableCell>
       <TableCell>{serverLabel(peer, bridges)}</TableCell>
       <TableCell>
@@ -164,20 +182,26 @@ function PeerTableRow({
               <EditIcon fontSize="small" />
             </IconButton>
           </Tooltip>
-          <Tooltip title="Скачать конфиг">
+          <Tooltip title={isVlessPeer(peer) ? 'Скачать ссылку vless://' : 'Скачать конфиг'}>
             <span>
-              <IconButton size="small" disabled={peer.source === 'imported'} onClick={() => downloadPeerConfig(peer.id, peer.name)}>
+              <IconButton
+                size="small"
+                disabled={peer.source === 'imported'}
+                onClick={() => downloadPeerConfig(peer.id, peer.name, isVlessPeer(peer) ? '.txt' : '.conf')}
+              >
                 <DownloadIcon fontSize="small" />
               </IconButton>
             </span>
           </Tooltip>
-          <Tooltip title="QR-код">
+          <Tooltip title={isVlessPeer(peer) ? 'Ссылка и QR-код для Happ' : 'QR-код'}>
             <span>
               <IconButton size="small" disabled={peer.source === 'imported'} onClick={() => onShowQr(peer)}>
                 <QrCode2Icon fontSize="small" />
               </IconButton>
             </span>
           </Tooltip>
+          {!isVlessPeer(peer) && (
+          <>
           <Tooltip title="Скачать .vpn для приложения AmneziaVPN">
             <span>
               <IconButton size="small" disabled={peer.source === 'imported'} onClick={() => downloadPeerAmneziaConfig(peer.id, peer.name)}>
@@ -192,6 +216,8 @@ function PeerTableRow({
               </IconButton>
             </span>
           </Tooltip>
+          </>
+          )}
           {peer.status === 'active' && (
             <Tooltip title="Отозвать">
               <IconButton size="small" color="warning" onClick={() => onRevoke(peer.id)}>
@@ -345,6 +371,9 @@ export function PeersPage() {
   const [error, setError] = useState<string | null>(null);
   const [qrPeer, setQrPeer] = useState<PeerEntity | null>(null);
   const [qrUrl, setQrUrl] = useState<string | null>(null);
+  // Для VLESS-peer'а рядом с QR показываем саму ссылку vless:// (скопировать в Happ).
+  const [qrLink, setQrLink] = useState<string | null>(null);
+  const [qrLinkCopied, setQrLinkCopied] = useState(false);
   // Форма создания раньше жила в постоянной боковой панели фиксированной ширины (320px) —
   // на средних экранах она заметно поджимала таблицу peers (особенно колонку «Действия» с
   // несколькими иконками — та начинала переноситься и выглядела неопрятно). Вынесена в
@@ -361,10 +390,7 @@ export function PeersPage() {
       return base;
     }
     const bridge = bridges[0];
-    const availableProtocols: VpnProtocol[] = [
-      bridge.wireguardClientProtocolId && 'wireguard',
-      bridge.amneziawgClientProtocolId && 'amneziawg',
-    ].filter(Boolean) as VpnProtocol[];
+    const availableProtocols = bridgeProtocols(bridge);
     return { ...base, bridgeId: bridge.id, protocol: availableProtocols[0] ?? base.protocol };
   }
 
@@ -450,12 +476,15 @@ export function PeersPage() {
 
   async function handleShowQr(peer: PeerEntity) {
     const url = await fetchPeerQrCodeUrl(peer.id);
+    setQrLink(isVlessPeer(peer) ? await fetchPeerConfigText(peer.id) : null);
+    setQrLinkCopied(false);
     setQrPeer(peer);
     setQrUrl(url);
   }
 
   async function handleShowAmneziaQr(peer: PeerEntity) {
     const url = await fetchPeerAmneziaQrCodeUrl(peer.id);
+    setQrLink(null);
     setQrPeer(peer);
     setQrUrl(url);
   }
@@ -602,6 +631,7 @@ export function PeersPage() {
               >
                 <MenuItem value="wireguard">WireGuard</MenuItem>
                 <MenuItem value="amneziawg">AmneziaWG</MenuItem>
+                <MenuItem value="vless">VLESS Reality (Happ, v2rayNG…)</MenuItem>
                 <MenuItem value="multi">AmneziaWG + WireGuard</MenuItem>
               </TextField>
               {bridges && bridges.length > 0 && (
@@ -620,11 +650,7 @@ export function PeersPage() {
                     // Мост может выдавать peers по одному или обоим протоколам сразу —
                     // подставляем тот, что реально доступен, чтобы не наткнуться на ошибку
                     // "протокол не установлен".
-                    const availableProtocols: VpnProtocol[] = selected
-                      ? ([selected.wireguardClientProtocolId && 'wireguard', selected.amneziawgClientProtocolId && 'amneziawg'].filter(
-                          Boolean,
-                        ) as VpnProtocol[])
-                      : [];
+                    const availableProtocols: VpnProtocol[] = selected ? bridgeProtocols(selected) : [];
                     const protocol = availableProtocols.includes(form.protocol) ? form.protocol : availableProtocols[0] ?? form.protocol;
                     setForm({ ...form, bridgeId, serverId: undefined, protocol });
                   }}
@@ -809,7 +835,30 @@ export function PeersPage() {
 
       <Dialog open={!!qrPeer} onClose={() => setQrPeer(null)}>
         <DialogTitle>QR-код: {qrPeer?.name}</DialogTitle>
-        <DialogContent>{qrUrl && <img src={qrUrl} alt="QR-код конфигурации" width={320} height={320} />}</DialogContent>
+        <DialogContent>
+          {qrUrl && <img src={qrUrl} alt="QR-код конфигурации" width={320} height={320} />}
+          {qrLink && (
+            <Stack spacing={1} mt={1} sx={{ maxWidth: 320 }}>
+              <Typography variant="body2" color="text.secondary">
+                Отсканируйте QR в Happ (или v2rayNG, Streisand, Hiddify) либо скопируйте ссылку и добавьте её в приложение
+                через «+» → «Вставить из буфера».
+              </Typography>
+              <TextField size="small" value={qrLink} multiline maxRows={4} InputProps={{ readOnly: true }} />
+              <Button
+                variant="outlined"
+                size="small"
+                onClick={() => {
+                  navigator.clipboard
+                    ?.writeText(qrLink)
+                    .then(() => setQrLinkCopied(true))
+                    .catch(() => setQrLinkCopied(false));
+                }}
+              >
+                {qrLinkCopied ? 'Скопировано' : 'Скопировать ссылку'}
+              </Button>
+            </Stack>
+          )}
+        </DialogContent>
       </Dialog>
 
       <Dialog open={!!editingPeer} onClose={() => setEditingPeer(null)} fullWidth maxWidth="xs">

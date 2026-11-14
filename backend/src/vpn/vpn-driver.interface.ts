@@ -10,10 +10,15 @@ export interface VpnDriverContext {
 }
 
 export interface PeerSpec {
+  // Для VLESS — не ключ, а идентификатор пользователя Xray ("email" в его терминах, по нему
+  // же Xray ведёт статистику трафика), см. Peer.publicKey.
   publicKey: string;
   presharedKey?: string | null;
   allowedIp: string;
   name?: string;
+  // Только для VLESS: UUID клиента (сам секрет подключения), расшифрованный из
+  // Peer.privateKeyEnc.
+  vlessUuid?: string;
 }
 
 export interface InstallOptions {
@@ -30,6 +35,9 @@ export interface InstallOptions {
   // и им нельзя делить одно и то же имя интерфейса/путь конфига. undefined — обычное имя
   // по умолчанию (для одиночных, не-мостовых серверов конфликтовать не с кем).
   interfaceName?: string;
+  // Только для VLESS: сайт, под который маскируется Reality (SNI + куда Xray проксирует
+  // "чужие" TLS-подключения без верного ключа). undefined — значение по умолчанию драйвера.
+  realitySni?: string;
 }
 
 export interface InstallResult {

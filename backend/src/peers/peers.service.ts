@@ -5,7 +5,7 @@ import { DataSource, In, IsNull, LessThanOrEqual, MoreThan, Not, Repository } fr
 import { Bridge } from '../bridges/bridge.entity';
 import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { decryptSecret, encryptSecret } from '../common/encryption.util';
-import { PeerDeviceType, PeerSource, PeerStatus, Role, ServerProtocolStatus, VpnProtocol } from '../common/enums';
+import { isWireGuardLike, PeerDeviceType, PeerSource, PeerStatus, Role, ServerProtocolStatus, VpnProtocol } from '../common/enums';
 import { LoadBalancerService } from '../load-balancer/load-balancer.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Organization } from '../organizations/organization.entity';
@@ -22,6 +22,8 @@ import { UpdatePeerDto } from './dto/update-peer.dto';
 import { Peer } from './peer.entity';
 import { generatePresharedKey, generateWgKeyPair } from './wg-keypair.util';
 import { hostAddress } from '../vpn/network.util';
+import { buildVlessUri, parseVlessServerParams } from '../vpn/xray-config.util';
+import { randomBytes, randomUUID } from 'crypto';
 
 type SafeServerProtocol = Omit<ServerProtocol, 'server' | 'peers'> & { server: Omit<Server, 'sshSecretEnc'> };
 export type PeerListItem = Omit<Peer, 'privateKeyEnc' | 'presharedKeyEnc' | 'serverProtocol'> & {
@@ -345,18 +347,25 @@ export class PeersService {
     serverProtocol: ServerProtocol,
     params: { organizationId: string | null; name: string; source: PeerSource; createdByUserId: string | null },
   ): Promise<Peer> {
-    const { publicKey, privateKey } = generateWgKeyPair();
-    const presharedKey = generatePresharedKey();
+    // VLESS: секрет подключения — UUID (хранится зашифрованным там же, где приватный ключ
+    // WG), а publicKey — несекретный идентификатор пользователя Xray ("email"), по которому
+    // Xray ведёт статистику трафика (см. XrayDriver.getTransferStats). IP в туннеле у VLESS-
+    // клиента нет — подсеть/allocateIp к нему не относятся.
+    const isVless = serverProtocol.protocol === VpnProtocol.VLESS;
+    const keyPair = isVless ? null : generateWgKeyPair();
+    const publicKey = isVless ? `p-${randomBytes(6).toString('hex')}` : keyPair!.publicKey;
+    const secret = isVless ? randomUUID() : keyPair!.privateKey;
+    const presharedKey = isVless ? null : generatePresharedKey();
 
-    const allowedIp = await this.allocateIp(serverProtocol.id);
+    const allowedIp = isVless ? '' : await this.allocateIp(serverProtocol.id);
 
     const peer = this.peersRepository.create({
       organizationId: params.organizationId,
       serverProtocolId: serverProtocol.id,
       name: params.name,
       publicKey,
-      privateKeyEnc: encryptSecret(privateKey),
-      presharedKeyEnc: encryptSecret(presharedKey),
+      privateKeyEnc: encryptSecret(secret),
+      presharedKeyEnc: presharedKey ? encryptSecret(presharedKey) : null,
       allowedIp,
       source: params.source,
       status: PeerStatus.ACTIVE,
@@ -459,6 +468,19 @@ export class PeersService {
     const privateKey = decryptSecret(peer.privateKeyEnc);
     const presharedKey = peer.presharedKeyEnc ? decryptSecret(peer.presharedKeyEnc) : null;
     const endpointServer = await this.resolveEndpointServer(serverProtocol, server);
+    if (serverProtocol.protocol === VpnProtocol.VLESS) {
+      // Не файл конфига, а ссылка vless:// — её (или QR-код с ней) импортируют Happ,
+      // v2rayNG, Streisand, Hiddify и т.п.
+      const uri = buildVlessUri({
+        uuid: privateKey,
+        host: endpointServer.host,
+        port: serverProtocol.listenPort,
+        publicKey: serverProtocol.serverPublicKey!,
+        params: parseVlessServerParams(serverProtocol.obfuscationParams),
+        name: peer.name,
+      });
+      return { filename: `${peer.name.replace(/[^\p{L}\p{N}_-]+/gu, '_')}.txt`, content: uri };
+    }
     const content = buildClientConfig(peer, privateKey, endpointServer, serverProtocol, presharedKey);
     // \p{L}/\p{N} — буква/цифра ЛЮБОГО алфавита, не только латиница — иначе кириллическое
     // имя (например, ФИО из Telegram-бота) целиком превращалось бы в подчёркивания и файл
@@ -475,7 +497,11 @@ export class PeersService {
   // (getAmneziaAppConfig) — оба должны одинаково резолвить Endpoint.
   private async resolveEndpointServer(serverProtocol: ServerProtocol, server: Server): Promise<Server> {
     const bridge = await this.bridgesRepository.findOne({
-      where: [{ wireguardClientProtocolId: serverProtocol.id }, { amneziawgClientProtocolId: serverProtocol.id }],
+      where: [
+        { wireguardClientProtocolId: serverProtocol.id },
+        { amneziawgClientProtocolId: serverProtocol.id },
+        { vlessClientProtocolId: serverProtocol.id },
+      ],
     });
     return bridge?.domainName ? { ...server, host: bridge.domainName } : server;
   }
@@ -511,6 +537,11 @@ export class PeersService {
         );
       }
       const serverProtocol = await this.serverProtocolsRepository.findOneOrFail({ where: { id: groupPeer.serverProtocolId } });
+      if (!isWireGuardLike(serverProtocol.protocol)) {
+        throw new BadRequestException(
+          'Файл для приложения AmneziaVPN доступен только для WireGuard/AmneziaWG — для VLESS используйте ссылку vless:// (Happ и др.)',
+        );
+      }
       const server = await this.serversRepository.findOneOrFail({ where: { id: serverProtocol.serverId } });
       const endpointServer = await this.resolveEndpointServer(serverProtocol, server);
       containers.push({
@@ -557,7 +588,7 @@ export class PeersService {
       if (organization.blockedBridgeIds.includes(bridge.id)) {
         continue;
       }
-      const serverProtocolId = protocol === 'wireguard' ? bridge.wireguardClientProtocolId : bridge.amneziawgClientProtocolId;
+      const serverProtocolId = bridgeClientProtocolId(bridge, protocol);
       if (!serverProtocolId) {
         continue;
       }
@@ -591,7 +622,7 @@ export class PeersService {
   }
 
   private async findBridgeClientProtocolByBridge(bridge: Bridge, protocol: CreatePeerDto['protocol']): Promise<ServerProtocol> {
-    const serverProtocolId = protocol === 'wireguard' ? bridge.wireguardClientProtocolId : bridge.amneziawgClientProtocolId;
+    const serverProtocolId = bridgeClientProtocolId(bridge, protocol);
     if (!serverProtocolId) {
       throw new BadRequestException(`На этом мосту не установлен протокол ${protocol}`);
     }
@@ -613,7 +644,7 @@ export class PeersService {
     if (bridge.maxPeers === null || bridge.maxPeers === undefined) {
       return;
     }
-    const protocolIds = [bridge.wireguardClientProtocolId, bridge.amneziawgClientProtocolId].filter(
+    const protocolIds = [bridge.wireguardClientProtocolId, bridge.amneziawgClientProtocolId, bridge.vlessClientProtocolId].filter(
       (id): id is string => !!id,
     );
     if (protocolIds.length === 0) {
@@ -916,6 +947,10 @@ export class PeersService {
   }
 
   async importScannedPeers(serverProtocolId: string): Promise<number> {
+    const target = await this.serverProtocolsRepository.findOne({ where: { id: serverProtocolId } });
+    if (target && !isWireGuardLike(target.protocol)) {
+      throw new BadRequestException('Импорт существующих пользователей поддерживается только для WireGuard/AmneziaWG');
+    }
     const scannedPeers = await this.vpnProvisioningService.scanExistingPeers(serverProtocolId);
     const existingPublicKeys = new Set(
       (await this.peersRepository.find({ where: { serverProtocolId } })).map((peer) => peer.publicKey),
@@ -1010,7 +1045,11 @@ export class PeersService {
     }
     const serverProtocol = active[0];
     const claimedByBridge = await this.bridgesRepository.findOne({
-      where: [{ wireguardClientProtocolId: serverProtocol.id }, { amneziawgClientProtocolId: serverProtocol.id }],
+      where: [
+        { wireguardClientProtocolId: serverProtocol.id },
+        { amneziawgClientProtocolId: serverProtocol.id },
+        { vlessClientProtocolId: serverProtocol.id },
+      ],
     });
     if (claimedByBridge) {
       throw new BadRequestException(
@@ -1043,7 +1082,7 @@ export class PeersService {
     ) {
       throw new ForbiddenException('Недостаточно прав для этого моста');
     }
-    const serverProtocolId = protocol === 'wireguard' ? bridge.wireguardClientProtocolId : bridge.amneziawgClientProtocolId;
+    const serverProtocolId = bridgeClientProtocolId(bridge, protocol);
     if (!serverProtocolId) {
       throw new BadRequestException(`На этом мосту не установлен протокол ${protocol}`);
     }
@@ -1090,6 +1129,13 @@ export class PeersService {
     });
   }
 
+  // Переприменить текущий набор peers протокола на сервере — нужно BridgesService, когда
+  // меняется не набор peers, а настройки самого протокола (маршрутизация VLESS-клиентов
+  // моста: список обхода, см. ServerProtocol.xrayRouting).
+  async resyncServerProtocol(serverProtocolId: string): Promise<void> {
+    await this.syncServerPeers(serverProtocolId);
+  }
+
   private async syncServerPeers(serverProtocolId: string): Promise<void> {
     const serverProtocol = await this.serverProtocolsRepository.findOneOrFail({ where: { id: serverProtocolId } });
     const server = await this.serversRepository.findOneOrFail({ where: { id: serverProtocol.serverId } });
@@ -1109,6 +1155,7 @@ export class PeersService {
     // этого протокола, включая попытку отозвать сам сломанный peer. Пропускаем такой peer
     // (не отправляем на сервер — он всё равно нерабочий без preshared-ключа) вместо того,
     // чтобы валить весь sync.
+    const isVless = serverProtocol.protocol === VpnProtocol.VLESS;
     const specs: PeerSpec[] = [];
     for (const peer of activePeers) {
       try {
@@ -1117,6 +1164,9 @@ export class PeersService {
           presharedKey: peer.presharedKeyEnc ? decryptSecret(peer.presharedKeyEnc) : undefined,
           allowedIp: peer.allowedIp,
           name: peer.name,
+          // VLESS-peer без UUID (не расшифровался) просто не попадёт в конфиг Xray — см.
+          // XrayDriver.applyPeers.
+          vlessUuid: isVless && peer.privateKeyEnc ? decryptSecret(peer.privateKeyEnc) : undefined,
         });
       } catch (error) {
         this.logger.warn(
@@ -1172,5 +1222,19 @@ export class PeersService {
         `⏳ Срок действия peer'а «${peer.name}» истёк — доступ отключён (запись не удалена, можно продлить в панели).`,
       );
     }
+  }
+}
+
+// Клиентский протокол моста под запрошенный VPN-протокол (WG/AWG/VLESS).
+function bridgeClientProtocolId(bridge: Bridge, protocol: VpnProtocol): string | null {
+  switch (protocol) {
+    case VpnProtocol.WIREGUARD:
+      return bridge.wireguardClientProtocolId;
+    case VpnProtocol.AMNEZIAWG:
+      return bridge.amneziawgClientProtocolId;
+    case VpnProtocol.VLESS:
+      return bridge.vlessClientProtocolId;
+    default:
+      return null;
   }
 }

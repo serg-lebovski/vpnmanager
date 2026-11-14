@@ -12,6 +12,7 @@ import {
   Max,
   Min,
   MinLength,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 import { SshAuthType, VpnProtocol } from '../../common/enums';
@@ -25,11 +26,22 @@ export class BridgeClientProtocolInput {
   @Max(65535)
   listenPort: number;
 
-  // Поддерживается только сеть вида a.b.c.0/24
+  // Поддерживается только сеть вида a.b.c.0/24. Не нужна для VLESS (нет подсети клиентов).
+  @ValidateIf((input: BridgeClientProtocolInput) => input.protocol !== VpnProtocol.VLESS)
   @IsString()
   @Matches(/^\d+\.\d+\.\d+\.0\/24$/)
-  networkCidr: string;
+  networkCidr?: string;
+
+  // Только для VLESS — сайт маскировки Reality (см. InstallOptions.realitySni).
+  @IsString()
+  @Matches(/^[a-z0-9.-]+$/i)
+  @IsOptional()
+  realitySni?: string;
 }
+
+// Добавление клиентского протокола к уже существующему мосту (см.
+// BridgesService.addClientProtocol) — те же поля, что у протокола при создании моста.
+export class AddBridgeClientProtocolDto extends BridgeClientProtocolInput {}
 
 // SSH-доступ к хосту, на котором развёрнута сама панель — нужен только при создании
 // САМОГО ПЕРВОГО моста в системе (см. BridgesService.create: дальше self-сервер уже
@@ -83,7 +95,7 @@ export class CreateBridgeDto {
   // с одного и того же моста (оба маршрутизируются через один upstream).
   @IsArray()
   @ArrayMinSize(1)
-  @ArrayMaxSize(2)
+  @ArrayMaxSize(3)
   @ValidateNested({ each: true })
   @Type(() => BridgeClientProtocolInput)
   clientProtocols: BridgeClientProtocolInput[];

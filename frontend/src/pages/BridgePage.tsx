@@ -23,12 +23,14 @@ import {
   BridgeCandidateServer,
   BridgeClientProtocolInput,
   CreateBridgeInput,
+  addBridgeClientProtocol,
   createBridge,
   deleteBridge,
   fetchBridges,
   fetchCandidateServers,
   fetchCandidateStatus,
   rebalanceBridge,
+  removeBridgeClientProtocol,
   setBridgeMode,
   setBridgeUpstream,
   setUpstreamCandidates,
@@ -37,7 +39,7 @@ import {
 import { BridgeSwitchProgress, connectBridgeProgressSocket } from '../api/bridgeSocket';
 import { getErrorMessage, getKernelRebootInfo, KernelRebootRequiredInfo } from '../api/errors';
 import { fetchOrganizations } from '../api/organizations';
-import { BridgeEntity, BridgeUpstreamMode, Organization, SshAuthType, VpnProtocol } from '../api/types';
+import { BridgeEntity, BridgeUpstreamMode, Organization, SshAuthType, VPN_PROTOCOL_LABELS, VpnProtocol } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { KernelRebootConfirmDialog } from '../components/KernelRebootConfirmDialog';
 
@@ -434,6 +436,27 @@ function BridgeCard({
   // Мост "по умолчанию" — бот/портал молча создают/перевыпускают на нём новые конфиги, не
   // спрашивая выбор сервера (см. PeersService.listUpstreamOptions на бэкенде). Отдельная
   // мутация (не часть общей формы "Изменить") — однокликовый переключатель.
+  // VLESS Reality к уже существующему мосту — отдельный Xray на self-сервере (порт TCP;
+  // 443 там обычно занят nginx панели, поэтому по умолчанию 8443). WG/AWG-клиентов моста
+  // не затрагивает.
+  const [vlessPort, setVlessPort] = useState(8443);
+  const addVlessMutation = useMutation({
+    mutationFn: () => addBridgeClientProtocol(bridge.id, { protocol: 'vless', listenPort: vlessPort }),
+    onSuccess: () => {
+      onChanged();
+      setError(null);
+    },
+    onError: (err) => setError(getErrorMessage(err, 'Не удалось добавить VLESS')),
+  });
+  const removeVlessMutation = useMutation({
+    mutationFn: () => removeBridgeClientProtocol(bridge.id, 'vless'),
+    onSuccess: () => {
+      onChanged();
+      setError(null);
+    },
+    onError: (err) => setError(getErrorMessage(err, 'Не удалось снять VLESS')),
+  });
+
   const defaultMutation = useMutation({
     mutationFn: (isDefault: boolean) => updateBridge(bridge.id, { isDefault }),
     onSuccess: () => {
@@ -485,7 +508,9 @@ function BridgeCard({
     candidatesMutation.mutate(serverProtocolIds);
   }
 
-  const clientProtocolIds = [bridge.wireguardClientProtocolId, bridge.amneziawgClientProtocolId].filter(Boolean);
+  const clientProtocolIds = [bridge.wireguardClientProtocolId, bridge.amneziawgClientProtocolId, bridge.vlessClientProtocolId].filter(
+    Boolean,
+  );
   const candidates = servers
     .flatMap((server) => server.protocols.map((protocol) => ({ ...protocol, serverName: server.name, host: server.host })))
     .filter((protocol) => protocol.status === 'active' && !clientProtocolIds.includes(protocol.id));
@@ -519,6 +544,7 @@ function BridgeCard({
   const clientInterfaces: Array<{ label: VpnProtocol; sp: BridgeEntity['wireguardClientProtocol'] }> = [
     { label: 'wireguard', sp: bridge.wireguardClientProtocol },
     { label: 'amneziawg', sp: bridge.amneziawgClientProtocol },
+    { label: 'vless', sp: bridge.vlessClientProtocol },
   ].filter((row) => row.sp) as Array<{ label: VpnProtocol; sp: BridgeEntity['wireguardClientProtocol'] }>;
 
   return (
@@ -616,9 +642,51 @@ function BridgeCard({
           )}
           {clientInterfaces.map(({ label, sp }) => (
             <Typography key={label} variant="body2" color="text.secondary">
-              Клиентский интерфейс ({label}): {sp?.server?.name} · порт {sp?.listenPort} · сеть {sp?.networkCidr}
+              Клиентский интерфейс ({VPN_PROTOCOL_LABELS[label]}): {sp?.server?.name} · порт {sp?.listenPort}
+              {label === 'vless' ? ' (TCP)' : ` · сеть ${sp?.networkCidr}`}
+              {sp && sp.status !== 'active' ? ` · ${sp.status}${sp.lastError ? `: ${sp.lastError}` : ''}` : ''}
             </Typography>
           ))}
+          {!bridge.vlessClientProtocolId ? (
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap my={1}>
+              <TextField
+                label="Порт VLESS (TCP)"
+                type="number"
+                size="small"
+                value={vlessPort}
+                onChange={(e) => setVlessPort(Number(e.target.value))}
+                sx={{ width: 150 }}
+              />
+              <Button
+                size="small"
+                variant="outlined"
+                disabled={addVlessMutation.isPending}
+                startIcon={addVlessMutation.isPending ? <CircularProgress size={16} /> : undefined}
+                onClick={() => addVlessMutation.mutate()}
+              >
+                {addVlessMutation.isPending ? 'Установка VLESS…' : 'Добавить VLESS Reality'}
+              </Button>
+              <Typography variant="caption" color="text.secondary">
+                для Happ/v2rayNG; WireGuard/AmneziaWG-клиенты моста не затрагиваются
+              </Typography>
+            </Stack>
+          ) : (
+            canDelete && (
+              <Button
+                size="small"
+                color="warning"
+                sx={{ my: 0.5 }}
+                disabled={removeVlessMutation.isPending}
+                onClick={() => {
+                  if (window.confirm('Снять VLESS с моста? Все VLESS-peers этого моста будут удалены.')) {
+                    removeVlessMutation.mutate();
+                  }
+                }}
+              >
+                Снять VLESS
+              </Button>
+            )
+          )}
           <Typography variant="body2" color="text.secondary">
             Домен: {bridge.domainName ?? 'не задан (в конфигах — IP self-сервера)'}
           </Typography>

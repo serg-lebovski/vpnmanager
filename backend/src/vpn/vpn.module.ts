@@ -7,10 +7,11 @@ import { SshModule } from '../ssh/ssh.module';
 import { AmneziaWgDriver } from './amnezia-wg.driver';
 import { VpnProvisioningService } from './vpn-provisioning.service';
 import { WireGuardDriver } from './wireguard.driver';
+import { XrayDriver } from './xray.driver';
 
 @Module({
   imports: [SshModule, BridgeLogModule, TypeOrmModule.forFeature([Server, ServerProtocol])],
-  providers: [WireGuardDriver, AmneziaWgDriver, VpnProvisioningService],
+  providers: [WireGuardDriver, AmneziaWgDriver, XrayDriver, VpnProvisioningService],
   exports: [VpnProvisioningService],
 })
 export class VpnModule {}

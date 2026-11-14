@@ -2,6 +2,7 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
   CircularProgress,
   Dialog,
@@ -10,6 +11,7 @@ import {
   DialogContentText,
   DialogTitle,
   Divider,
+  FormControlLabel,
   IconButton,
   LinearProgress,
   MenuItem,
@@ -62,7 +64,7 @@ import {
   updateServer,
   updateServerCredentials,
 } from '../api/servers';
-import { ServerEntity, ServerProtocolEntity, SshAuthType, VpnProtocol } from '../api/types';
+import { ServerEntity, ServerProtocolEntity, SshAuthType, VPN_PROTOCOL_LABELS, VpnProtocol } from '../api/types';
 
 // Порт/сеть по умолчанию в форме установки одинаковы для любого протокола — если на
 // сервере уже что-то активно занимает их (например, AmneziaWG уже установлен на 51820/
@@ -149,6 +151,7 @@ export function ServersPage() {
     sshAuthType: 'password',
     secret: '',
     maxPeers: 100,
+    autoInstallProtocols: [],
   });
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -156,7 +159,7 @@ export function ServersPage() {
     mutationFn: createServer,
     onSuccess: () => {
       invalidate();
-      setForm({ name: '', host: '', sshPort: 22, sshUsername: 'root', sshAuthType: 'password', secret: '', maxPeers: 100 });
+      setForm({ name: '', host: '', sshPort: 22, sshUsername: 'root', sshAuthType: 'password', secret: '', maxPeers: 100, autoInstallProtocols: [] });
       setCreateError(null);
     },
     onError: (err) => setCreateError(getErrorMessage(err, 'Не удалось добавить сервер')),
@@ -179,8 +182,13 @@ export function ServersPage() {
     // Только {protocol, listenPort, networkCidr} в теле запроса — InstallProtocolDto не
     // объявляет serverId (он и так уже в URL, /servers/:id/protocols), а глобальный
     // ValidationPipe с forbidNonWhitelisted:true отклоняет лишние поля.
-    mutationFn: (vars: { serverId: string; protocol: VpnProtocol; listenPort: number; networkCidr: string }) =>
-      installProtocol(vars.serverId, { protocol: vars.protocol, listenPort: vars.listenPort, networkCidr: vars.networkCidr }),
+    mutationFn: (vars: { serverId: string; protocol: VpnProtocol; listenPort: number; networkCidr: string; realitySni?: string }) =>
+      installProtocol(
+        vars.serverId,
+        vars.protocol === 'vless'
+          ? { protocol: vars.protocol, listenPort: vars.listenPort, ...(vars.realitySni ? { realitySni: vars.realitySni } : {}) }
+          : { protocol: vars.protocol, listenPort: vars.listenPort, networkCidr: vars.networkCidr },
+      ),
     onSuccess: invalidate,
   });
   const installKernelRebootInfo = installMutation.isError ? getKernelRebootInfo(installMutation.error) : null;
@@ -252,6 +260,34 @@ export function ServersPage() {
               Добавить
             </Button>
           </Stack>
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap mt={1}>
+            <Typography variant="body2" color="text.secondary">
+              Сразу установить:
+            </Typography>
+            {(['amneziawg', 'wireguard', 'vless'] as VpnProtocol[]).map((protocol) => (
+              <FormControlLabel
+                key={protocol}
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={form.autoInstallProtocols?.includes(protocol) ?? false}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        autoInstallProtocols: e.target.checked
+                          ? [...(form.autoInstallProtocols ?? []), protocol]
+                          : (form.autoInstallProtocols ?? []).filter((p) => p !== protocol),
+                      })
+                    }
+                  />
+                }
+                label={VPN_PROTOCOL_LABELS[protocol]}
+              />
+            ))}
+            <Typography variant="caption" color="text.secondary">
+              установка идёт в фоне после добавления, статус — на карточке сервера
+            </Typography>
+          </Stack>
         </form>
         {createError && (
           <Alert severity="error" sx={{ mt: 2 }}>
@@ -295,9 +331,9 @@ export function ServersPage() {
                 ? getErrorMessage(credentialsMutation.error, 'Не удалось сохранить учётные данные')
                 : null
             }
-            onInstall={(protocol, listenPort, networkCidr) => {
+            onInstall={(protocol, listenPort, networkCidr, realitySni) => {
               setKernelRebootDismissed(false);
-              installMutation.mutate({ serverId: server.id, protocol, listenPort, networkCidr });
+              installMutation.mutate({ serverId: server.id, protocol, listenPort, networkCidr, realitySni });
             }}
             isInstalling={installMutation.isPending && installMutation.variables?.serverId === server.id}
             installError={installError?.serverId === server.id ? installError.message : null}
@@ -369,7 +405,7 @@ function ServerCard({
   onTest: () => void;
   isTesting: boolean;
   onReboot: () => void;
-  onInstall: (protocol: VpnProtocol, listenPort: number, networkCidr: string) => void;
+  onInstall: (protocol: VpnProtocol, listenPort: number, networkCidr: string, realitySni?: string) => void;
   isInstalling: boolean;
   installError: string | null;
   onScan: (serverProtocolId: string) => void;
@@ -387,6 +423,7 @@ function ServerCard({
   const [protocol, setProtocol] = useState<VpnProtocol>('wireguard');
   const [listenPort, setListenPort] = useState(() => suggestPort(server.protocols));
   const [networkCidr, setNetworkCidr] = useState(() => suggestNetworkCidr(server.protocols));
+  const [realitySni, setRealitySni] = useState('dl.google.com');
   const [detectResult, setDetectResult] = useState<DetectionResult[] | null>(null);
 
   // Если список протоколов сервера изменился (например, только что установили первый
@@ -394,7 +431,7 @@ function ServerCard({
   // подставляем свободный порт/сеть. Не трогаем поля, если конфликта нет (не затираем
   // осознанный ручной выбор администратора).
   useEffect(() => {
-    if (server.protocols.some((sp) => sp.status === 'active' && sp.listenPort === listenPort)) {
+    if (protocol !== 'vless' && server.protocols.some((sp) => sp.status === 'active' && sp.listenPort === listenPort)) {
       setListenPort(suggestPort(server.protocols));
     }
     if (server.protocols.some((sp) => sp.status === 'active' && sp.networkCidr === networkCidr)) {
@@ -436,7 +473,7 @@ function ServerCard({
     onSuccess: () => mtProxyStatusQuery.refetch(),
   });
 
-  const protocolLabels: Record<VpnProtocol, string> = { wireguard: 'WireGuard', amneziawg: 'AmneziaWG' };
+  const protocolLabels = VPN_PROTOCOL_LABELS;
 
   return (
     <Paper sx={{ p: 2 }}>
@@ -715,7 +752,7 @@ function ServerCard({
                 <Chip label={sp.protocol} size="small" />
                 <Chip label={sp.status} size="small" color={statusColor[sp.status]} />
                 <Typography variant="body2" color="text.secondary">
-                  :{sp.listenPort} · {sp.networkCidr}
+                  :{sp.listenPort} · {sp.protocol === 'vless' ? 'TCP, Reality' : sp.networkCidr}
                 </Typography>
                 {sp.bridgeName && <Chip label={`мост «${sp.bridgeName}»`} size="small" color="info" variant="outlined" />}
               </Stack>
@@ -810,11 +847,18 @@ function ServerCard({
           size="small"
           label="Протокол"
           value={protocol}
-          onChange={(e) => setProtocol(e.target.value as VpnProtocol)}
-          sx={{ width: 140 }}
+          onChange={(e) => {
+            const next = e.target.value as VpnProtocol;
+            setProtocol(next);
+            // VLESS — TCP, маскируется под обычный HTTPS: стандартный порт 443 выглядит
+            // естественнее всего. Для WG/AWG возвращаем подобранный свободный UDP-порт.
+            setListenPort(next === 'vless' ? 443 : suggestPort(server.protocols));
+          }}
+          sx={{ width: 160 }}
         >
           <MenuItem value="wireguard">WireGuard</MenuItem>
           <MenuItem value="amneziawg">AmneziaWG</MenuItem>
+          <MenuItem value="vless">VLESS Reality</MenuItem>
         </TextField>
         <TextField
           label="Порт"
@@ -824,19 +868,30 @@ function ServerCard({
           onChange={(e) => setListenPort(Number(e.target.value))}
           sx={{ width: 100 }}
         />
-        <TextField
-          label="Сеть (CIDR)"
-          size="small"
-          value={networkCidr}
-          onChange={(e) => setNetworkCidr(e.target.value)}
-          sx={{ width: 150 }}
-        />
+        {protocol === 'vless' ? (
+          <TextField
+            label="Сайт маскировки (SNI)"
+            size="small"
+            value={realitySni}
+            onChange={(e) => setRealitySni(e.target.value.trim())}
+            helperText="Под этот сайт маскируется трафик"
+            sx={{ width: 220 }}
+          />
+        ) : (
+          <TextField
+            label="Сеть (CIDR)"
+            size="small"
+            value={networkCidr}
+            onChange={(e) => setNetworkCidr(e.target.value)}
+            sx={{ width: 150 }}
+          />
+        )}
         <Button
           variant="outlined"
           size="small"
           disabled={isInstalling}
           startIcon={isInstalling ? <CircularProgress size={16} /> : undefined}
-          onClick={() => onInstall(protocol, listenPort, networkCidr)}
+          onClick={() => onInstall(protocol, listenPort, networkCidr, protocol === 'vless' ? realitySni : undefined)}
         >
           {isInstalling ? 'Установка...' : 'Установить'}
         </Button>

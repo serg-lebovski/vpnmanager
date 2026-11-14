@@ -1,6 +1,6 @@
 import { Transform } from 'class-transformer';
-import { IsEnum, IsInt, IsOptional, IsString, Max, Min, MinLength } from 'class-validator';
-import { SshAuthType } from '../../common/enums';
+import { IsArray, IsEnum, IsInt, IsOptional, IsString, Max, Min, MinLength } from 'class-validator';
+import { SshAuthType, VpnProtocol } from '../../common/enums';
 
 export class CreateServerDto {
   @IsString()
@@ -38,4 +38,11 @@ export class CreateServerDto {
   @Min(1)
   @IsOptional()
   maxPeers?: number = 100;
+
+  // Сразу после добавления поставить эти протоколы (в фоне, стандартные порты/сети — см.
+  // ServersService.autoInstallInBackground). Пусто/нет поля — ничего не ставить, как раньше.
+  @IsArray()
+  @IsEnum(VpnProtocol, { each: true })
+  @IsOptional()
+  autoInstallProtocols?: VpnProtocol[];
 }

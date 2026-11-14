@@ -1,13 +1,13 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Put, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseEnumPipe, Patch, Post, Put, UseGuards } from '@nestjs/common';
 import { BridgeLogService } from '../bridge-log/bridge-log.service';
 import { AuthenticatedUser, CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
-import { Role } from '../common/enums';
+import { Role, VpnProtocol } from '../common/enums';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { BridgeFailoverService } from './bridge-failover.service';
 import { BridgesService } from './bridges.service';
-import { CreateBridgeDto } from './dto/create-bridge.dto';
+import { AddBridgeClientProtocolDto, CreateBridgeDto } from './dto/create-bridge.dto';
 import { SetModeDto } from './dto/set-mode.dto';
 import { SetUpstreamCandidatesDto } from './dto/set-upstream-candidates.dto';
 import { SetUpstreamDto } from './dto/set-upstream.dto';
@@ -57,6 +57,20 @@ export class BridgesController {
   @Roles(Role.SUPER_ADMIN, Role.ENGINEER)
   update(@Param('id') id: string, @Body() dto: UpdateBridgeDto) {
     return this.bridgesService.update(id, dto);
+  }
+
+  // Добавить клиентский протокол (в первую очередь VLESS) к уже существующему мосту.
+  @Post(':id/client-protocols')
+  @Roles(Role.SUPER_ADMIN, Role.ENGINEER)
+  addClientProtocol(@Param('id') id: string, @Body() dto: AddBridgeClientProtocolDto) {
+    return this.bridgesService.addClientProtocol(id, dto);
+  }
+
+  // Снять VLESS с моста — удаляет и его peers, поэтому только суперадмин (как удаление моста).
+  @Delete(':id/client-protocols/:protocol')
+  @Roles(Role.SUPER_ADMIN)
+  removeClientProtocol(@Param('id') id: string, @Param('protocol', new ParseEnumPipe(VpnProtocol)) protocol: VpnProtocol) {
+    return this.bridgesService.removeClientProtocol(id, protocol);
   }
 
   @Post(':id/upstream')

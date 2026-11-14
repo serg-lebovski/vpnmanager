@@ -6,11 +6,11 @@ import { DataSource, In, Not, Repository } from 'typeorm';
 import { BridgeLogService } from '../bridge-log/bridge-log.service';
 import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { decryptSecret, encryptSecret } from '../common/encryption.util';
-import { BridgeStatus, BridgeUpstreamMode, LogLevel, PeerStatus, Role, ServerProtocolStatus, VpnProtocol } from '../common/enums';
+import { BridgeStatus, BridgeUpstreamMode, isWireGuardLike, LogLevel, PeerStatus, Role, ServerProtocolStatus, VpnProtocol } from '../common/enums';
 import { Organization } from '../organizations/organization.entity';
 import { Peer } from '../peers/peer.entity';
 import { PeersService } from '../peers/peers.service';
-import { ServerProtocol } from '../servers/server-protocol.entity';
+import { ServerProtocol, XrayRoutingOptions } from '../servers/server-protocol.entity';
 import { Server } from '../servers/server.entity';
 import { classifyBypassEntry } from '../vpn/network.util';
 import { UpstreamPeerConfig } from '../vpn/vpn-driver.interface';
@@ -18,7 +18,7 @@ import { VpnProvisioningService } from '../vpn/vpn-provisioning.service';
 import { Bridge } from './bridge.entity';
 import { BridgeUpstreamCandidate } from './bridge-upstream-candidate.entity';
 import { BridgesGateway } from './bridges.gateway';
-import { CreateBridgeDto } from './dto/create-bridge.dto';
+import { AddBridgeClientProtocolDto, CreateBridgeDto } from './dto/create-bridge.dto';
 import { UpdateBridgeDto } from './dto/update-bridge.dto';
 
 // Порог для автобаланса: переключаем upstream только если кандидат загружен заметно
@@ -40,6 +40,8 @@ const BRIDGE_RELATIONS = [
   'wireguardClientProtocol.server',
   'amneziawgClientProtocol',
   'amneziawgClientProtocol.server',
+  'vlessClientProtocol',
+  'vlessClientProtocol.server',
   'upstreamServerProtocol',
   'upstreamServerProtocol.server',
   'upstreamCandidates',
@@ -50,10 +52,11 @@ const BRIDGE_RELATIONS = [
 type SafeClientProtocol = (Omit<ServerProtocol, 'server' | 'peers'> & { server: Omit<Server, 'sshSecretEnc'> }) | null;
 export type BridgeListItem = Omit<
   Bridge,
-  'wireguardClientProtocol' | 'amneziawgClientProtocol' | 'upstreamServerProtocol' | 'upstreamCandidates'
+  'wireguardClientProtocol' | 'amneziawgClientProtocol' | 'vlessClientProtocol' | 'upstreamServerProtocol' | 'upstreamCandidates'
 > & {
   wireguardClientProtocol: SafeClientProtocol;
   amneziawgClientProtocol: SafeClientProtocol;
+  vlessClientProtocol: SafeClientProtocol;
   upstreamServerProtocol: SafeClientProtocol;
   upstreamCandidates: Array<{ id: string; priority: number; serverProtocol: SafeClientProtocol }>;
 };
@@ -154,6 +157,7 @@ export class BridgesService {
       ...bridge,
       wireguardClientProtocol: sanitize(bridge.wireguardClientProtocol),
       amneziawgClientProtocol: sanitize(bridge.amneziawgClientProtocol),
+      vlessClientProtocol: sanitize(bridge.vlessClientProtocol),
       upstreamServerProtocol: sanitize(bridge.upstreamServerProtocol),
       upstreamCandidates,
     };
@@ -224,37 +228,29 @@ export class BridgesService {
     // создании моста, а не только когда назначен upstream, — потому что клиентские
     // конфиги peers уже будут скачаны с этим MTU и раздать новый после назначения upstream
     // не сможем.
+    // routeTable выделяем ДО установки клиентских протоколов: VLESS-клиентам моста он нужен
+    // сразу при установке (это fwmark их исходящих соединений, см. vlessRoutingFor).
+    const routeTable = await this.allocateRouteTable();
     let wireguardClientProtocolId: string | null = null;
     let amneziawgClientProtocolId: string | null = null;
+    let vlessClientProtocolId: string | null = null;
     for (const clientProtocol of dto.clientProtocols) {
-      // Случайное имя интерфейса — не дефолтное wg0/awg0 драйвера: на одном self-сервере
-      // может быть несколько мостов с одним и тем же протоколом (разные порты/сети), и им
-      // нельзя делить один и тот же netdev/файл конфига/файл ключей.
-      const interfaceNamePrefix = clientProtocol.protocol === VpnProtocol.WIREGUARD ? 'wg-br' : 'awg-br';
-      const installed = await this.vpnProvisioningService.installProtocol(
-        selfServer.id,
-        clientProtocol.protocol,
-        clientProtocol.listenPort,
-        clientProtocol.networkCidr,
-        BRIDGE_CLIENT_MTU,
-        `${interfaceNamePrefix}-${randomBytes(3).toString('hex')}`,
-      );
-      if (installed.status === ServerProtocolStatus.ERROR) {
-        throw new BadRequestException(`Не удалось поднять клиентский интерфейс (${clientProtocol.protocol}) для моста: ${installed.lastError}`);
-      }
+      const installed = await this.installClientProtocol(selfServer.id, clientProtocol, routeTable, []);
       if (clientProtocol.protocol === VpnProtocol.WIREGUARD) {
         wireguardClientProtocolId = installed.id;
-      } else {
+      } else if (clientProtocol.protocol === VpnProtocol.AMNEZIAWG) {
         amneziawgClientProtocolId = installed.id;
+      } else {
+        vlessClientProtocolId = installed.id;
       }
     }
 
-    const routeTable = await this.allocateRouteTable();
     const bridge = this.bridgesRepository.create({
       name: dto.name,
       organizationId: dto.organizationId ?? null,
       wireguardClientProtocolId,
       amneziawgClientProtocolId,
+      vlessClientProtocolId,
       // Случайный суффикс — не константа: на одном self-сервере может быть несколько
       // мостов, и у каждого должен быть свой upstream-интерфейс, иначе они начнут
       // управлять одним и тем же netdev друг у друга при подключении upstream.
@@ -342,13 +338,149 @@ export class BridgesService {
   // пере-резолв доменов) — резолвинг самих доменов делает VpnProvisioningService.
   private async syncBypassRules(bridge: Bridge): Promise<void> {
     const selfServer = this.getSelfServer(bridge);
-    const clientInterfaces = [bridge.wireguardClientProtocol, bridge.amneziawgClientProtocol]
-      .filter((sp): sp is ServerProtocol => Boolean(sp))
-      .map((sp) => ({ networkCidr: sp.networkCidr, interfaceName: sp.interfaceName }));
-    if (clientInterfaces.length === 0) {
+    const clientInterfaces = this.wireGuardLikeClientInterfaces(bridge);
+    if (clientInterfaces.length > 0) {
+      await this.vpnProvisioningService.setupBridgeBypass(selfServer, bridge.id, clientInterfaces, bridge.bypassDestinations);
+    }
+    await this.syncVlessRouting(bridge);
+  }
+
+  // VLESS-клиенты моста обходят upstream не через ipset (у них нет своей подсети — трафик
+  // исходит от самого Xray), а правилами маршрутизации Xray (домены — вместе с
+  // поддоменами). Конфиг Xray пересобирается только если список реально изменился —
+  // периодический refreshBypassRules не должен перезапускать Xray каждые 5 минут.
+  private async syncVlessRouting(bridge: Bridge): Promise<void> {
+    const vless = bridge.vlessClientProtocol;
+    if (!vless || vless.status !== ServerProtocolStatus.ACTIVE) {
       return;
     }
-    await this.vpnProvisioningService.setupBridgeBypass(selfServer, bridge.id, clientInterfaces, bridge.bypassDestinations);
+    const routing = vlessRoutingFor(bridge.routeTable, bridge.bypassDestinations);
+    if (JSON.stringify(vless.xrayRouting ?? null) === JSON.stringify(routing)) {
+      return;
+    }
+    vless.xrayRouting = routing;
+    await this.serverProtocolsRepository.update(vless.id, { xrayRouting: routing });
+    await this.peersService.resyncServerProtocol(vless.id);
+  }
+
+  private wireGuardLikeClientInterfaces(bridge: Bridge): Array<{ networkCidr: string; interfaceName: string }> {
+    return [bridge.wireguardClientProtocol, bridge.amneziawgClientProtocol]
+      .filter((sp): sp is ServerProtocol => Boolean(sp) && isWireGuardLike(sp!.protocol))
+      .map((sp) => ({ networkCidr: sp.networkCidr, interfaceName: sp.interfaceName }));
+  }
+
+  // Общий для create() и addClientProtocol() шаг установки одного клиентского протокола на
+  // self-сервере моста.
+  private async installClientProtocol(
+    selfServerId: string,
+    input: { protocol: VpnProtocol; listenPort: number; networkCidr?: string; realitySni?: string },
+    routeTable: number,
+    bypassDestinations: string[],
+  ): Promise<ServerProtocol> {
+    // Случайное имя интерфейса — не дефолтное wg0/awg0 драйвера: на одном self-сервере
+    // может быть несколько мостов с одним и тем же протоколом (разные порты/сети), и им
+    // нельзя делить один и тот же netdev/файл конфига/файл ключей.
+    const interfaceNamePrefix =
+      input.protocol === VpnProtocol.WIREGUARD ? 'wg-br' : input.protocol === VpnProtocol.AMNEZIAWG ? 'awg-br' : 'xray-br';
+    const isVless = input.protocol === VpnProtocol.VLESS;
+    const installed = await this.vpnProvisioningService.installProtocol(
+      selfServerId,
+      input.protocol,
+      input.listenPort,
+      isVless ? '' : input.networkCidr ?? '',
+      // MTU касается только L3-интерфейсов WG/AWG (см. BRIDGE_CLIENT_MTU).
+      isVless ? undefined : BRIDGE_CLIENT_MTU,
+      `${interfaceNamePrefix}-${randomBytes(3).toString('hex')}`,
+      isVless ? { realitySni: input.realitySni, xrayRouting: vlessRoutingFor(routeTable, bypassDestinations) } : undefined,
+    );
+    if (installed.status === ServerProtocolStatus.ERROR) {
+      throw new BadRequestException(`Не удалось поднять клиентский интерфейс (${input.protocol}) для моста: ${installed.lastError}`);
+    }
+    return installed;
+  }
+
+  // Добавить клиентский протокол к УЖЕ существующему мосту (в первую очередь VLESS — к
+  // мостам, созданным до его появления). Остальные клиенты моста не затрагиваются: ставится
+  // отдельный ServerProtocol, а если у моста уже есть upstream — сразу настраивается
+  // маршрутизация нового протокола в него.
+  async addClientProtocol(bridgeId: string, dto: AddBridgeClientProtocolDto): Promise<BridgeListItem> {
+    const bridge = await this.findOneOrFail(bridgeId);
+    const existingId =
+      dto.protocol === VpnProtocol.WIREGUARD
+        ? bridge.wireguardClientProtocolId
+        : dto.protocol === VpnProtocol.AMNEZIAWG
+          ? bridge.amneziawgClientProtocolId
+          : bridge.vlessClientProtocolId;
+    if (existingId) {
+      throw new BadRequestException(`У этого моста уже есть клиентский протокол ${dto.protocol}`);
+    }
+    if (isWireGuardLike(dto.protocol) && !dto.networkCidr) {
+      throw new BadRequestException('Для WireGuard/AmneziaWG нужна сеть клиентов (a.b.c.0/24)');
+    }
+    const selfServer = this.getSelfServer(bridge);
+    const portTaken = await this.serverProtocolsRepository.findOne({ where: { serverId: selfServer.id, listenPort: dto.listenPort } });
+    if (portTaken) {
+      throw new BadRequestException(`Порт ${dto.listenPort} уже занят на этом сервере другим протоколом`);
+    }
+
+    const installed = await this.installClientProtocol(selfServer.id, dto, bridge.routeTable, bridge.bypassDestinations);
+    installed.server = selfServer;
+    if (dto.protocol === VpnProtocol.WIREGUARD) {
+      bridge.wireguardClientProtocolId = installed.id;
+      bridge.wireguardClientProtocol = installed;
+    } else if (dto.protocol === VpnProtocol.AMNEZIAWG) {
+      bridge.amneziawgClientProtocolId = installed.id;
+      bridge.amneziawgClientProtocol = installed;
+    } else {
+      bridge.vlessClientProtocolId = installed.id;
+      bridge.vlessClientProtocol = installed;
+    }
+    const saved = await this.bridgesRepository.save(bridge);
+    this.bridgeLogService.log(LogLevel.INFO, `Добавлен клиентский протокол ${dto.protocol} (порт ${installed.listenPort})`, bridge.id, bridge.name);
+
+    if (bridge.upstreamServerProtocolId) {
+      try {
+        await this.configureNat(selfServer, saved);
+        if (isWireGuardLike(dto.protocol) && bridge.bypassDestinations.length > 0) {
+          await this.vpnProvisioningService.setupBridgeBypass(
+            selfServer,
+            bridge.id,
+            this.wireGuardLikeClientInterfaces(saved),
+            bridge.bypassDestinations,
+          );
+        }
+      } catch (error) {
+        this.logger.warn(`Маршрутизация нового протокола моста "${bridge.name}" не настроилась: ${(error as Error).message}`);
+        this.bridgeLogService.log(LogLevel.WARN, `Маршрутизация нового протокола не настроилась: ${(error as Error).message}`, bridge.id, bridge.name);
+      }
+    }
+    return this.toSafeBridge(await this.findOneOrFail(bridgeId));
+  }
+
+  // Снять VLESS с моста (WG/AWG-протоколы снимаются только вместе с мостом — FK на них
+  // CASCADE, см. bridge.entity.ts). Peers этого протокола удаляются.
+  async removeClientProtocol(bridgeId: string, protocol: VpnProtocol): Promise<BridgeListItem> {
+    const bridge = await this.findOneOrFail(bridgeId);
+    if (protocol !== VpnProtocol.VLESS) {
+      throw new BadRequestException('Отдельно снять можно только VLESS — WireGuard/AmneziaWG удаляются вместе с мостом');
+    }
+    const vless = bridge.vlessClientProtocol;
+    if (!vless) {
+      throw new BadRequestException('У этого моста нет VLESS');
+    }
+    try {
+      await this.vpnProvisioningService.uninstallProtocol(vless, this.getSelfServer(bridge));
+    } catch (error) {
+      this.logger.warn(`Не удалось снять VLESS моста "${bridge.name}" по SSH: ${(error as Error).message}`);
+    }
+    bridge.vlessClientProtocolId = null;
+    bridge.vlessClientProtocol = null;
+    await this.bridgesRepository.save(bridge);
+    await this.peersRepository.update({ serverProtocolId: vless.id }, { status: PeerStatus.REVOKED });
+    await this.peersRepository.delete({ serverProtocolId: vless.id });
+    await this.serverProtocolsRepository.delete(vless.id);
+    this.bridgeLogService.log(LogLevel.INFO, 'VLESS снят с моста', bridge.id, bridge.name);
+    return this.toSafeBridge(await this.findOneOrFail(bridgeId));
   }
 
   // Домены в списке обхода могут поменять IP (CDN и т.п.) без какого-либо действия
@@ -393,12 +525,32 @@ export class BridgesService {
   // каскадом (ON DELETE CASCADE) удалит и сам мост, и все peers, созданные для него.
   async remove(id: string): Promise<void> {
     const bridge = await this.findOneOrFail(id);
+    // VLESS — в отличие от WG/AWG-интерфейсов — отдельные systemd-юниты Xray, которые
+    // продолжали бы слушать порт и держать upstream-подключение после удаления моста из БД;
+    // снимаем их best-effort.
+    if (bridge.vlessClientProtocol) {
+      try {
+        await this.vpnProvisioningService.uninstallProtocol(bridge.vlessClientProtocol, this.getSelfServer(bridge));
+      } catch (error) {
+        this.logger.warn(`Не удалось снять VLESS моста "${bridge.name}": ${(error as Error).message}`);
+      }
+    }
+    if (bridge.upstreamServerProtocol?.protocol === VpnProtocol.VLESS) {
+      try {
+        await this.vpnProvisioningService.disconnectBridgeUpstream(this.getSelfServer(bridge), VpnProtocol.VLESS, bridge.upstreamInterfaceName);
+      } catch (error) {
+        this.logger.warn(`Не удалось снять VLESS-upstream моста "${bridge.name}": ${(error as Error).message}`);
+      }
+    }
     if (bridge.upstreamPeerId) {
       // revoke — снимает peer с upstream-сервера по SSH (пока запись ещё жива);
       // purge — убирает саму запись, чтобы она не висела в БД вечно как "отозванная,
       // но не удалённая".
       await this.peersService.revokeSystemPeer(bridge.upstreamPeerId);
       await this.peersService.purgeSystemPeer(bridge.upstreamPeerId);
+    }
+    if (bridge.vlessClientProtocolId) {
+      await this.peersRepository.delete({ serverProtocolId: bridge.vlessClientProtocolId });
     }
     const clientProtocolIds = this.clientProtocolIds(bridge);
     if (clientProtocolIds.length > 0) {
@@ -416,12 +568,12 @@ export class BridgesService {
   // этими данными и самостоятельно чинит несовпадение.
   async getSelfServerContext(): Promise<{ selfServerIds: Set<string>; protocolBridgeNames: Map<string, string> }> {
     const bridges = await this.bridgesRepository.find({
-      relations: ['wireguardClientProtocol', 'amneziawgClientProtocol'],
+      relations: ['wireguardClientProtocol', 'amneziawgClientProtocol', 'vlessClientProtocol'],
     });
     const selfServerIds = new Set<string>();
     const protocolBridgeNames = new Map<string, string>();
     for (const bridge of bridges) {
-      for (const clientProtocol of [bridge.wireguardClientProtocol, bridge.amneziawgClientProtocol]) {
+      for (const clientProtocol of [bridge.wireguardClientProtocol, bridge.amneziawgClientProtocol, bridge.vlessClientProtocol]) {
         if (clientProtocol) {
           selfServerIds.add(clientProtocol.serverId);
           protocolBridgeNames.set(clientProtocol.id, bridge.name);
@@ -802,20 +954,29 @@ export class BridgesService {
   }
 
   private async configureNat(selfServer: Server, bridge: Bridge): Promise<void> {
-    const clientInterfaces = [bridge.wireguardClientProtocol, bridge.amneziawgClientProtocol]
-      .filter((sp): sp is ServerProtocol => Boolean(sp))
-      .map((sp) => ({ networkCidr: sp.networkCidr, interfaceName: sp.interfaceName }));
+    const clientInterfaces = this.wireGuardLikeClientInterfaces(bridge);
     await this.vpnProvisioningService.setupBridgeNat(selfServer, clientInterfaces, bridge.upstreamInterfaceName, bridge.routeTable);
+    if (bridge.vlessClientProtocolId) {
+      await this.vpnProvisioningService.setupBridgeXrayRouting(
+        selfServer,
+        bridge.upstreamInterfaceName,
+        bridge.routeTable,
+        vlessBridgeMark(bridge.routeTable),
+      );
+    }
   }
 
   private clientProtocolIds(bridge: Bridge): string[] {
-    return [bridge.wireguardClientProtocolId, bridge.amneziawgClientProtocolId].filter((id): id is string => Boolean(id));
+    return [bridge.wireguardClientProtocolId, bridge.amneziawgClientProtocolId, bridge.vlessClientProtocolId].filter(
+      (id): id is string => Boolean(id),
+    );
   }
 
   private getSelfServer(bridge: Bridge): Server {
     // Оба клиентских интерфейса (если есть оба) всегда на одном и том же self-сервере —
     // достаточно взять сервер у любого из установленных.
-    const server = bridge.wireguardClientProtocol?.server ?? bridge.amneziawgClientProtocol?.server;
+    const server =
+      bridge.wireguardClientProtocol?.server ?? bridge.amneziawgClientProtocol?.server ?? bridge.vlessClientProtocol?.server;
     if (!server) {
       throw new NotFoundException('У моста нет ни одного установленного клиентского интерфейса');
     }
@@ -832,4 +993,24 @@ export class BridgesService {
     }
     return bridge;
   }
+}
+
+// fwmark исходящих соединений Xray VLESS-клиентов моста — сам номер таблицы маршрутизации
+// моста (уникален на self-сервере, не пересекается с метками 0x2a/0x2b/0x2c).
+function vlessBridgeMark(routeTable: number): number {
+  return routeTable;
+}
+
+function vlessRoutingFor(routeTable: number, bypassDestinations: string[]): XrayRoutingOptions {
+  const directDomains: string[] = [];
+  const directIps: string[] = [];
+  for (const entry of bypassDestinations ?? []) {
+    const classified = classifyBypassEntry(entry);
+    if (classified?.type === 'domain') {
+      directDomains.push(classified.value);
+    } else if (classified?.type === 'ip') {
+      directIps.push(classified.value);
+    }
+  }
+  return { mark: vlessBridgeMark(routeTable), directDomains, directIps };
 }

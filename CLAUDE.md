@@ -114,6 +114,25 @@ enums, шифрование, exception filter). Все они собраны в 
   источников/PPA, не смена мажорной версии). Недоступно для протоколов в стороннем Docker-
   контейнере (официальный self-hosted сервер AmneziaVPN) — `execContainer` задан.
 
+**VLESS + Reality (Xray)** (`vpn/xray.driver.ts`, `vpn/xray-config.util.ts`, `VpnProtocol.VLESS`) —
+третий протокол, не L3-туннель, а прокси: у клиента нет IP в туннеле (`Peer.allowedIp = ''`,
+`ServerProtocol.networkCidr = ''`, `isWireGuardLike()` в `common/enums.ts` отделяет протоколы с
+подсетью), секрет клиента — UUID в `Peer.privateKeyEnc`, `Peer.publicKey` — несекретный id
+пользователя Xray ("email", по нему статистика `xray api statsquery`). Xray и hev-socks5-tunnel
+ставятся зафиксированными версиями из GitHub-релизов (sha256 из `.dgst`), каждый экземпляр — свой
+systemd-юнит `vpnmanager-xray-<iface>`; пользователи меняются на лету `xray api adu/rmu` (без
+обрыва остальных), полный перезапуск — только если поменялось что-то кроме списка пользователей.
+Параметры Reality (sni/shortId/apiPort) — в `ServerProtocol.obfuscationParams`, приватный ключ —
+только в конфиге на сервере. Как upstream моста: Xray-клиент (локальный SOCKS) + hev-socks5-tunnel,
+который поднимает TUN с ИМЕНЕМ upstream-интерфейса моста — вся остальная маршрутизация моста
+работает без изменений; маршрут в routeTable восстанавливается `ExecStartPost` TUN-юнита после
+перезагрузки. Как клиентский протокол моста (`Bridge.vlessClientProtocol`, FK SET NULL —
+добавляется/снимается отдельно, `POST/DELETE /bridges/:id/client-protocols`): исходящие сокеты
+Xray помечены fwmark = `Bridge.routeTable` (`ServerProtocol.xrayRouting`), `setupBridgeXrayRouting`
+отправляет их в таблицу моста; список обхода моста применяется правилами маршрутизации Xray
+(домены с поддоменами), а не ipset. Клиенту выдаётся ссылка `vless://` (+QR) для Happ/v2rayNG.
+Разработка идёт в ветке `beta`.
+
 **Многосерверность и балансировка**: сущность `ServerProtocol` (`servers/server-protocol.entity.ts`)
 — это конкретный установленный протокол на конкретном `Server`, со своим `status`
 (`not_installed`/`installing`/`active`/`error`), `interfaceName`, `networkCidr`, `nextHostOctet`

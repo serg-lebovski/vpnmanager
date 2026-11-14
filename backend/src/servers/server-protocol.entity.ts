@@ -98,4 +98,19 @@ export class ServerProtocol {
   // работает в стороннем Docker-контейнере (см. VpnDriver.getInstalledVersion).
   @Column({ name: 'package_version', type: 'varchar', nullable: true })
   packageVersion: string | null;
+
+  // Только для VLESS-протокола, служащего клиентским протоколом МОСТА (см. BridgesService):
+  // как Xray на self-сервере выпускает трафик клиентов — mark — fwmark исходящих сокетов
+  // Xray (= Bridge.routeTable, по нему `ip rule` отправляет трафик в таблицу моста, т.е. в
+  // upstream-туннель); directDomains/directIps — список обхода моста (Bridge.
+  // bypassDestinations), который Xray маршрутизирует напрямую, минуя upstream (домены — с
+  // поддоменами, нативно правилами Xray). null — обычный VLESS-сервер: весь трафик напрямую.
+  @Column({ name: 'xray_routing', type: 'jsonb', nullable: true })
+  xrayRouting: XrayRoutingOptions | null;
+}
+
+export interface XrayRoutingOptions {
+  mark?: number;
+  directDomains?: string[];
+  directIps?: string[];
 }

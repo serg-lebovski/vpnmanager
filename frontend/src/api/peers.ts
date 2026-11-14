@@ -57,14 +57,23 @@ export async function purgePeer(id: string): Promise<void> {
   await apiClient.delete(`/peers/${id}/purge`);
 }
 
-export async function downloadPeerConfig(id: string, suggestedName: string): Promise<void> {
+// extension: '.conf' для WireGuard/AmneziaWG, '.txt' для VLESS (там не файл конфига, а
+// ссылка vless://).
+export async function downloadPeerConfig(id: string, suggestedName: string, extension = '.conf'): Promise<void> {
   const response = await apiClient.get(`/peers/${id}/config`, { responseType: 'blob' });
   const url = URL.createObjectURL(response.data);
   const link = document.createElement('a');
   link.href = url;
-  link.download = `${suggestedName}.conf`;
+  link.download = `${suggestedName}${extension}`;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+// Для VLESS — сама ссылка vless:// текстом (показывается рядом с QR, чтобы её можно было
+// скопировать и вставить в Happ/v2rayNG и т.п.).
+export async function fetchPeerConfigText(id: string): Promise<string> {
+  const { data } = await apiClient.get<string>(`/peers/${id}/config`, { responseType: 'text' });
+  return String(data).trim();
 }
 
 export async function fetchPeerQrCodeUrl(id: string): Promise<string> {

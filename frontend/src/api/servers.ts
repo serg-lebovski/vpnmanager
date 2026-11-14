@@ -14,6 +14,8 @@ export interface CreateServerInput {
   sshAuthType: SshAuthType;
   secret: string;
   maxPeers?: number;
+  // Сразу после добавления поставить эти протоколы в фоне (стандартные порты/сети).
+  autoInstallProtocols?: VpnProtocol[];
 }
 
 export async function createServer(input: CreateServerInput): Promise<ServerEntity> {
@@ -66,7 +68,10 @@ export async function rebootForKernelModule(serverId: string, protocol: VpnProto
 export interface InstallProtocolInput {
   protocol: VpnProtocol;
   listenPort: number;
-  networkCidr: string;
+  // Не нужна (и не отправляется) для VLESS — у него нет подсети клиентов.
+  networkCidr?: string;
+  // Только для VLESS — сайт маскировки Reality.
+  realitySni?: string;
 }
 
 export async function installProtocol(serverId: string, input: InstallProtocolInput) {

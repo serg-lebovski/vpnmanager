@@ -41,6 +41,19 @@ export class Bridge {
   @Column({ name: 'amneziawg_client_protocol_id', type: 'uuid', nullable: true })
   amneziawgClientProtocolId: string | null;
 
+  // Третий, необязательный клиентский протокол — VLESS+Reality (Xray на self-сервере, см.
+  // vpn/xray.driver.ts). В отличие от WG/AWG у него нет своей подсети/интерфейса: Xray сам
+  // открывает исходящие соединения, и они попадают в upstream-туннель моста по fwmark
+  // (ServerProtocol.xrayRouting.mark). SET NULL, а не CASCADE, как у WG/AWG: VLESS
+  // добавляется к уже существующему мосту отдельно и снимается тоже отдельно — удаление
+  // этого протокола не должно удалять весь мост вместе с его WG/AWG-клиентами.
+  @ManyToOne(() => ServerProtocol, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'vless_client_protocol_id' })
+  vlessClientProtocol: ServerProtocol | null;
+
+  @Column({ name: 'vless_client_protocol_id', type: 'uuid', nullable: true })
+  vlessClientProtocolId: string | null;
+
   @Column({ name: 'upstream_mode', type: 'enum', enum: BridgeUpstreamMode, default: BridgeUpstreamMode.MANUAL })
   upstreamMode: BridgeUpstreamMode;
 

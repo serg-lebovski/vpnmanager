@@ -1,5 +1,11 @@
 export type Role = 'super_admin' | 'org_admin' | 'org_user' | 'engineer';
-export type VpnProtocol = 'wireguard' | 'amneziawg';
+export type VpnProtocol = 'wireguard' | 'amneziawg' | 'vless';
+
+export const VPN_PROTOCOL_LABELS: Record<VpnProtocol, string> = {
+  wireguard: 'WireGuard',
+  amneziawg: 'AmneziaWG',
+  vless: 'VLESS Reality',
+};
 export type PeerDeviceType = 'phone' | 'pc';
 type ServerStatus = 'unknown' | 'online' | 'offline';
 export type ServerProtocolStatus = 'not_installed' | 'installing' | 'active' | 'error';
@@ -140,6 +146,9 @@ export interface BridgeEntity {
   wireguardClientProtocol?: (ServerProtocolEntity & { server?: ServerEntity }) | null;
   amneziawgClientProtocolId: string | null;
   amneziawgClientProtocol?: (ServerProtocolEntity & { server?: ServerEntity }) | null;
+  // Необязательный третий клиентский протокол — VLESS Reality (Xray на self-сервере).
+  vlessClientProtocolId: string | null;
+  vlessClientProtocol?: (ServerProtocolEntity & { server?: ServerEntity }) | null;
   upstreamMode: BridgeUpstreamMode;
   upstreamServerProtocolId: string | null;
   upstreamServerProtocol?: (ServerProtocolEntity & { server?: ServerEntity }) | null;

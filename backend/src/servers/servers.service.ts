@@ -98,6 +98,9 @@ export class ServersService {
     // нестабильна прямо в момент добавления, а fail2ban всегда можно поставить/повторить
     // вручную кнопкой на карточке (см. ensureFail2banFor).
     this.ensureFail2banBestEffort(saved);
+    if (dto.autoInstallProtocols && dto.autoInstallProtocols.length > 0) {
+      this.autoInstallInBackground(saved, [...new Set(dto.autoInstallProtocols)]);
+    }
     return saved;
   }
 
@@ -209,11 +212,45 @@ export class ServersService {
   }
 
   async installProtocol(serverId: string, dto: InstallProtocolDto): Promise<ServerProtocol> {
-    const serverProtocol = await this.vpnProvisioningService.installProtocol(serverId, dto.protocol, dto.listenPort, dto.networkCidr);
+    const serverProtocol = await this.vpnProvisioningService.installProtocol(
+      serverId,
+      dto.protocol,
+      dto.listenPort,
+      dto.networkCidr ?? '',
+      undefined,
+      undefined,
+      dto.protocol === VpnProtocol.VLESS ? { realitySni: dto.realitySni } : undefined,
+    );
     if (serverProtocol.status === ServerProtocolStatus.ACTIVE) {
       await this.ensureReservedUpstreamPeer(serverProtocol);
     }
     return serverProtocol;
+  }
+
+  // Автоустановка протоколов сразу после добавления сервера (галочки в форме добавления) —
+  // в фоне, по очереди, со стандартными портами/сетями (installProtocol сам сдвигает их,
+  // если заняты). Не блокирует ответ на добавление сервера: установка AmneziaWG может идти
+  // минутами; результат виден на карточке сервера (статус протокола/ошибка), как при
+  // обычной установке кнопкой.
+  private autoInstallInBackground(server: Server, protocols: VpnProtocol[]): void {
+    const defaults: Record<VpnProtocol, InstallProtocolDto> = {
+      [VpnProtocol.WIREGUARD]: { protocol: VpnProtocol.WIREGUARD, listenPort: 51820, networkCidr: '10.8.0.0/24' },
+      [VpnProtocol.AMNEZIAWG]: { protocol: VpnProtocol.AMNEZIAWG, listenPort: 51821, networkCidr: '10.8.1.0/24' },
+      [VpnProtocol.VLESS]: { protocol: VpnProtocol.VLESS, listenPort: 443 },
+    };
+    void (async () => {
+      for (const protocol of protocols) {
+        try {
+          this.logger.log(`Автоустановка ${protocol} на новом сервере "${server.name}"…`);
+          const installed = await this.installProtocol(server.id, defaults[protocol]);
+          if (installed.status !== ServerProtocolStatus.ACTIVE) {
+            this.logger.warn(`Автоустановка ${protocol} на "${server.name}" не удалась: ${installed.lastError}`);
+          }
+        } catch (error) {
+          this.logger.warn(`Автоустановка ${protocol} на "${server.name}" не удалась: ${(error as Error).message}`);
+        }
+      }
+    })();
   }
 
   // Вызывается только после явного подтверждения администратором в диалоге
