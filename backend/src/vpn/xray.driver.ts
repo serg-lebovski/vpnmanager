@@ -183,21 +183,40 @@ export class XrayDriver implements VpnDriver {
     try {
       const server = `--server=127.0.0.1:${params.apiPort}`;
       if (toRemove.length > 0) {
-        await this.sshService.execOrThrow(ctx.ssh, `${XRAY_BINARY} api rmu ${server} -tag=${XRAY_INBOUND_TAG} ${toRemove.map((e) => `'${e}'`).join(' ')}`);
+        const output = await this.sshService.execOrThrow(
+          ctx.ssh,
+          `${XRAY_BINARY} api rmu ${server} -tag=${XRAY_INBOUND_TAG} ${toRemove.map((e) => `'${e}'`).join(' ')} 2>&1`,
+        );
+        // Как и adu, возвращает 0 даже при неудаче — сверяем число по выводу (иначе
+        // отозванный peer продолжал бы подключаться до ближайшего перезапуска Xray).
+        const removed = Number(/Removed (\d+) user/.exec(output)?.[1] ?? NaN);
+        if (removed !== toRemove.length) {
+          throw new Error(`xray api rmu удалил ${Number.isNaN(removed) ? '?' : removed} из ${toRemove.length}: ${output}`);
+        }
       }
       if (toAdd.length > 0) {
         const addPath = `${XRAY_CONF_DIR}/.adu-${interfaceName}.json`;
+        // listen/port обязательны: adu собирает из файла полноценный инбаунд и без порта
+        // падает ("Listen on AnyIP but no Port(s) set"), при этом возвращая код 0 и печатая
+        // "Added 0 user(s)" — пойманный вживую случай: peer создавался, а Xray его не знал
+        // ("invalid request user id"). Поэтому проверяем и число добавленных по выводу.
         const addConfig = {
           inbounds: [
             {
               tag: XRAY_INBOUND_TAG,
+              listen: '0.0.0.0',
+              port: ctx.serverProtocol.listenPort,
               protocol: 'vless',
               settings: { clients: toAdd.map((client) => ({ id: client.uuid, email: client.email, flow: params.flow })), decryption: 'none' },
             },
           ],
         };
         await this.writeFile(ctx.ssh, addPath, JSON.stringify(addConfig), '600');
-        await this.sshService.execOrThrow(ctx.ssh, `${XRAY_BINARY} api adu ${server} ${addPath}; rc=$?; rm -f ${addPath}; exit $rc`);
+        const output = await this.sshService.execOrThrow(ctx.ssh, `${XRAY_BINARY} api adu ${server} ${addPath} 2>&1; rc=$?; rm -f ${addPath}; exit $rc`);
+        const added = Number(/Added (\d+) user/.exec(output)?.[1] ?? NaN);
+        if (added !== toAdd.length) {
+          throw new Error(`xray api adu добавил ${Number.isNaN(added) ? '?' : added} из ${toAdd.length}: ${output}`);
+        }
       }
     } catch (error) {
       this.logger.warn(`Горячее обновление пользователей Xray (${interfaceName}) не удалось, перезапуск: ${(error as Error).message}`);
