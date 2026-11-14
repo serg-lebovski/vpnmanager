@@ -189,7 +189,7 @@ export class VpnProvisioningService {
     mtu?: number,
     interfaceName?: string,
     // Только для VLESS — см. InstallOptions.realitySni и ServerProtocol.xrayRouting.
-    extra?: { realitySni?: string; xrayRouting?: XrayRoutingOptions | null },
+    extra?: { realitySni?: string; xrayRouting?: XrayRoutingOptions | null; vlessTransport?: 'reality' | 'xhttp'; xhttpDomain?: string },
   ): Promise<ServerProtocol> {
     const lockKey = `${serverId}:${protocol}:${listenPort}`;
     if (this.installsInProgress.has(lockKey)) {
@@ -212,7 +212,7 @@ export class VpnProvisioningService {
     networkCidr: string,
     mtu?: number,
     interfaceName?: string,
-    extra?: { realitySni?: string; xrayRouting?: XrayRoutingOptions | null },
+    extra?: { realitySni?: string; xrayRouting?: XrayRoutingOptions | null; vlessTransport?: 'reality' | 'xhttp'; xhttpDomain?: string },
   ): Promise<ServerProtocol> {
     // У VLESS нет подсети клиентов (прокси, а не L3-туннель) — ни проверка формата сети,
     // ни подбор свободной сети к нему не относятся.
@@ -312,7 +312,15 @@ export class VpnProvisioningService {
       const result = await this.sshService.withConnection(connection, async (ssh) => {
         const installResult = await driver.install(
           { ssh, server, serverProtocol },
-          { listenPort: resolvedPort, networkCidr: resolvedCidr, mtu, interfaceName, realitySni: extra?.realitySni },
+          {
+            listenPort: resolvedPort,
+            networkCidr: resolvedCidr,
+            mtu,
+            interfaceName,
+            realitySni: extra?.realitySni,
+            vlessTransport: extra?.vlessTransport,
+            xhttpDomain: extra?.xhttpDomain,
+          },
         );
         const packageVersion = await driver.getInstalledVersion({ ssh, server, serverProtocol });
         return { ...installResult, packageVersion };

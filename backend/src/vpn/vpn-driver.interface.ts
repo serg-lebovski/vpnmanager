@@ -38,6 +38,10 @@ export interface InstallOptions {
   // Только для VLESS: сайт, под который маскируется Reality (SNI + куда Xray проксирует
   // "чужие" TLS-подключения без верного ключа). undefined — значение по умолчанию драйвера.
   realitySni?: string;
+  // Только для VLESS: транспорт (см. VlessTransport в xray-config.util.ts) и, для xhttp,
+  // домен панели, на сертификат которого клиенты ходят через nginx.
+  vlessTransport?: 'reality' | 'xhttp';
+  xhttpDomain?: string;
 }
 
 export interface InstallResult {

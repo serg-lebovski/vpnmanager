@@ -44,19 +44,52 @@ export const TUNNEL_DNS_SERVERS = ['1.1.1.1', '8.8.8.8'];
 // Параметры Reality/Xray, которые не являются секретом и нужны для генерации клиентских
 // ссылок — хранятся в ServerProtocol.obfuscationParams (приватный ключ Reality живёт только
 // в конфиге на самом сервере, как приватный ключ WireGuard).
+// Транспорт VLESS:
+// - reality — свой TCP-порт наружу, TLS-маскировка Reality под чужой сайт (sni/shortId).
+// - xhttp — только на сервере ПАНЕЛИ: Xray слушает внутренний адрес docker-шлюза без TLS, а
+//   наружу его отдаёт nginx панели на 443 с НАСТОЯЩИМ сертификатом домена панели по
+//   секретному пути (см. NginxConfigService). Для DPI это неотличимо от открытия панели в
+//   браузере — пойманный вживую случай 2026-11-14: домашний провайдер обрезал рукопожатия
+//   Reality на любом порту/SNI, а обычный HTTPS той же панели проходил.
+export type VlessTransport = 'reality' | 'xhttp';
+
 export interface VlessServerParams {
-  sni: string;
-  shortId: string;
+  transport: VlessTransport;
   fingerprint: string;
   flow: string;
   apiPort: number;
+  // reality
+  sni?: string;
+  shortId?: string;
+  // xhttp
+  path?: string;
+  domain?: string;
+  publicPort?: number;
+  listenAddress?: string;
 }
 
 export function parseVlessServerParams(raw: Record<string, number | string> | null | undefined): VlessServerParams {
+  const transport: VlessTransport = raw?.transport === 'xhttp' ? 'xhttp' : 'reality';
+  if (transport === 'xhttp') {
+    if (!raw || typeof raw.path !== 'string' || typeof raw.domain !== 'string' || typeof raw.listenAddress !== 'string') {
+      throw new Error('У VLESS (XHTTP) нет параметров path/domain — переустановите протокол');
+    }
+    return {
+      transport,
+      fingerprint: typeof raw.fingerprint === 'string' ? raw.fingerprint : REALITY_FINGERPRINT,
+      flow: '',
+      apiPort: Number(raw.apiPort),
+      path: raw.path,
+      domain: raw.domain,
+      publicPort: Number(raw.publicPort) || 443,
+      listenAddress: raw.listenAddress,
+    };
+  }
   if (!raw || typeof raw.sni !== 'string' || typeof raw.shortId !== 'string') {
     throw new Error('У VLESS-протокола нет параметров Reality (sni/shortId) — переустановите протокол');
   }
   return {
+    transport,
     sni: raw.sni,
     shortId: raw.shortId,
     fingerprint: typeof raw.fingerprint === 'string' ? raw.fingerprint : REALITY_FINGERPRINT,
@@ -103,14 +136,39 @@ export function bridgeTunAddress(routeTable: number): string {
 export interface XrayServerConfigInput {
   listenPort: number;
   apiPort: number;
+  // Только для reality (для xhttp TLS делает nginx, ключа у Xray нет).
   privateKey: string;
-  params: Pick<VlessServerParams, 'sni' | 'shortId' | 'flow'>;
+  params: Pick<VlessServerParams, 'sni' | 'shortId' | 'flow'> & Partial<Pick<VlessServerParams, 'transport' | 'path' | 'listenAddress'>>;
   clients: Array<{ uuid: string; email: string }>;
   routing?: XrayRoutingOptions | null;
 }
 
+function vlessInboundTransport(input: XrayServerConfigInput): { listen: string; streamSettings: Record<string, unknown> } {
+  if (input.params.transport === 'xhttp') {
+    return {
+      listen: input.params.listenAddress!,
+      streamSettings: { network: 'xhttp', security: 'none', xhttpSettings: { path: input.params.path, mode: 'auto' } },
+    };
+  }
+  return {
+    listen: '0.0.0.0',
+    streamSettings: {
+      network: 'tcp',
+      security: 'reality',
+      realitySettings: {
+        show: false,
+        target: `${input.params.sni}:443`,
+        serverNames: [input.params.sni],
+        privateKey: input.privateKey,
+        shortIds: [input.params.shortId],
+      },
+    },
+  };
+}
+
 export function renderXrayServerConfig(input: XrayServerConfigInput): Record<string, unknown> {
   const routing = input.routing ?? null;
+  const transport = vlessInboundTransport(input);
   const viaBridge = typeof routing?.mark === 'number' && routing.mark > 0;
   const directDomains = routing?.directDomains ?? [];
   const directIps = routing?.directIps ?? [];
@@ -153,24 +211,16 @@ export function renderXrayServerConfig(input: XrayServerConfigInput): Record<str
     inbounds: [
       {
         tag: XRAY_INBOUND_TAG,
-        listen: '0.0.0.0',
+        listen: transport.listen,
         port: input.listenPort,
         protocol: 'vless',
         settings: {
-          clients: input.clients.map((client) => ({ id: client.uuid, email: client.email, flow: input.params.flow })),
+          clients: input.clients.map((client) =>
+            input.params.flow ? { id: client.uuid, email: client.email, flow: input.params.flow } : { id: client.uuid, email: client.email },
+          ),
           decryption: 'none',
         },
-        streamSettings: {
-          network: 'tcp',
-          security: 'reality',
-          realitySettings: {
-            show: false,
-            target: `${input.params.sni}:443`,
-            serverNames: [input.params.sni],
-            privateKey: input.privateKey,
-            shortIds: [input.params.shortId],
-          },
-        },
+        streamSettings: transport.streamSettings,
         sniffing: { enabled: true, destOverride: ['http', 'tls', 'quic'], routeOnly: true },
       },
     ],
@@ -327,18 +377,37 @@ export function buildVlessUri(input: {
   host: string;
   port: number;
   publicKey: string;
-  params: Pick<VlessServerParams, 'sni' | 'shortId' | 'fingerprint' | 'flow'>;
+  params: Pick<VlessServerParams, 'sni' | 'shortId' | 'fingerprint' | 'flow'> &
+    Partial<Pick<VlessServerParams, 'transport' | 'path' | 'domain' | 'publicPort'>>;
   name: string;
 }): string {
+  if (input.params.transport === 'xhttp') {
+    // Клиент ходит на домен ПАНЕЛИ (её сертификат) на 443 — host/port из аргументов (адрес
+    // self-сервера/домен моста) тут не подходят: сертификат выпущен именно на домен панели.
+    // alpn=http/1.1 + mode=packet-up — nginx панели отдаёт HTTP/1.1 (без http2), а
+    // packet-up — единственный режим XHTTP, работающий через обычный HTTP/1.1-прокси.
+    const query = new URLSearchParams({
+      type: 'xhttp',
+      security: 'tls',
+      encryption: 'none',
+      sni: input.params.domain!,
+      host: input.params.domain!,
+      path: input.params.path!,
+      mode: 'packet-up',
+      alpn: 'http/1.1',
+      fp: input.params.fingerprint,
+    });
+    return `vless://${input.uuid}@${input.params.domain}:${input.params.publicPort ?? 443}?${query.toString()}#${encodeURIComponent(input.name)}`;
+  }
   const query = new URLSearchParams({
     type: 'tcp',
     security: 'reality',
     encryption: 'none',
     flow: input.params.flow,
-    sni: input.params.sni,
+    sni: input.params.sni!,
     fp: input.params.fingerprint,
     pbk: input.publicKey,
-    sid: input.params.shortId,
+    sid: input.params.shortId!,
   });
   const host = input.host.includes(':') && !input.host.startsWith('[') ? `[${input.host}]` : input.host;
   return `vless://${input.uuid}@${host}:${input.port}?${query.toString()}#${encodeURIComponent(input.name)}`;

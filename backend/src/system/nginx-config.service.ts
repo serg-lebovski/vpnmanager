@@ -4,6 +4,8 @@ import { Injectable, InternalServerErrorException, Logger, OnModuleInit } from '
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { ServerProtocolStatus, VpnProtocol } from '../common/enums';
+import { ServerProtocol } from '../servers/server-protocol.entity';
 import { reloadNginx } from '../common/docker.util';
 import { CertbotService } from './certbot.service';
 import { SystemSettings } from './system-settings.entity';
@@ -52,6 +54,7 @@ export class NginxConfigService implements OnModuleInit {
     private readonly configService: ConfigService,
     private readonly certbotService: CertbotService,
     @InjectRepository(SystemSettings) private readonly settingsRepository: Repository<SystemSettings>,
+    @InjectRepository(ServerProtocol) private readonly serverProtocolsRepository: Repository<ServerProtocol>,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -100,7 +103,7 @@ export class NginxConfigService implements OnModuleInit {
         `${port80Body}}\n\n` +
         `server {\n    listen 443 ssl;\n    server_name ${resolved.domain};\n\n` +
         `    ssl_certificate ${fullchain};\n    ssl_certificate_key ${privkey};\n\n` +
-        `${SECURITY_HEADERS}${sharedLocations}}\n`;
+        `${SECURITY_HEADERS}${await this.renderXhttpLocations()}${sharedLocations}}\n`;
     } else {
       // Домен задан, но сертификата ещё нет — это либо первый выпуск (certbot вот-вот
       // запросит challenge через ЭТОТ же location), либо HTTPS выключен вовсе; в обоих
@@ -113,6 +116,50 @@ export class NginxConfigService implements OnModuleInit {
 
     fs.writeFileSync(path.join(repoPath, 'nginx', 'generated', 'default.conf'), LIMIT_REQ_ZONES + config);
     await reloadNginx();
+  }
+
+  // VLESS XHTTP (см. XrayDriver, транспорт xhttp): nginx панели принимает его на 443 со своим
+  // настоящим сертификатом по секретному пути и отдаёт в Xray на адресе docker-шлюза. Только
+  // в HTTPS-блоке — клиент всегда ходит по TLS. Буферизация выключена в обе стороны: XHTTP
+  // (packet-up) держит длинный GET-поток вниз и шлёт мелкие POST'ы вверх — с буферизацией
+  // nginx копил бы данные и соединение "висело". Ошибка чтения БД не должна ломать рендер
+  // всего конфига (панель важнее VLESS) — тогда просто без этих локаций.
+  private async renderXhttpLocations(): Promise<string> {
+    let protocols: ServerProtocol[] = [];
+    try {
+      protocols = await this.serverProtocolsRepository.find({
+        where: { protocol: VpnProtocol.VLESS, status: ServerProtocolStatus.ACTIVE },
+      });
+    } catch (error) {
+      this.logger.warn(`Не удалось прочитать VLESS XHTTP для nginx: ${(error as Error).message}`);
+      return '';
+    }
+    let out = '';
+    for (const sp of protocols) {
+      const params = sp.obfuscationParams ?? {};
+      if (params.transport !== 'xhttp') {
+        continue;
+      }
+      const path = String(params.path ?? '');
+      const listenAddress = String(params.listenAddress ?? '');
+      // Значения попадают в конфиг nginx как есть — строго проверяем формат.
+      if (!/^\/[a-f0-9]{8,64}$/.test(path) || !/^\d{1,3}(\.\d{1,3}){3}$/.test(listenAddress)) {
+        continue;
+      }
+      out +=
+        `    location ${path} {\n` +
+        `        proxy_pass http://${listenAddress}:${sp.listenPort};\n` +
+        `        proxy_http_version 1.1;\n` +
+        `        proxy_set_header Host $host;\n` +
+        `        proxy_set_header Connection "";\n` +
+        `        proxy_request_buffering off;\n` +
+        `        proxy_buffering off;\n` +
+        `        client_max_body_size 0;\n` +
+        `        proxy_read_timeout 1h;\n` +
+        `        proxy_send_timeout 1h;\n` +
+        `    }\n\n`;
+    }
+    return out;
   }
 
   private async loadCurrentSettings(): Promise<RenderSettings> {

@@ -88,20 +88,53 @@ export class XrayDriver implements VpnDriver {
       );
     }
 
-    const keys = parseX25519Output(await this.sshService.execOrThrow(ctx.ssh, `${XRAY_BINARY} x25519`));
     const apiPort = await this.pickFreeApiPort(ctx.ssh, options.listenPort);
-    const params = {
-      sni: options.realitySni || DEFAULT_REALITY_SNI,
-      shortId: randomBytes(4).toString('hex'),
-      fingerprint: REALITY_FINGERPRINT,
-      flow: VLESS_FLOW,
-      apiPort,
-    };
+    const isXhttp = options.vlessTransport === 'xhttp';
+    let privateKey = '';
+    let serverPublicKey = '';
+    let params: Record<string, string | number>;
+    if (isXhttp) {
+      if (!options.xhttpDomain) {
+        throw new Error('Для VLESS XHTTP нужен домен панели с включённым HTTPS (Настройки → «Домен и HTTPS»)');
+      }
+      // Xray слушает адрес docker-шлюза сети, в которой живёт nginx панели: nginx-контейнер
+      // до него достаёт, а снаружи этот адрес не маршрутизируется (в отличие от 0.0.0.0).
+      const gateway = await this.sshService.exec(
+        ctx.ssh,
+        `docker inspect -f '{{range .NetworkSettings.Networks}}{{.Gateway}} {{end}}' $(docker ps -q -f label=com.docker.compose.service=nginx | head -1) 2>/dev/null | awk '{print $1}'`,
+      );
+      const listenAddress = gateway.stdout.trim();
+      if (!/^\d+\.\d+\.\d+\.\d+$/.test(listenAddress)) {
+        throw new Error('VLESS XHTTP ставится только на сервер панели: не найден docker-контейнер nginx панели');
+      }
+      params = {
+        transport: 'xhttp',
+        path: `/${randomBytes(9).toString('hex')}`,
+        domain: options.xhttpDomain,
+        publicPort: 443,
+        listenAddress,
+        fingerprint: REALITY_FINGERPRINT,
+        flow: '',
+        apiPort,
+      };
+    } else {
+      const keys = parseX25519Output(await this.sshService.execOrThrow(ctx.ssh, `${XRAY_BINARY} x25519`));
+      privateKey = keys.privateKey;
+      serverPublicKey = keys.publicKey;
+      params = {
+        transport: 'reality',
+        sni: options.realitySni || DEFAULT_REALITY_SNI,
+        shortId: randomBytes(4).toString('hex'),
+        fingerprint: REALITY_FINGERPRINT,
+        flow: VLESS_FLOW,
+        apiPort,
+      };
+    }
     const config = renderXrayServerConfig({
       listenPort: options.listenPort,
       apiPort,
-      privateKey: keys.privateKey,
-      params,
+      privateKey,
+      params: parseVlessServerParams(params),
       clients: [],
       routing: ctx.serverProtocol.xrayRouting,
     });
@@ -110,7 +143,7 @@ export class XrayDriver implements VpnDriver {
       ctx.ssh,
       `${SYSTEMD_DIR}/${unit}.service`,
       renderSystemdUnit({
-        description: `VPN Manager: VLESS Reality (${interfaceName})`,
+        description: `VPN Manager: VLESS ${isXhttp ? 'XHTTP' : 'Reality'} (${interfaceName})`,
         execStart: `${XRAY_BINARY} run -config ${xrayServerConfigPath(interfaceName)}`,
       }),
       '644',
@@ -118,13 +151,11 @@ export class XrayDriver implements VpnDriver {
     await this.sshService.execOrThrow(ctx.ssh, `systemctl daemon-reload && systemctl enable ${unit} >/dev/null 2>&1 && systemctl restart ${unit}`);
     await this.assertUnitActive(ctx.ssh, unit);
 
-    // См. комментарий в BaseWireGuardLikeDriver.install про ufw с политикой DROP.
-    await this.sshService.exec(
-      ctx.ssh,
-      `command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active" && ufw allow ${options.listenPort}/tcp || true`,
-    );
+    // См. комментарий в BaseWireGuardLikeDriver.install про ufw с политикой DROP. Для xhttp
+    // порт открываем ТОЛЬКО для docker-сетей (nginx панели), наружу он не нужен.
+    await this.sshService.exec(ctx.ssh, this.firewallCommand('allow', options.listenPort, isXhttp));
 
-    return { interfaceName, serverPublicKey: keys.publicKey, obfuscationParams: params };
+    return { interfaceName, serverPublicKey, obfuscationParams: params };
   }
 
   async checkKernelModuleStatus(): Promise<KernelModuleStatus> {
@@ -143,10 +174,17 @@ export class XrayDriver implements VpnDriver {
     const unit = xrayServerUnitName(interfaceName);
     const params = parseVlessServerParams(ctx.serverProtocol.obfuscationParams);
     const current = await this.readServerConfig(ctx);
-    const privateKey = (current as any)?.inbounds?.find((inbound: any) => inbound?.tag === XRAY_INBOUND_TAG)?.streamSettings
-      ?.realitySettings?.privateKey;
-    if (typeof privateKey !== 'string' || !privateKey) {
+    if (!current) {
       throw new Error(`На сервере не найден конфиг Xray ${xrayServerConfigPath(interfaceName)} — переустановите VLESS`);
+    }
+    // Приватный ключ Reality живёт только в конфиге на сервере; у xhttp ключа нет (TLS — у nginx).
+    let privateKey = '';
+    if (params.transport === 'reality') {
+      privateKey = (current as any)?.inbounds?.find((inbound: any) => inbound?.tag === XRAY_INBOUND_TAG)?.streamSettings?.realitySettings
+        ?.privateKey;
+      if (typeof privateKey !== 'string' || !privateKey) {
+        throw new Error(`В конфиге Xray ${xrayServerConfigPath(interfaceName)} нет ключа Reality — переустановите VLESS`);
+      }
     }
 
     const clients = peers
@@ -207,7 +245,12 @@ export class XrayDriver implements VpnDriver {
               listen: '0.0.0.0',
               port: ctx.serverProtocol.listenPort,
               protocol: 'vless',
-              settings: { clients: toAdd.map((client) => ({ id: client.uuid, email: client.email, flow: params.flow })), decryption: 'none' },
+              settings: {
+                clients: toAdd.map((client) =>
+                  params.flow ? { id: client.uuid, email: client.email, flow: params.flow } : { id: client.uuid, email: client.email },
+                ),
+                decryption: 'none',
+              },
             },
           ],
         };
@@ -265,6 +308,9 @@ export class XrayDriver implements VpnDriver {
   async connectAsClient(ssh: NodeSSH, interfaceName: string, config: UpstreamPeerConfig, routeTable: number): Promise<void> {
     await this.ensureClientToolsInstalled(ssh);
     const params = parseVlessServerParams(config.obfuscationParams);
+    if (params.transport !== 'reality') {
+      throw new Error('Upstream моста через VLESS XHTTP пока не поддерживается — выберите сервер с VLESS Reality или AmneziaWG');
+    }
     const socksPort = bridgeSocksPort(routeTable);
     const xrayUnit = xrayClientUnitName(interfaceName);
     const tunUnit = tunUnitName(interfaceName);
@@ -358,6 +404,21 @@ export class XrayDriver implements VpnDriver {
       ctx.ssh,
       `systemctl disable --now ${unit} >/dev/null 2>&1; rm -f ${SYSTEMD_DIR}/${unit}.service ${xrayServerConfigPath(interfaceName)}; systemctl daemon-reload`,
     );
+    let isXhttp = false;
+    try {
+      isXhttp = parseVlessServerParams(ctx.serverProtocol.obfuscationParams).transport === 'xhttp';
+    } catch {
+      // параметры битые — правило файрвола всё равно попробуем снять в обоих вариантах ниже
+    }
+    await this.sshService.exec(ctx.ssh, this.firewallCommand('delete', ctx.serverProtocol.listenPort, isXhttp));
+  }
+
+  // ufw-правило для порта Xray: reality — открыть всем; xhttp — только docker-сетям (к Xray
+  // ходит лишь nginx панели из своего контейнера). No-op, если ufw нет или он выключен.
+  private firewallCommand(action: 'allow' | 'delete', port: number, xhttp: boolean): string {
+    const rule = xhttp ? `from 172.16.0.0/12 to any port ${port} proto tcp` : `${port}/tcp`;
+    const verb = action === 'allow' ? 'allow' : 'delete allow';
+    return `command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active" && ufw ${verb} ${rule} >/dev/null 2>&1; true`;
   }
 
   private async stopClientUnits(ssh: NodeSSH, interfaceName: string): Promise<void> {

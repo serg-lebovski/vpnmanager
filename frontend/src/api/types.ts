@@ -108,6 +108,8 @@ export interface ServerProtocolEntity {
   // официальный self-hosted сервер AmneziaVPN) — тогда проверка версии/обновление пакета
   // недоступны с этой панели (см. VpnDriver.updatePackage/uninstall на бэкенде).
   execContainer: string | null;
+  // Для VLESS — несекретные параметры транспорта (transport: 'reality' | 'xhttp', domain, …).
+  obfuscationParams?: Record<string, string | number> | null;
 }
 
 export interface ServerEntity {

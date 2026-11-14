@@ -440,8 +440,18 @@ function BridgeCard({
   // 443 там обычно занят nginx панели, поэтому по умолчанию 8443). WG/AWG-клиентов моста
   // не затрагивает.
   const [vlessPort, setVlessPort] = useState(8443);
+  // XHTTP по умолчанию: идёт через nginx панели на 443 с её настоящим сертификатом — для
+  // провайдеров выглядит как обычный HTTPS к панели (Reality на отдельном порту у части
+  // провайдеров режется на рукопожатии). Внутренний порт Xray наружу не открывается.
+  const [vlessTransport, setVlessTransport] = useState<'xhttp' | 'reality'>('xhttp');
   const addVlessMutation = useMutation({
-    mutationFn: () => addBridgeClientProtocol(bridge.id, { protocol: 'vless', listenPort: vlessPort }),
+    mutationFn: () =>
+      addBridgeClientProtocol(
+        bridge.id,
+        vlessTransport === 'xhttp'
+          ? { protocol: 'vless', listenPort: 10443, vlessTransport: 'xhttp' }
+          : { protocol: 'vless', listenPort: vlessPort, vlessTransport: 'reality' },
+      ),
     onSuccess: () => {
       onChanged();
       setError(null);
@@ -642,21 +652,37 @@ function BridgeCard({
           )}
           {clientInterfaces.map(({ label, sp }) => (
             <Typography key={label} variant="body2" color="text.secondary">
-              Клиентский интерфейс ({VPN_PROTOCOL_LABELS[label]}): {sp?.server?.name} · порт {sp?.listenPort}
-              {label === 'vless' ? ' (TCP)' : ` · сеть ${sp?.networkCidr}`}
+              Клиентский интерфейс ({VPN_PROTOCOL_LABELS[label]}
+              {label === 'vless' && sp?.obfuscationParams?.transport === 'xhttp' ? ', XHTTP' : ''}): {sp?.server?.name} ·{' '}
+              {label === 'vless' && sp?.obfuscationParams?.transport === 'xhttp'
+                ? `${sp?.obfuscationParams?.domain}:443 (через nginx панели)`
+                : `порт ${sp?.listenPort}${label === 'vless' ? ' (TCP)' : ` · сеть ${sp?.networkCidr}`}`}
               {sp && sp.status !== 'active' ? ` · ${sp.status}${sp.lastError ? `: ${sp.lastError}` : ''}` : ''}
             </Typography>
           ))}
           {!bridge.vlessClientProtocolId ? (
             <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap my={1}>
               <TextField
-                label="Порт VLESS (TCP)"
-                type="number"
+                select
+                label="Транспорт VLESS"
                 size="small"
-                value={vlessPort}
-                onChange={(e) => setVlessPort(Number(e.target.value))}
-                sx={{ width: 150 }}
-              />
+                value={vlessTransport}
+                onChange={(e) => setVlessTransport(e.target.value as 'xhttp' | 'reality')}
+                sx={{ width: 260 }}
+              >
+                <MenuItem value="xhttp">XHTTP через домен панели (443)</MenuItem>
+                <MenuItem value="reality">Reality на отдельном порту</MenuItem>
+              </TextField>
+              {vlessTransport === 'reality' && (
+                <TextField
+                  label="Порт VLESS (TCP)"
+                  type="number"
+                  size="small"
+                  value={vlessPort}
+                  onChange={(e) => setVlessPort(Number(e.target.value))}
+                  sx={{ width: 150 }}
+                />
+              )}
               <Button
                 size="small"
                 variant="outlined"
@@ -664,7 +690,7 @@ function BridgeCard({
                 startIcon={addVlessMutation.isPending ? <CircularProgress size={16} /> : undefined}
                 onClick={() => addVlessMutation.mutate()}
               >
-                {addVlessMutation.isPending ? 'Установка VLESS…' : 'Добавить VLESS Reality'}
+                {addVlessMutation.isPending ? 'Установка VLESS…' : 'Добавить VLESS'}
               </Button>
               <Typography variant="caption" color="text.secondary">
                 для Happ/v2rayNG; WireGuard/AmneziaWG-клиенты моста не затрагиваются

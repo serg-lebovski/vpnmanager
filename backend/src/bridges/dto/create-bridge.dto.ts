@@ -4,6 +4,7 @@ import {
   ArrayMinSize,
   IsArray,
   IsEnum,
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -37,6 +38,12 @@ export class BridgeClientProtocolInput {
   @Matches(/^[a-z0-9.-]+$/i)
   @IsOptional()
   realitySni?: string;
+
+  // Только для VLESS: reality — свой порт наружу (listenPort); xhttp — через nginx панели на
+  // 443 её домена, listenPort тогда внутренний (наружу не открывается).
+  @IsIn(['reality', 'xhttp'])
+  @IsOptional()
+  vlessTransport?: 'reality' | 'xhttp';
 }
 
 // Добавление клиентского протокола к уже существующему мосту (см.

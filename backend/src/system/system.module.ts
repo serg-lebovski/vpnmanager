@@ -5,6 +5,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { BridgeLogModule } from '../bridge-log/bridge-log.module';
 import { Bridge } from '../bridges/bridge.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { ServerProtocol } from '../servers/server-protocol.entity';
 import { Server } from '../servers/server.entity';
 import { VpnModule } from '../vpn/vpn.module';
 import { BackupService } from './backup.service';
@@ -20,7 +21,7 @@ import { UpdateService } from './update.service';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([SystemSettings, Bridge, Server]),
+    TypeOrmModule.forFeature([SystemSettings, Bridge, Server, ServerProtocol]),
     VpnModule,
     BridgeLogModule,
     NotificationsModule,
@@ -34,6 +35,6 @@ import { UpdateService } from './update.service';
   ],
   controllers: [SystemController],
   providers: [BackupService, UpdateService, SystemGateway, LogsService, CertbotService, NginxConfigService, SettingsService, RestoreService],
-  exports: [SettingsService],
+  exports: [SettingsService, NginxConfigService],
 })
 export class SystemModule {}

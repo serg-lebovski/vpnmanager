@@ -8,6 +8,7 @@ import { Peer } from '../peers/peer.entity';
 import { PeersModule } from '../peers/peers.module';
 import { ServerProtocol } from '../servers/server-protocol.entity';
 import { Server } from '../servers/server.entity';
+import { SystemModule } from '../system/system.module';
 import { VpnModule } from '../vpn/vpn.module';
 import { Bridge } from './bridge.entity';
 import { BridgeUpstreamCandidate } from './bridge-upstream-candidate.entity';
@@ -20,6 +21,7 @@ import { BridgesService } from './bridges.service';
   imports: [
     TypeOrmModule.forFeature([Bridge, BridgeUpstreamCandidate, ServerProtocol, Server, Peer, Organization]),
     PeersModule,
+    SystemModule,
     VpnModule,
     BridgeLogModule,
     JwtModule.registerAsync({

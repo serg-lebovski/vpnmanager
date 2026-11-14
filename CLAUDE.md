@@ -131,6 +131,12 @@ systemd-юнит `vpnmanager-xray-<iface>`; пользователи меняю�
 Xray помечены fwmark = `Bridge.routeTable` (`ServerProtocol.xrayRouting`), `setupBridgeXrayRouting`
 отправляет их в таблицу моста; список обхода моста применяется правилами маршрутизации Xray
 (домены с поддоменами), а не ipset. Клиенту выдаётся ссылка `vless://` (+QR) для Happ/v2rayNG.
+Два транспорта (`obfuscationParams.transport`): `reality` — свой TCP-порт наружу; `xhttp` — только
+на сервере панели: Xray слушает адрес docker-шлюза без TLS, а наружу его отдаёт nginx панели на 443
+с её настоящим сертификатом по секретному пути (`NginxConfigService.renderXhttpLocations` собирает
+локации из БД, мост перерисовывает nginx после добавления/снятия). Причина — пойманный вживую
+случай: домашний провайдер обрезал рукопожатия Reality на любом порту/SNI, а обычный HTTPS той же
+панели проходил. Ссылка XHTTP: `type=xhttp&security=tls&mode=packet-up&alpn=http/1.1` (nginx без h2).
 Разработка идёт в ветке `beta`.
 
 **Многосерверность и балансировка**: сущность `ServerProtocol` (`servers/server-protocol.entity.ts`)

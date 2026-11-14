@@ -1,6 +1,7 @@
 import {
   buildVlessUri,
   extractXrayClients,
+  parseVlessServerParams,
   parseX25519Output,
   parseXrayUserStats,
   PRIVATE_NETWORKS,
@@ -83,6 +84,42 @@ describe('xray-config.util', () => {
     expect(url.searchParams.get('sid')).toBe('a1b2c3d4');
     expect(url.searchParams.get('flow')).toBe('xtls-rprx-vision');
     expect(decodeURIComponent(url.hash.slice(1))).toBe('Телефон');
+  });
+
+  it('renders XHTTP inbound behind the panel nginx and a matching vless:// link', () => {
+    const xhttp = parseVlessServerParams({
+      transport: 'xhttp',
+      path: '/0a1b2c3d4e5f6a7b8c',
+      domain: 'panel.example.ru',
+      publicPort: 443,
+      listenAddress: '172.18.0.1',
+      fingerprint: 'chrome',
+      flow: '',
+      apiPort: 10529,
+    });
+    const config = renderXrayServerConfig({
+      listenPort: 10443,
+      apiPort: 10529,
+      privateKey: '',
+      params: xhttp,
+      clients: [{ uuid: 'u-1', email: 'p-1' }],
+    }) as any;
+    const inbound = config.inbounds[0];
+    expect(inbound.listen).toBe('172.18.0.1');
+    expect(inbound.streamSettings).toEqual({ network: 'xhttp', security: 'none', xhttpSettings: { path: '/0a1b2c3d4e5f6a7b8c', mode: 'auto' } });
+    // Vision flow не применим к XHTTP — у клиентов его быть не должно.
+    expect(inbound.settings.clients).toEqual([{ id: 'u-1', email: 'p-1' }]);
+
+    const uri = buildVlessUri({ uuid: 'u-1', host: '83.136.232.56', port: 10443, publicKey: '', params: xhttp, name: 'XHTTP' });
+    expect(uri.startsWith('vless://u-1@panel.example.ru:443?')).toBe(true);
+    const url = new URL(uri.replace('vless://', 'http://'));
+    expect(url.searchParams.get('type')).toBe('xhttp');
+    expect(url.searchParams.get('security')).toBe('tls');
+    expect(url.searchParams.get('sni')).toBe('panel.example.ru');
+    expect(url.searchParams.get('path')).toBe('/0a1b2c3d4e5f6a7b8c');
+    expect(url.searchParams.get('mode')).toBe('packet-up');
+    expect(url.searchParams.get('alpn')).toBe('http/1.1');
+    expect(url.searchParams.get('flow')).toBeNull();
   });
 
   it('parses user traffic stats and x25519 output', () => {

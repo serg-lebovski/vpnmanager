@@ -38,6 +38,9 @@ export interface BridgeClientProtocolInput {
   networkCidr?: string;
   // Только для VLESS — сайт маскировки Reality.
   realitySni?: string;
+  // Только для VLESS: reality — свой порт наружу; xhttp — через nginx панели на 443 её домена
+  // (listenPort тогда внутренний).
+  vlessTransport?: 'reality' | 'xhttp';
 }
 
 // Добавить клиентский протокол (в первую очередь VLESS) к уже существующему мосту.

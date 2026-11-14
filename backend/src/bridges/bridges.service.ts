@@ -15,6 +15,8 @@ import { Server } from '../servers/server.entity';
 import { classifyBypassEntry } from '../vpn/network.util';
 import { UpstreamPeerConfig } from '../vpn/vpn-driver.interface';
 import { VpnProvisioningService } from '../vpn/vpn-provisioning.service';
+import { NginxConfigService } from '../system/nginx-config.service';
+import { SettingsService } from '../system/settings.service';
 import { Bridge } from './bridge.entity';
 import { BridgeUpstreamCandidate } from './bridge-upstream-candidate.entity';
 import { BridgesGateway } from './bridges.gateway';
@@ -77,6 +79,8 @@ export class BridgesService {
     private readonly vpnProvisioningService: VpnProvisioningService,
     private readonly bridgesGateway: BridgesGateway,
     private readonly bridgeLogService: BridgeLogService,
+    private readonly settingsService: SettingsService,
+    private readonly nginxConfigService: NginxConfigService,
   ) {}
 
   async findAll(requester: AuthenticatedUser): Promise<BridgeListItem[]> {
@@ -373,10 +377,22 @@ export class BridgesService {
   // self-сервере моста.
   private async installClientProtocol(
     selfServerId: string,
-    input: { protocol: VpnProtocol; listenPort: number; networkCidr?: string; realitySni?: string },
+    input: { protocol: VpnProtocol; listenPort: number; networkCidr?: string; realitySni?: string; vlessTransport?: 'reality' | 'xhttp' },
     routeTable: number,
     bypassDestinations: string[],
   ): Promise<ServerProtocol> {
+    // XHTTP — через nginx панели на её домене (см. XrayDriver): домен с действующим HTTPS
+    // обязателен, иначе клиенту не к чему подключаться по TLS.
+    let xhttpDomain: string | undefined;
+    if (input.protocol === VpnProtocol.VLESS && input.vlessTransport === 'xhttp') {
+      const settings = await this.settingsService.getOrCreate();
+      if (!settings.domain || !settings.httpsEnabled) {
+        throw new BadRequestException(
+          'Для VLESS XHTTP нужен домен панели с включённым HTTPS (Настройки → «Домен и HTTPS») — клиенты подключаются к нему на 443',
+        );
+      }
+      xhttpDomain = settings.domain;
+    }
     // Случайное имя интерфейса — не дефолтное wg0/awg0 драйвера: на одном self-сервере
     // может быть несколько мостов с одним и тем же протоколом (разные порты/сети), и им
     // нельзя делить один и тот же netdev/файл конфига/файл ключей.
@@ -391,12 +407,34 @@ export class BridgesService {
       // MTU касается только L3-интерфейсов WG/AWG (см. BRIDGE_CLIENT_MTU).
       isVless ? undefined : BRIDGE_CLIENT_MTU,
       `${interfaceNamePrefix}-${randomBytes(3).toString('hex')}`,
-      isVless ? { realitySni: input.realitySni, xrayRouting: vlessRoutingFor(routeTable, bypassDestinations) } : undefined,
+      isVless
+        ? {
+            realitySni: input.realitySni,
+            xrayRouting: vlessRoutingFor(routeTable, bypassDestinations),
+            vlessTransport: input.vlessTransport ?? 'reality',
+            xhttpDomain,
+          }
+        : undefined,
     );
     if (installed.status === ServerProtocolStatus.ERROR) {
       throw new BadRequestException(`Не удалось поднять клиентский интерфейс (${input.protocol}) для моста: ${installed.lastError}`);
     }
+    if (xhttpDomain) {
+      await this.renderNginxBestEffort();
+    }
     return installed;
+  }
+
+  // Локации XHTTP в nginx панели собираются из БД (NginxConfigService.renderXhttpLocations) —
+  // перерисовываем после появления/снятия VLESS XHTTP. Best-effort: сам протокол уже
+  // установлен/снят; если nginx не перезагрузился, это видно в логе, а при следующем старте
+  // backend конфиг всё равно перерисуется.
+  private async renderNginxBestEffort(): Promise<void> {
+    try {
+      await this.nginxConfigService.render();
+    } catch (error) {
+      this.logger.warn(`Не удалось обновить конфиг nginx для VLESS XHTTP: ${(error as Error).message}`);
+    }
   }
 
   // Добавить клиентский протокол к УЖЕ существующему мосту (в первую очередь VLESS — к
@@ -480,6 +518,7 @@ export class BridgesService {
     await this.peersRepository.update({ serverProtocolId: vless.id }, { status: PeerStatus.REVOKED });
     await this.peersRepository.delete({ serverProtocolId: vless.id });
     await this.serverProtocolsRepository.delete(vless.id);
+    await this.renderNginxBestEffort();
     this.bridgeLogService.log(LogLevel.INFO, 'VLESS снят с моста', bridge.id, bridge.name);
     return this.toSafeBridge(await this.findOneOrFail(bridgeId));
   }
@@ -556,8 +595,12 @@ export class BridgesService {
     const clientProtocolIds = this.clientProtocolIds(bridge);
     if (clientProtocolIds.length > 0) {
       await this.serverProtocolsRepository.delete(clientProtocolIds);
-    } else {
-      await this.bridgesRepository.remove(bridge);
+    }
+    // FK на VLESS — SET NULL, не CASCADE: если у моста был только VLESS, удаление протокола
+    // мост не удалит — добиваем явно (no-op, если его уже удалил каскад от WG/AWG).
+    await this.bridgesRepository.delete(bridge.id);
+    if (bridge.vlessClientProtocol) {
+      await this.renderNginxBestEffort();
     }
   }
 
