@@ -8,6 +8,7 @@ import { Peer } from '../peers/peer.entity';
 import { PeersModule } from '../peers/peers.module';
 import { ServerProtocol } from '../servers/server-protocol.entity';
 import { Server } from '../servers/server.entity';
+import { SystemSettings } from '../system/system-settings.entity';
 import { VpnModule } from '../vpn/vpn.module';
 import { Bridge } from './bridge.entity';
 import { BridgeUpstreamCandidate } from './bridge-upstream-candidate.entity';
@@ -18,7 +19,9 @@ import { BridgesService } from './bridges.service';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Bridge, BridgeUpstreamCandidate, ServerProtocol, Server, Peer, Organization]),
+    // SystemSettings — только чтение telegramBridgeId при восстановлении моста (см.
+    // BridgesService.reapplyTelegramRoutingBestEffort), без зависимости от SystemModule.
+    TypeOrmModule.forFeature([Bridge, BridgeUpstreamCandidate, ServerProtocol, Server, Peer, Organization, SystemSettings]),
     PeersModule,
     VpnModule,
     BridgeLogModule,

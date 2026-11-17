@@ -40,6 +40,18 @@ export class ServerProtocol {
   @Column({ name: 'server_public_key', type: 'varchar', nullable: true })
   serverPublicKey: string | null;
 
+  // Приватный ключ САМОГО интерфейса (зашифрован encryptSecret). Раньше жил только в файле
+  // на сервере (<confDir>/<prefix>_private.key), и бэкапа БД не хватало для переезда: на
+  // новом хосте интерфейс поднялся бы с НОВЫМ ключом, и все уже выданные клиентские конфиги
+  // (в них зашит публичный ключ сервера) перестали бы подключаться. Теперь ключ попадает в
+  // pg_dump и восстановление моста на другом хосте (BridgesService.restoreBridge) поднимает
+  // интерфейс с тем же ключом. select: false — никогда не уходит в ответы API (ServerProtocol
+  // отдаётся наружу вложенным в мосты/серверы); читать только явным addSelect
+  // (VpnProvisioningService.loadServerPrivateKey). null — ещё не забран с сервера
+  // (протоколы, установленные до появления поля, см. backfillServerPrivateKeys).
+  @Column({ name: 'server_private_key_enc', type: 'text', nullable: true, select: false })
+  serverPrivateKeyEnc?: string | null;
+
   @Column({ type: 'enum', enum: ServerProtocolStatus, default: ServerProtocolStatus.NOT_INSTALLED })
   status: ServerProtocolStatus;
 

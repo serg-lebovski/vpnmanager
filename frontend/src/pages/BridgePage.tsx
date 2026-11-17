@@ -29,6 +29,7 @@ import {
   fetchCandidateServers,
   fetchCandidateStatus,
   rebalanceBridge,
+  restoreBridge,
   setBridgeMode,
   setBridgeUpstream,
   setUpstreamCandidates,
@@ -431,6 +432,19 @@ function BridgeCard({
     },
     onError: (err) => setError(getErrorMessage(err, 'Не удалось пересчитать баланс')),
   });
+  const [restoreResult, setRestoreResult] = useState<string | null>(null);
+  const restoreMutation = useMutation({
+    mutationFn: () => restoreBridge(bridge.id),
+    onSuccess: (data) => {
+      onChanged();
+      setError(null);
+      setRestoreResult(data.restored.length > 0 ? `Восстановлено: ${data.restored.join(', ')}` : 'Всё на месте, восстанавливать нечего');
+    },
+    onError: (err) => {
+      setRestoreResult(null);
+      setError(getErrorMessage(err, 'Не удалось восстановить мост'));
+    },
+  });
   // Мост "по умолчанию" — бот/портал молча создают/перевыпускают на нём новые конфиги, не
   // спрашивая выбор сервера (см. PeersService.listUpstreamOptions на бэкенде). Отдельная
   // мутация (не часть общей формы "Изменить") — однокликовый переключатель.
@@ -660,6 +674,17 @@ function BridgeCard({
           >
             Пересчитать баланс
           </Button>
+          <Tooltip title="Поднять заново то, чего не хватает на сервере моста: клиентские интерфейсы (с прежними ключами — выданные конфиги продолжают работать), туннель до upstream, NAT, список обхода. Панель делает это и сама раз в минуту — например, после перезагрузки или переезда сервера.">
+            <span>
+              <Button
+                size="small"
+                onClick={() => restoreMutation.mutate()}
+                disabled={!bridge.upstreamServerProtocolId || restoreMutation.isPending || (progress && !progress.done)}
+              >
+                {restoreMutation.isPending ? 'Восстановление…' : 'Восстановить мост'}
+              </Button>
+            </span>
+          </Tooltip>
           {!isEditing && (
             <Button
               size="small"
@@ -819,6 +844,11 @@ function BridgeCard({
       {error && (
         <Alert severity="error" sx={{ mt: 2 }}>
           {error}
+        </Alert>
+      )}
+      {restoreResult && (
+        <Alert severity="success" sx={{ mt: 2 }} onClose={() => setRestoreResult(null)}>
+          {restoreResult}
         </Alert>
       )}
       {kernelRebootInfo && (

@@ -1,5 +1,5 @@
 import { randomBytes } from 'crypto';
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException, OnApplicationBootstrap } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, Not, Repository } from 'typeorm';
@@ -12,6 +12,7 @@ import { Peer } from '../peers/peer.entity';
 import { PeersService } from '../peers/peers.service';
 import { ServerProtocol } from '../servers/server-protocol.entity';
 import { Server } from '../servers/server.entity';
+import { SystemSettings } from '../system/system-settings.entity';
 import { classifyBypassEntry } from '../vpn/network.util';
 import { UpstreamPeerConfig } from '../vpn/vpn-driver.interface';
 import { VpnProvisioningService } from '../vpn/vpn-provisioning.service';
@@ -34,6 +35,12 @@ const BRIDGE_CLIENT_MTU = 1280;
 // allocateRouteTable). Произвольное число, не пересекающееся с зарезервированными
 // main(254)/default(253)/local(255).
 const FIRST_ROUTE_TABLE = 52000;
+
+// См. BridgesService.checkBridgesHealth/restoreBridge.
+const BRIDGE_HEALTH_INTERVAL_MS = 60 * 1000;
+const BRIDGE_HEALTH_STARTUP_DELAY_MS = 15 * 1000;
+const BRIDGE_HEALTH_RECHECK_MS = 5 * 1000;
+const BRIDGE_RESTORE_BACKOFF_MS = 5 * 60 * 1000;
 
 const BRIDGE_RELATIONS = [
   'wireguardClientProtocol',
@@ -59,8 +66,13 @@ export type BridgeListItem = Omit<
 };
 
 @Injectable()
-export class BridgesService {
+export class BridgesService implements OnApplicationBootstrap {
   private readonly logger = new Logger(BridgesService.name);
+  // In-memory состояние автовосстановления (см. checkBridgesHealth) — один процесс backend.
+  private readonly restoringBridges = new Set<string>();
+  private readonly restoreBackoffUntil = new Map<string, number>();
+  private readonly restoreFailureReported = new Set<string>();
+  private healthCheckRunning = false;
 
   constructor(
     @InjectRepository(Bridge) private readonly bridgesRepository: Repository<Bridge>,
@@ -69,6 +81,7 @@ export class BridgesService {
     @InjectRepository(Server) private readonly serversRepository: Repository<Server>,
     @InjectRepository(Peer) private readonly peersRepository: Repository<Peer>,
     @InjectRepository(Organization) private readonly organizationsRepository: Repository<Organization>,
+    @InjectRepository(SystemSettings) private readonly settingsRepository: Repository<SystemSettings>,
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly peersService: PeersService,
     private readonly vpnProvisioningService: VpnProvisioningService,
@@ -596,18 +609,7 @@ export class BridgesService {
       const reusedReserved = await this.tryReuseReservedPeer(bridge, target);
       const systemPeer = reusedReserved ?? (await this.peersService.createSystemPeer(target.id, `bridge:${bridge.name}`));
 
-      const privateKey = decryptSecret(systemPeer.privateKeyEnc!);
-      const presharedKey = systemPeer.presharedKeyEnc ? decryptSecret(systemPeer.presharedKeyEnc) : null;
-
-      const config: UpstreamPeerConfig = {
-        privateKey,
-        address: `${systemPeer.allowedIp}/32`,
-        presharedKey,
-        serverPublicKey: target.serverPublicKey!,
-        endpointHost: target.server.host,
-        endpointPort: target.listenPort,
-        obfuscationParams: target.obfuscationParams || undefined,
-      };
+      const config = this.buildUpstreamConfig(systemPeer, target);
 
       const wasConfiguredBefore = Boolean(bridge.upstreamServerProtocolId);
       const previousPeerId = bridge.upstreamPeerId;
@@ -703,6 +705,209 @@ export class BridgesService {
       );
       throw error;
     }
+  }
+
+  private buildUpstreamConfig(systemPeer: Peer, target: ServerProtocol): UpstreamPeerConfig {
+    return {
+      privateKey: decryptSecret(systemPeer.privateKeyEnc!),
+      address: `${systemPeer.allowedIp}/32`,
+      presharedKey: systemPeer.presharedKeyEnc ? decryptSecret(systemPeer.presharedKeyEnc) : null,
+      serverPublicKey: target.serverPublicKey!,
+      endpointHost: target.server.host,
+      endpointPort: target.listenPort,
+      obfuscationParams: target.obfuscationParams || undefined,
+    };
+  }
+
+  // Восстановление сетевой обвязки моста на self-сервере по данным из БД — после
+  // перезагрузки self-сервера (iptables/ip rule/маршруты/ipset и upstream-туннель без
+  // автозапуска не переживают её: раньше мост после ребута оставался без интернета, пока
+  // кто-нибудь не переключал upstream вручную) и на НОВОМ хосте после переезда панели
+  // (restore БД + смена IP self-сервера, см. README «Переезд панели»). Чинит только то,
+  // чего не хватает (см. VpnProvisioningService.inspectBridgeState):
+  //  - клиентский интерфейс — поднимается с ТЕМ ЖЕ ключом (ServerProtocol.serverPrivateKeyEnc)
+  //    и теми же портом/сетью/параметрами AmneziaWG/peers — выданные конфиги подходят;
+  //  - upstream-туннель — с УЖЕ существующим upstream-peer (новый на upstream-сервере не
+  //    создаётся, там ничего не меняется);
+  //  - NAT/ip rule и список обхода — теми же идемпотентными функциями, что и всегда.
+  // manual — кнопка в UI: NAT и список обхода переприменяются в любом случае.
+  async restoreBridge(bridgeId: string, manual = false): Promise<{ restored: string[] }> {
+    if (this.restoringBridges.has(bridgeId)) {
+      throw new BadRequestException('Восстановление этого моста уже выполняется');
+    }
+    this.restoringBridges.add(bridgeId);
+    try {
+      const bridge = await this.findOneOrFail(bridgeId);
+      if (bridge.status === BridgeStatus.CONFIGURING) {
+        throw new BadRequestException('Мост сейчас перенастраивается — повторите позже');
+      }
+      const selfServer = this.getSelfServer(bridge);
+      const clientProtocols = [bridge.wireguardClientProtocol, bridge.amneziawgClientProtocol].filter(
+        (sp): sp is ServerProtocol => Boolean(sp),
+      );
+      const clientInterfaces = clientProtocols.map((sp) => ({ networkCidr: sp.networkCidr, interfaceName: sp.interfaceName }));
+      const hasUpstream = Boolean(bridge.upstreamServerProtocol && bridge.upstreamPeerId);
+      const state = await this.vpnProvisioningService.inspectBridgeState(selfServer, {
+        id: bridge.id,
+        clientInterfaces,
+        upstreamInterfaceName: bridge.upstreamInterfaceName,
+        routeTable: bridge.routeTable,
+        checkBypass: (bridge.bypassDestinations ?? []).length > 0,
+      });
+      const restored: string[] = [];
+
+      for (const sp of clientProtocols) {
+        if (!state.missingClientInterfaces.includes(sp.interfaceName)) {
+          continue;
+        }
+        const privateKey = await this.vpnProvisioningService.loadServerPrivateKey(sp.id);
+        const peers = await this.peersService.getActivePeerSpecs(sp.id);
+        await this.vpnProvisioningService.restoreInterface(sp, selfServer, privateKey, peers);
+        restored.push(`клиентский интерфейс ${sp.interfaceName} (${peers.length} peers)`);
+      }
+
+      if (hasUpstream && !state.upstreamOk) {
+        const target = bridge.upstreamServerProtocol!;
+        const upstreamPeer = await this.peersRepository.findOne({ where: { id: bridge.upstreamPeerId!, status: PeerStatus.ACTIVE } });
+        if (!upstreamPeer?.privateKeyEnc) {
+          // Peer на upstream-сервере отозван/удалён — переподключиться "как было" нечем,
+          // обычное переключение создаст новый (и само настроит NAT).
+          await this.setUpstream(bridge.id, target.id);
+          restored.push('upstream (заново, новый peer)');
+          return { restored };
+        }
+        await this.vpnProvisioningService.ensureClientToolsInstalled(selfServer, target.protocol);
+        await this.vpnProvisioningService.connectBridgeUpstream(
+          selfServer,
+          target.protocol,
+          bridge.upstreamInterfaceName,
+          this.buildUpstreamConfig(upstreamPeer, target),
+          bridge.routeTable,
+        );
+        restored.push(`туннель до upstream «${target.server.name}»`);
+        this.reapplyTelegramRoutingBestEffort(bridge, selfServer);
+      }
+
+      if (hasUpstream && (manual || !state.natOk || restored.length > 0)) {
+        await this.configureNat(selfServer, bridge);
+        restored.push('NAT и маршрутизация');
+      }
+      if ((bridge.bypassDestinations ?? []).length > 0 && (manual || !state.bypassOk)) {
+        await this.syncBypassRules(bridge);
+        restored.push('список обхода upstream');
+      }
+
+      if (hasUpstream && restored.length > 0 && bridge.status !== BridgeStatus.ACTIVE) {
+        // Точечный UPDATE, не save(bridge): bridge загружен со всеми relations, а save
+        // может откатить параллельно изменённые колонки (см. комментарий в setUpstream).
+        await this.bridgesRepository.update(bridge.id, { status: BridgeStatus.ACTIVE, lastError: null });
+      }
+      if (restored.length > 0) {
+        const message = `Восстановлено: ${restored.join(', ')}`;
+        this.logger.log(`Мост "${bridge.name}": ${message}`);
+        this.bridgeLogService.log(LogLevel.INFO, message, bridge.id, bridge.name);
+      }
+      return { restored };
+    } finally {
+      this.restoringBridges.delete(bridgeId);
+    }
+  }
+
+  // Маршрутизация Telegram/mtproxy (см. SettingsService) ссылается на routeTable моста и
+  // применяется при старте backend — если в этот момент upstream моста ещё не был поднят
+  // (переезд: self-сервер получил новый IP уже ПОСЛЕ старта), правила на новом хосте
+  // появятся только здесь.
+  private reapplyTelegramRoutingBestEffort(bridge: Bridge, selfServer: Server): void {
+    this.settingsRepository
+      .findOne({ where: { id: 1 } })
+      .then(async (settings) => {
+        if (settings?.telegramBridgeId !== bridge.id) {
+          return;
+        }
+        await this.vpnProvisioningService.setupTelegramRouting(selfServer, bridge);
+        if (selfServer.mtProxyPort) {
+          await this.vpnProvisioningService.setupMtProxyRouting(selfServer, bridge);
+        }
+      })
+      .catch((error) => {
+        this.logger.warn(`Не удалось переприменить маршрутизацию Telegram для моста "${bridge.name}": ${(error as Error).message}`);
+      });
+  }
+
+  onApplicationBootstrap(): void {
+    // После старта backend (в т.ч. после перезагрузки self-сервера — контейнер поднимается
+    // вместе с ним) не ждём первого тика интервала — мост без upstream = клиенты без интернета.
+    setTimeout(() => void this.checkBridgesHealth(), BRIDGE_HEALTH_STARTUP_DELAY_MS).unref();
+  }
+
+  // Раз в минуту: на месте ли обвязка каждого настроенного моста (см. restoreBridge).
+  // Одно SSH-подключение на мост; при отсутствии чего-либо — повторная проверка через
+  // несколько секунд (applyPeers кратко делает down/up клиентского интерфейса при любом
+  // изменении peers — не путаем это с реальной пропажей), и только потом восстановление.
+  // После неудачи — пауза BRIDGE_RESTORE_BACKOFF_MS, чтобы недоступный upstream/SSH не
+  // долбился каждую минуту, и в журнал моста пишем только смену состояния, без спама.
+  @Interval(BRIDGE_HEALTH_INTERVAL_MS)
+  private async checkBridgesHealth(): Promise<void> {
+    if (this.healthCheckRunning) {
+      return;
+    }
+    this.healthCheckRunning = true;
+    try {
+      const bridges = await this.bridgesRepository.find({ relations: BRIDGE_RELATIONS });
+      for (const bridge of bridges) {
+        if (
+          !bridge.upstreamServerProtocolId ||
+          bridge.status === BridgeStatus.CONFIGURING ||
+          this.restoringBridges.has(bridge.id) ||
+          Date.now() < (this.restoreBackoffUntil.get(bridge.id) ?? 0)
+        ) {
+          continue;
+        }
+        try {
+          if (await this.isBridgeHealthy(bridge)) {
+            continue;
+          }
+          await new Promise((resolve) => setTimeout(resolve, BRIDGE_HEALTH_RECHECK_MS));
+          if (await this.isBridgeHealthy(bridge)) {
+            continue;
+          }
+          this.logger.warn(`Мост "${bridge.name}": на self-сервере не хватает обвязки (туннель/NAT/интерфейс/обход) — восстанавливаю`);
+          await this.restoreBridge(bridge.id);
+          // Не прошла проверка и после восстановления — не восстанавливаем каждую минуту по
+          // кругу (уйдёт в паузу через catch ниже).
+          if (!(await this.isBridgeHealthy(bridge))) {
+            throw new Error('после восстановления проверка обвязки моста всё ещё не проходит — нужна ручная проверка');
+          }
+          this.restoreBackoffUntil.delete(bridge.id);
+          this.restoreFailureReported.delete(bridge.id);
+        } catch (error) {
+          this.restoreBackoffUntil.set(bridge.id, Date.now() + BRIDGE_RESTORE_BACKOFF_MS);
+          this.logger.error(`Автовосстановление моста "${bridge.name}" не удалось: ${(error as Error).message}`);
+          if (!this.restoreFailureReported.has(bridge.id)) {
+            this.restoreFailureReported.add(bridge.id);
+            this.bridgeLogService.log(LogLevel.ERROR, `Автовосстановление не удалось: ${(error as Error).message}`, bridge.id, bridge.name);
+          }
+        }
+      }
+    } catch (error) {
+      this.logger.error(`Проверка состояния мостов не удалась: ${(error as Error).message}`);
+    } finally {
+      this.healthCheckRunning = false;
+    }
+  }
+
+  private async isBridgeHealthy(bridge: Bridge): Promise<boolean> {
+    const clientInterfaces = [bridge.wireguardClientProtocol, bridge.amneziawgClientProtocol]
+      .filter((sp): sp is ServerProtocol => Boolean(sp))
+      .map((sp) => ({ networkCidr: sp.networkCidr, interfaceName: sp.interfaceName }));
+    const state = await this.vpnProvisioningService.inspectBridgeState(this.getSelfServer(bridge), {
+      id: bridge.id,
+      clientInterfaces,
+      upstreamInterfaceName: bridge.upstreamInterfaceName,
+      routeTable: bridge.routeTable,
+      checkBypass: (bridge.bypassDestinations ?? []).length > 0,
+    });
+    return state.missingClientInterfaces.length === 0 && state.upstreamOk && state.natOk && state.bypassOk;
   }
 
   // Возвращает резерв, если он есть, активен и не занят другим мостом прямо сейчас; иначе

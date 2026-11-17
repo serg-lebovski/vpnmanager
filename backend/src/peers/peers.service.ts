@@ -1093,6 +1093,13 @@ export class PeersService {
   private async syncServerPeers(serverProtocolId: string): Promise<void> {
     const serverProtocol = await this.serverProtocolsRepository.findOneOrFail({ where: { id: serverProtocolId } });
     const server = await this.serversRepository.findOneOrFail({ where: { id: serverProtocol.serverId } });
+    await this.vpnProvisioningService.applyPeers(serverProtocol, server, await this.getActivePeerSpecs(serverProtocolId));
+  }
+
+  // Ровно тот набор peers, который syncServerPeers применяет на сервере, — нужен и
+  // восстановлению интерфейса моста (BridgesService.restoreBridge), чтобы поднятый заново
+  // интерфейс не разошёлся с обычной синхронизацией (истёкшие peers и т.п.).
+  async getActivePeerSpecs(serverProtocolId: string): Promise<PeerSpec[]> {
     // Массив условий в TypeORM = OR: берём ACTIVE-peers без срока ИЛИ со сроком, который
     // ещё не прошёл — истёкшие (но не отозванные, см. Peer.expiresAt) молча выпадают из
     // конфига, применяемого на сервере, без изменения их status.
@@ -1124,7 +1131,7 @@ export class PeersService {
         );
       }
     }
-    await this.vpnProvisioningService.applyPeers(serverProtocol, server, specs);
+    return specs;
   }
 
   // Подхватывает истечение срока действия, если его НЕ подхватило что-то другое (revoke/

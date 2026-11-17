@@ -86,6 +86,15 @@ export class BridgesController {
     return this.bridgeFailoverService.getReachabilityByServerId();
   }
 
+  // Ручное восстановление обвязки моста на self-сервере (см. BridgesService.restoreBridge) —
+  // то же самое делает и ежеминутная автопроверка, кнопка — чтобы не ждать (и после
+  // переезда панели на новый хост).
+  @Post(':id/restore')
+  @Roles(Role.SUPER_ADMIN, Role.ENGINEER)
+  restore(@Param('id') id: string) {
+    return this.bridgesService.restoreBridge(id, true);
+  }
+
   @Post(':id/rebalance')
   @Roles(Role.SUPER_ADMIN, Role.ENGINEER)
   rebalance(@Param('id') id: string) {

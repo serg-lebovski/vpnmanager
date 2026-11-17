@@ -23,7 +23,7 @@ export async function createServer(input: CreateServerInput): Promise<ServerEnti
 
 export async function updateServer(
   id: string,
-  input: { name?: string; maxPeers?: number; amneziaAppName?: string | null },
+  input: { name?: string; host?: string; maxPeers?: number; amneziaAppName?: string | null },
 ): Promise<ServerEntity> {
   const { data } = await apiClient.patch<ServerEntity>(`/servers/${id}`, input);
   return data;

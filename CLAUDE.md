@@ -436,6 +436,23 @@ sibling-container из `update.service.ts` — тут не меняются ни
 Программного переноса самого ключа шифрования между деплоями нет — осознанное решение
 (бэкап-файл и ключ шифрования нарочно остаются раздельными секретами).
 
+**Ключи интерфейсов и восстановление моста** — приватный ключ каждого VPN-интерфейса
+хранится в БД (`ServerProtocol.serverPrivateKeyEnc`, `select: false` — никогда не уходит в
+API, читать только `VpnProvisioningService.loadServerPrivateKey`), пишется при install/
+detectExisting; для старых протоколов `backfillServerPrivateKeys` (ServersService: старт +
+раз в час) забирает его с сервера со сверкой с `serverPublicKey`. Без этого дамп БД не
+позволял переехать: на новом хосте интерфейс получил бы новый ключ и все выданные конфиги
+сломались бы. `BridgesService.restoreBridge` (кнопка `POST /bridges/:id/restore` +
+`checkBridgesHealth` раз в минуту и через 15с после старта) по `inspectBridgeState` (одна
+SSH-команда) чинит только недостающее: клиентский интерфейс — `VpnDriver.restoreInterface`
+с ключом из БД и peers из `PeersService.getActivePeerSpecs`; upstream-туннель —
+`connectBridgeUpstream` с СУЩЕСТВУЮЩИМ upstream-peer (новый не создаётся; только если тот
+отозван — обычный `setUpstream`); NAT/ip rule; ipset обхода; маршрутизацию Telegram. Это же
+чинит мост после перезагрузки self-сервера (пойманный вживую 2026-11-17: после ребута 62.109
+клиенты моста 6 минут были без upstream и без списка обхода). Переезд панели = restore БД +
+смена IP self-сервера (`UpdateServerDto.host`, сбрасывает TOFU-отпечаток; для self-сервера
+переприменяет fail2ban-whitelist на остальных серверах), дальше мост поднимается сам.
+
 **Модуль `system/`** (бэкенд, `@Roles(SUPER_ADMIN)`) — вкладка «Настройки»: `backup.service.ts`
 стримит `pg_dump` прямо в HTTP-ответ; `update.service.ts` запускает `git pull` +
 пересборку/пересоздание контейнеров изнутри backend-контейнера через смонтированный

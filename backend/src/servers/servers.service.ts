@@ -1,4 +1,5 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException, OnApplicationBootstrap } from '@nestjs/common';
+import { Interval } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { BridgesService } from '../bridges/bridges.service';
@@ -22,7 +23,7 @@ export type ServerListItem = Omit<Server, 'protocols'> & {
 };
 
 @Injectable()
-export class ServersService {
+export class ServersService implements OnApplicationBootstrap {
   private readonly logger = new Logger(ServersService.name);
 
   constructor(
@@ -128,7 +129,35 @@ export class ServersService {
     if (dto.amneziaAppName !== undefined) {
       server.amneziaAppName = dto.amneziaAppName || null;
     }
-    return this.serversRepository.save(server);
+    const hostChanged = dto.host !== undefined && dto.host !== server.host;
+    if (hostChanged) {
+      server.host = dto.host!;
+      server.sshHostKeyFingerprint = null;
+    }
+    const saved = await this.serversRepository.save(server);
+    // Сменился IP самого сервера панели — новый IP должен попасть в whitelist fail2ban на
+    // остальных серверах (иначе после переезда панель рано или поздно забанит сама себя).
+    if (hostChanged && saved.isSelf) {
+      const others = await this.serversRepository.find({ where: { isSelf: false } });
+      others.forEach((other) => this.ensureFail2banBestEffort(other));
+    }
+    return saved;
+  }
+
+  // Перенос ключей интерфейсов уже установленных протоколов в БД (см.
+  // ServerProtocol.serverPrivateKeyEnc) — при старте и затем раз в час для серверов, которые
+  // были недоступны. Когда переносить нечего — один SELECT без SSH.
+  onApplicationBootstrap(): void {
+    setTimeout(() => void this.backfillServerPrivateKeys(), 30 * 1000).unref();
+  }
+
+  @Interval(60 * 60 * 1000)
+  private async backfillServerPrivateKeys(): Promise<void> {
+    try {
+      await this.vpnProvisioningService.backfillServerPrivateKeys();
+    } catch (error) {
+      this.logger.warn(`Перенос ключей интерфейсов в БД не удался: ${(error as Error).message}`);
+    }
   }
 
   // Переввод SSH-учётных данных — узкий эндпоинт (тот же паттерн, что /test-connection,

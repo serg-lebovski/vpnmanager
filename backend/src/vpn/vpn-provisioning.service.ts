@@ -5,7 +5,7 @@ import { In, Not, Repository } from 'typeorm';
 import { BridgeLogService } from '../bridge-log/bridge-log.service';
 import { Bridge } from '../bridges/bridge.entity';
 import { probeTcpPort } from '../common/tcp-probe.util';
-import { decryptSecret } from '../common/encryption.util';
+import { decryptSecret, encryptSecret } from '../common/encryption.util';
 import { LogLevel, ServerProtocolStatus, VpnProtocol } from '../common/enums';
 import { ServerProtocol } from '../servers/server-protocol.entity';
 import { Server } from '../servers/server.entity';
@@ -272,6 +272,7 @@ export class VpnProvisioningService {
       });
       serverProtocol.interfaceName = result.interfaceName;
       serverProtocol.serverPublicKey = result.serverPublicKey;
+      serverProtocol.serverPrivateKeyEnc = encryptSecret(result.serverPrivateKey);
       serverProtocol.obfuscationParams = result.obfuscationParams || null;
       serverProtocol.mtu = result.mtu || null;
       serverProtocol.packageVersion = result.packageVersion;
@@ -447,6 +448,7 @@ export class VpnProvisioningService {
     serverProtocol.listenPort = detection.listenPort;
     serverProtocol.networkCidr = detection.networkCidr;
     serverProtocol.serverPublicKey = detection.serverPublicKey;
+    serverProtocol.serverPrivateKeyEnc = encryptSecret(detection.serverPrivateKey);
     serverProtocol.obfuscationParams = detection.obfuscationParams || null;
     serverProtocol.execContainer = detection.execContainer ?? null;
     serverProtocol.remoteConfDir = detection.remoteConfDir ?? null;
@@ -455,6 +457,136 @@ export class VpnProvisioningService {
     serverProtocol.lastError = null;
 
     return this.serverProtocolsRepository.save(serverProtocol);
+  }
+
+  // Расшифрованный приватный ключ интерфейса из БД (см. ServerProtocol.serverPrivateKeyEnc —
+  // колонка select: false, поэтому отдельным запросом). null — ещё не сохранён или не
+  // расшифровывается (БД восстановлена на деплое с другим APP_ENCRYPTION_KEY).
+  async loadServerPrivateKey(serverProtocolId: string): Promise<string | null> {
+    const row = await this.serverProtocolsRepository
+      .createQueryBuilder('sp')
+      .addSelect('sp.serverPrivateKeyEnc')
+      .where('sp.id = :id', { id: serverProtocolId })
+      .getOne();
+    if (!row?.serverPrivateKeyEnc) {
+      return null;
+    }
+    try {
+      return decryptSecret(row.serverPrivateKeyEnc);
+    } catch {
+      return null;
+    }
+  }
+
+  // Однократный перенос ключей в БД для протоколов, установленных ДО появления
+  // ServerProtocol.serverPrivateKeyEnc: читает ключ с сервера (с проверкой, что он
+  // соответствует serverPublicKey) — одно SSH-подключение на сервер. Best-effort:
+  // недоступный сейчас сервер просто попадёт в следующий прогон (см. ServersService).
+  async backfillServerPrivateKeys(): Promise<number> {
+    const missing = await this.serverProtocolsRepository
+      .createQueryBuilder('sp')
+      .leftJoinAndSelect('sp.server', 'server')
+      .where('sp.status = :status', { status: ServerProtocolStatus.ACTIVE })
+      .andWhere('sp.serverPrivateKeyEnc IS NULL')
+      .andWhere('sp.serverPublicKey IS NOT NULL')
+      .getMany();
+    const byServer = new Map<string, ServerProtocol[]>();
+    for (const sp of missing) {
+      byServer.set(sp.serverId, [...(byServer.get(sp.serverId) ?? []), sp]);
+    }
+    let saved = 0;
+    for (const protocols of byServer.values()) {
+      const server = protocols[0].server;
+      try {
+        const keys = await this.sshService.withConnection(this.connectionParams(server), async (ssh) => {
+          const found: Array<{ id: string; key: string }> = [];
+          for (const serverProtocol of protocols) {
+            const key = await this.driverFor(serverProtocol.protocol).readServerPrivateKey({ ssh, server, serverProtocol });
+            if (key) {
+              found.push({ id: serverProtocol.id, key });
+            }
+          }
+          return found;
+        });
+        for (const { id, key } of keys) {
+          await this.serverProtocolsRepository.update(id, { serverPrivateKeyEnc: encryptSecret(key) });
+          saved += 1;
+        }
+      } catch (error) {
+        this.logger.warn(`Не удалось забрать ключи интерфейсов с сервера "${server.name}": ${(error as Error).message}`);
+      }
+    }
+    if (saved > 0) {
+      this.logger.log(`Ключи интерфейсов сохранены в БД: ${saved}`);
+    }
+    return saved;
+  }
+
+  // См. VpnDriver.restoreInterface. privateKey из БД (loadServerPrivateKey) — либо null, тогда
+  // драйвер использует уже лежащий на сервере файл ключа.
+  async restoreInterface(serverProtocol: ServerProtocol, server: Server, privateKey: string | null, peers: PeerSpec[]): Promise<void> {
+    const driver = this.driverFor(serverProtocol.protocol);
+    const connection = this.connectionParams(server);
+    await this.checkKernelModuleReadiness(server, connection, driver);
+    await this.sshService.withConnection(connection, (ssh) => driver.restoreInterface({ ssh, server, serverProtocol }, privateKey, peers));
+  }
+
+  static bypassIpsetName(bridgeId: string): string {
+    // ipset ограничивает длину имени (IPSET_MAXLEN=32) — префикс + 16 hex-символов id с
+    // запасом укладывается.
+    return `vpnmgr-byp-${bridgeId.replace(/-/g, '').slice(0, 16)}`;
+  }
+
+  // Что из сетевой обвязки моста сейчас реально есть на self-сервере — одним SSH-запросом
+  // (дёргается раз в минуту, см. BridgesService.checkBridgesHealth). Всё это — состояние
+  // ядра, которое не переживает перезагрузку self-сервера (кроме клиентских интерфейсов с
+  // автозапуском) и которого нет вовсе на новом хосте после переезда.
+  async inspectBridgeState(
+    selfServer: Server,
+    bridge: {
+      id: string;
+      clientInterfaces: Array<{ networkCidr: string; interfaceName: string }>;
+      upstreamInterfaceName: string;
+      routeTable: number;
+      checkBypass: boolean;
+    },
+  ): Promise<{ missingClientInterfaces: string[]; upstreamOk: boolean; natOk: boolean; bypassOk: boolean }> {
+    const up = bridge.upstreamInterfaceName;
+    const table = bridge.routeTable;
+    const ipset = VpnProvisioningService.bypassIpsetName(bridge.id);
+    const fwmark = VpnProvisioningService.BYPASS_FWMARK;
+    const lines: string[] = [];
+    for (const { interfaceName } of bridge.clientInterfaces) {
+      lines.push(`ip link show ${interfaceName} >/dev/null 2>&1 || echo "missing ${interfaceName}"`);
+    }
+    lines.push(`ip link show ${up} >/dev/null 2>&1 && ip route show table ${table} | grep -q "^default dev ${up} " && echo upstream-ok`);
+    const natChecks = bridge.clientInterfaces.map(
+      ({ networkCidr }) =>
+        `ip rule show | grep -q "from ${networkCidr} lookup ${table}" && iptables -t nat -C POSTROUTING -s ${networkCidr} -o ${up} -j MASQUERADE 2>/dev/null`,
+    );
+    lines.push(`{ ${natChecks.join(' && ') || 'true'}; } && echo nat-ok`);
+    if (bridge.checkBypass) {
+      const bypassChecks = bridge.clientInterfaces.map(
+        ({ networkCidr }) =>
+          `iptables -t mangle -C PREROUTING -s ${networkCidr} -m set --match-set ${ipset} dst -j MARK --set-mark ${fwmark} 2>/dev/null`,
+      );
+      // Наличие набора, а не число записей: пустой набор — штатная ситуация (домены списка
+      // временно не резолвятся), иначе мост считался бы сломанным каждую минуту.
+      lines.push(
+        `ipset list -n 2>/dev/null | grep -qx "${ipset}" && ip rule show | grep -q "fwmark ${fwmark} lookup main" && ` +
+          `{ ${bypassChecks.join(' && ') || 'true'}; } && echo bypass-ok`,
+      );
+    }
+    const result = await this.sshService.withConnection(this.connectionParams(selfServer), (ssh) =>
+      this.sshService.exec(ssh, lines.join('\n')),
+    );
+    const out = result.stdout.split('\n').map((line) => line.trim());
+    return {
+      missingClientInterfaces: out.filter((line) => line.startsWith('missing ')).map((line) => line.slice('missing '.length)),
+      upstreamOk: out.includes('upstream-ok'),
+      natOk: out.includes('nat-ok'),
+      bypassOk: !bridge.checkBypass || out.includes('bypass-ok'),
+    };
   }
 
   // Ставит CLI-инструменты протокола на selfServer (не трогая конфиг/интерфейсы) — нужно
@@ -597,9 +729,7 @@ export class VpnProvisioningService {
     destinations: string[],
   ): Promise<void> {
     const connection = this.connectionParams(selfServer);
-    // ipset ограничивает длину имени (IPSET_MAXLEN=32) — префикс + 16 hex-символов id с
-    // запасом укладывается.
-    const ipsetName = `vpnmgr-byp-${bridgeId.replace(/-/g, '').slice(0, 16)}`;
+    const ipsetName = VpnProvisioningService.bypassIpsetName(bridgeId);
     const tmpSetName = `${ipsetName}-tmp`;
     const fwmark = VpnProvisioningService.BYPASS_FWMARK;
 

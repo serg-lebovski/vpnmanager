@@ -208,7 +208,84 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
       `command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active" && ufw allow ${options.listenPort}/udp || true`,
     );
 
-    return { interfaceName, serverPublicKey, obfuscationParams, mtu: options.mtu };
+    return { interfaceName, serverPublicKey, serverPrivateKey: privateKey.trim(), obfuscationParams, mtu: options.mtu };
+  }
+
+  async readServerPrivateKey(ctx: VpnDriverContext): Promise<string | null> {
+    const execContainer = ctx.serverProtocol.execContainer;
+    const confDir = ctx.serverProtocol.remoteConfDir || this.confDir;
+    const interfaceName = ctx.serverProtocol.interfaceName;
+    const keyPrefix = this.keyFilePrefix(interfaceName);
+    let privateKey = '';
+    const keyFile = await this.sshService.exec(ctx.ssh, this.buildCommand(`cat ${confDir}/${keyPrefix}_private.key`, execContainer));
+    if (keyFile.code === 0) {
+      privateKey = keyFile.stdout.trim();
+    }
+    if (!privateKey) {
+      const conf = await this.sshService.exec(ctx.ssh, this.buildCommand(`cat ${this.confPath(confDir, interfaceName)}`, execContainer));
+      privateKey = conf.code === 0 ? (conf.stdout.match(/^PrivateKey\s*=\s*(\S+)/m)?.[1] ?? '') : '';
+    }
+    if (!/^[A-Za-z0-9+/]{42,44}={0,2}$/.test(privateKey)) {
+      return null;
+    }
+    return (await this.derivePublicKey(ctx.ssh, privateKey, execContainer)) === ctx.serverProtocol.serverPublicKey ? privateKey : null;
+  }
+
+  private async derivePublicKey(ssh: NodeSSH, privateKey: string, execContainer: string | null): Promise<string> {
+    const result = await this.sshService.exec(ssh, this.buildCommand(`echo '${privateKey}' | ${this.binary} pubkey`, execContainer));
+    return result.code === 0 ? result.stdout.trim() : '';
+  }
+
+  // См. VpnDriver.restoreInterface. Повторяет шаги install() (инструменты, ip_forward,
+  // автозапуск, ufw), но с ключом и параметрами из БД вместо новых — клиентские конфиги
+  // продолжают подходить. Сам конфиг с peers пишет и поднимает applyPeers (тот же путь, что
+  // при любом изменении peers). Ключ сверяется с serverPublicKey ДО записи: записать "не
+  // тот" ключ значило бы молча сломать всех клиентов этого интерфейса.
+  async restoreInterface(ctx: VpnDriverContext, privateKey: string | null, peers: PeerSpec[]): Promise<void> {
+    if (ctx.serverProtocol.execContainer) {
+      throw new Error('Восстановление недоступно для протокола в стороннем Docker-контейнере');
+    }
+    await this.ensureClientToolsInstalled(ctx.ssh);
+    const interfaceName = ctx.serverProtocol.interfaceName;
+    const confDir = ctx.serverProtocol.remoteConfDir || this.confDir;
+    const keyPrefix = this.keyFilePrefix(interfaceName);
+    await this.sshService.execOrThrow(ctx.ssh, `mkdir -p ${confDir} && chmod 700 ${confDir}`);
+    if (privateKey) {
+      const publicKey = await this.derivePublicKey(ctx.ssh, privateKey, null);
+      if (!publicKey || publicKey !== ctx.serverProtocol.serverPublicKey) {
+        throw new Error(`Сохранённый ключ интерфейса ${interfaceName} не соответствует его публичному ключу — восстановление остановлено`);
+      }
+      // exec, а не execOrThrow: текст ошибки execOrThrow включает саму команду — ключ попал
+      // бы в lastError моста/логи.
+      const written = await this.sshService.exec(
+        ctx.ssh,
+        `cd ${confDir} && umask 077 && echo '${privateKey}' > ${keyPrefix}_private.key && echo '${publicKey}' > ${keyPrefix}_public.key`,
+      );
+      if (written.code !== 0) {
+        throw new Error(`Не удалось записать ключ интерфейса ${interfaceName} в ${confDir}: ${written.stderr.trim()}`);
+      }
+    } else {
+      const existing = await this.sshService.exec(ctx.ssh, `test -s ${confDir}/${keyPrefix}_private.key`);
+      if (existing.code !== 0) {
+        throw new Error(`На сервере нет ключа интерфейса ${interfaceName}, и в базе он не сохранён — восстановить с прежним ключом нельзя`);
+      }
+    }
+    await this.sshService.execOrThrow(
+      ctx.ssh,
+      `sysctl -w net.ipv4.ip_forward=1 && (grep -q net.ipv4.ip_forward /etc/sysctl.d/99-vpnmanager.conf 2>/dev/null || echo net.ipv4.ip_forward=1 >> /etc/sysctl.d/99-vpnmanager.conf)`,
+    );
+    const interfaceAddress = ctx.serverProtocol.remoteInterfaceAddress || gatewayAddress(ctx.serverProtocol.networkCidr);
+    await this.reclaimConflictingInterface(ctx.ssh, interfaceAddress, interfaceName);
+    await this.sshService.execOrThrow(ctx.ssh, `systemctl enable ${this.quickBinary}@${interfaceName}`);
+    try {
+      await this.applyPeers(ctx, peers);
+    } catch (error) {
+      throw this.withKernelModuleHint(error as Error);
+    }
+    await this.sshService.exec(
+      ctx.ssh,
+      `command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active" && ufw allow ${ctx.serverProtocol.listenPort}/udp || true`,
+    );
   }
 
   // "ip link add ... type <protocol>" ("<quickBinary> up" вызывает это внутри себя) падает
@@ -623,6 +700,7 @@ export abstract class BaseWireGuardLikeDriver implements VpnDriver {
       listenPort: Number(listenPortMatch[1]),
       networkCidr: `${networkPrefixMatch[1]}.0/24`,
       serverPublicKey,
+      serverPrivateKey: privateKey,
       obfuscationParams: this.parseObfuscationParamsFromConfig(configText),
       execContainer,
       remoteConfDir,

@@ -102,6 +102,13 @@ export async function rebalanceBridge(bridgeId: string): Promise<BridgeEntity> {
   return data;
 }
 
+// Восстановление обвязки моста на self-сервере (интерфейсы с прежними ключами, туннель до
+// upstream, NAT, список обхода) — то же делает ежеминутная автопроверка на бэкенде.
+export async function restoreBridge(bridgeId: string): Promise<{ restored: string[] }> {
+  const { data } = await apiClient.post<{ restored: string[] }>(`/bridges/${bridgeId}/restore`);
+  return data;
+}
+
 export async function deleteBridge(bridgeId: string): Promise<void> {
   await apiClient.delete(`/bridges/${bridgeId}`);
 }

@@ -35,6 +35,8 @@ export interface InstallOptions {
 export interface InstallResult {
   interfaceName: string;
   serverPublicKey: string;
+  // Сохраняется в БД зашифрованным (ServerProtocol.serverPrivateKeyEnc) — см. там же зачем.
+  serverPrivateKey: string;
   obfuscationParams?: Record<string, number | string>;
   mtu?: number;
 }
@@ -65,6 +67,7 @@ export interface DetectedInstallation {
   listenPort: number;
   networkCidr: string;
   serverPublicKey: string;
+  serverPrivateKey: string;
   obfuscationParams?: Record<string, number | string>;
   // Имя Docker-контейнера, если протокол работает внутри контейнера (например,
   // официальный self-hosted сервер AmneziaVPN), а не установлен напрямую на хост.
@@ -144,4 +147,15 @@ export interface VpnDriver {
   // оставлять "осиротевший" интерфейс (раньше удаление трогало только БД). Бросает, если
   // протокол работает в стороннем Docker-контейнере.
   uninstall(ctx: VpnDriverContext): Promise<void>;
+  // Приватный ключ интерфейса, как он лежит на сервере сейчас (файл ключа, при его
+  // отсутствии — PrivateKey из конфига), ТОЛЬКО если из него выводится ровно
+  // serverProtocol.serverPublicKey (иначе null — не тот ключ, сохранять в БД нельзя).
+  // Используется для однократного переноса ключей уже работающих протоколов в БД.
+  readServerPrivateKey(ctx: VpnDriverContext): Promise<string | null>;
+  // Поднимает интерфейс протокола заново по данным из БД — после перезагрузки или на
+  // НОВОМ хосте (переезд панели): ставит инструменты, пишет файлы ключей (если передан
+  // privateKey — после сверки с serverPublicKey), конфиг с peers, включает автозапуск и
+  // поднимает интерфейс. privateKey null — ключ берётся из уже существующего файла на
+  // сервере (обычная перезагрузка, файлы на месте). Только для host-based установок.
+  restoreInterface(ctx: VpnDriverContext, privateKey: string | null, peers: PeerSpec[]): Promise<void>;
 }
